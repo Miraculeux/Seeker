@@ -1,0 +1,544 @@
+import SwiftUI
+import QuickLookUI
+
+// MARK: - File Content View (supports list, icon, column modes)
+
+struct FileContentView: View {
+    @Bindable var viewModel: FileExplorerViewModel
+    @Environment(AppState.self) var appState
+    let side: AppState.PaneSide
+    @State private var quickLookURL: URL?
+    @State private var showQuickLook = false
+
+    var body: some View {
+        Group {
+            switch viewModel.viewMode {
+            case .list:
+                listView
+            case .icons:
+                iconGridView
+            case .columns:
+                columnView
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .alert("Error", isPresented: $viewModel.showError) {
+            Button("OK") { viewModel.showError = false }
+        } message: {
+            Text(viewModel.errorMessage ?? "Unknown error")
+        }
+        .sheet(isPresented: $showQuickLook) {
+            if let url = quickLookURL {
+                QuickLookPreview(url: url)
+                    .frame(minWidth: 600, minHeight: 400)
+            }
+        }
+        .contextMenu {
+            directoryContextMenu
+        }
+    }
+
+    // MARK: - List View
+
+    private var listView: some View {
+        VStack(spacing: 0) {
+            // Column header
+            listHeader
+            Divider()
+
+            List(selection: $viewModel.selectedFile) {
+                ForEach(viewModel.files) { file in
+                    FileListRow(
+                        file: file,
+                        isRenaming: viewModel.renamingFile == file,
+                        renameText: $viewModel.renameText,
+                        onCommitRename: { viewModel.commitRename() },
+                        onCancelRename: { viewModel.cancelRename() }
+                    )
+                    .tag(file)
+                    .onTapGesture(count: 2) {
+                        viewModel.openItem(file)
+                    }
+                    .onTapGesture(count: 1) {
+                        viewModel.selectedFile = file
+                        appState.activePane = side
+                    }
+                    .contextMenu { fileContextMenu(for: file) }
+                    .onDrag { NSItemProvider(object: file.url as NSURL) }
+                }
+            }
+            .listStyle(.plain)
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                handleDrop(providers: providers)
+                return true
+            }
+        }
+    }
+
+    private var listHeader: some View {
+        HStack(spacing: 0) {
+            sortableHeader("Name", sortKey: .name)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            sortableHeader("Size", sortKey: .size)
+                .frame(width: 80, alignment: .trailing)
+            sortableHeader("Modified", sortKey: .date)
+                .frame(width: 140, alignment: .trailing)
+            sortableHeader("Kind", sortKey: .kind)
+                .frame(width: 100, alignment: .trailing)
+        }
+        .padding(.horizontal, 28)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.03))
+        .font(.system(size: 10, weight: .semibold, design: .rounded))
+        .foregroundColor(.secondary.opacity(0.6))
+    }
+
+    private func sortableHeader(_ title: String, sortKey: FileExplorerViewModel.SortOrder) -> some View {
+        Button {
+            if viewModel.sortOrder == sortKey {
+                viewModel.sortAscending.toggle()
+            } else {
+                viewModel.sortOrder = sortKey
+                viewModel.sortAscending = true
+            }
+            viewModel.loadFiles()
+        } label: {
+            HStack(spacing: 2) {
+                Text(title)
+                if viewModel.sortOrder == sortKey {
+                    Image(systemName: viewModel.sortAscending ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 7))
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Icon Grid View
+
+    private var iconGridView: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 90, maximum: 110), spacing: 8)], spacing: 8) {
+                ForEach(viewModel.files) { file in
+                    FileIconCell(
+                        file: file,
+                        isSelected: viewModel.selectedFile == file,
+                        isRenaming: viewModel.renamingFile == file,
+                        renameText: $viewModel.renameText,
+                        onCommitRename: { viewModel.commitRename() },
+                        onCancelRename: { viewModel.cancelRename() }
+                    )
+                    .onTapGesture(count: 2) {
+                        viewModel.openItem(file)
+                    }
+                    .onTapGesture(count: 1) {
+                        viewModel.selectedFile = file
+                        appState.activePane = side
+                    }
+                    .contextMenu { fileContextMenu(for: file) }
+                    .onDrag { NSItemProvider(object: file.url as NSURL) }
+                }
+            }
+            .padding(12)
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            handleDrop(providers: providers)
+            return true
+        }
+    }
+
+    // MARK: - Column View
+
+    private var columnView: some View {
+        ColumnBrowserView(viewModel: viewModel, side: side)
+    }
+
+    // MARK: - Context Menus
+
+    @ViewBuilder
+    private func fileContextMenu(for file: FileItem) -> some View {
+        Button("Open") { viewModel.openItem(file) }
+
+        if !file.isDirectory {
+            Button("Quick Look") {
+                quickLookURL = file.url
+                showQuickLook = true
+            }
+        }
+
+        Divider()
+
+        Button("Copy") { viewModel.copySelected() }
+        Button("Cut") { viewModel.cutSelected() }
+        Button("Paste") { viewModel.paste() }
+        Button("Duplicate") { viewModel.duplicateSelected() }
+
+        Divider()
+
+        if appState.showDualPane {
+            Button("Copy to Other Pane") { appState.copyToOtherPane() }
+            Button("Move to Other Pane") { appState.moveToOtherPane() }
+            Divider()
+        }
+
+        Button("Rename…") { viewModel.beginRename(file) }
+        Button("Move to Trash") { viewModel.trashSelected() }
+
+        Divider()
+
+        Button("Copy Path") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(file.url.path, forType: .string)
+        }
+
+        Button("Show in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([file.url])
+        }
+
+        if file.isDirectory {
+            Divider()
+            Button("Open in New Tab") {
+                let pane = appState.activePane == .left ? appState.leftPane : appState.rightPane
+                pane.addTab(url: file.url)
+            }
+            if appState.showDualPane {
+                Button("Open in Other Pane") {
+                    appState.inactivePaneState.activeTab.navigateTo(file.url)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var directoryContextMenu: some View {
+        Button("New Folder") { viewModel.createNewFolder() }
+        Button("New File") { viewModel.createNewFile() }
+        Divider()
+        Button("Paste") { viewModel.paste() }
+        Divider()
+        Button("Refresh") { viewModel.loadFiles() }
+        Button("Open in Finder") {
+            NSWorkspace.shared.open(viewModel.currentURL)
+        }
+        Button("Open Terminal Here") {
+            openTerminal(at: viewModel.currentURL)
+        }
+        Divider()
+        Toggle("Show Hidden Files", isOn: Binding(
+            get: { viewModel.showHiddenFiles },
+            set: { viewModel.showHiddenFiles = $0; viewModel.loadFiles() }
+        ))
+    }
+
+    // MARK: - Drag and Drop
+
+    private func handleDrop(providers: [NSItemProvider]) {
+        let destDir = viewModel.currentURL
+        let vm = viewModel
+        for provider in providers {
+            provider.loadItem(forTypeIdentifier: "public.file-url") { data, _ in
+                guard let data = data as? Data,
+                      let urlString = String(data: data, encoding: .utf8),
+                      let sourceURL = URL(string: urlString) else { return }
+
+                let destURL = destDir.appendingPathComponent(sourceURL.lastPathComponent)
+                Task { @MainActor in
+                    do {
+                        if NSEvent.modifierFlags.contains(.option) {
+                            try FileManager.default.copyItem(at: sourceURL, to: destURL)
+                        } else {
+                            try FileManager.default.moveItem(at: sourceURL, to: destURL)
+                        }
+                        vm.loadFiles()
+                    } catch {
+                        vm.errorMessage = "Drop failed: \(error.localizedDescription)"
+                        vm.showError = true
+                    }
+                }
+            }
+        }
+    }
+
+    private func openTerminal(at url: URL) {
+        let escapedPath = url.path.replacingOccurrences(of: "'", with: "'\\''")
+        let script = "tell application \"Terminal\" to do script \"cd '\(escapedPath)'\""
+        if let appleScript = NSAppleScript(source: script) {
+            var error: NSDictionary?
+            appleScript.executeAndReturnError(&error)
+        }
+    }
+}
+
+// MARK: - List Row
+
+struct FileListRow: View {
+    let file: FileItem
+    let isRenaming: Bool
+    @Binding var renameText: String
+    let onCommitRename: () -> Void
+    let onCancelRename: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Name column
+            HStack(spacing: 7) {
+                Image(nsImage: file.nsIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 18, height: 18)
+
+                if isRenaming {
+                    TextField("Name", text: $renameText, onCommit: onCommitRename)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .onExitCommand(perform: onCancelRename)
+                } else {
+                    Text(file.name)
+                        .font(.system(size: 12, weight: hovering ? .medium : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Size
+            Text(file.formattedSize)
+                .font(.system(size: 10, design: .rounded))
+                .foregroundColor(.secondary.opacity(0.7))
+                .frame(width: 80, alignment: .trailing)
+
+            // Date
+            Text(file.formattedDate)
+                .font(.system(size: 10, design: .rounded))
+                .foregroundColor(.secondary.opacity(0.7))
+                .frame(width: 140, alignment: .trailing)
+
+            // Kind
+            Text(file.typeDescription)
+                .font(.system(size: 10, design: .rounded))
+                .foregroundColor(.secondary.opacity(0.7))
+                .frame(width: 100, alignment: .trailing)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(hovering ? Color.primary.opacity(0.03) : Color.clear)
+        )
+        .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Icon Grid Cell
+
+struct FileIconCell: View {
+    let file: FileItem
+    let isSelected: Bool
+    let isRenaming: Bool
+    @Binding var renameText: String
+    let onCommitRename: () -> Void
+    let onCancelRename: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(nsImage: file.nsIcon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 48, height: 48)
+                .shadow(color: .black.opacity(hovering ? 0.15 : 0.05), radius: hovering ? 4 : 1, y: hovering ? 2 : 1)
+                .scaleEffect(hovering ? 1.05 : 1.0)
+
+            if isRenaming {
+                TextField("", text: $renameText, onCommit: onCommitRename)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 10))
+                    .multilineTextAlignment(.center)
+                    .onExitCommand(perform: onCancelRename)
+            } else {
+                Text(file.name)
+                    .font(.system(size: 10, weight: isSelected ? .medium : .regular))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .truncationMode(.middle)
+            }
+        }
+        .frame(width: 90, height: 90)
+        .padding(6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.15) : (hovering ? Color.primary.opacity(0.04) : Color.clear))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
+        )
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.15), value: hovering)
+    }
+}
+
+// MARK: - Column Browser View
+
+struct ColumnBrowserView: View {
+    @Bindable var viewModel: FileExplorerViewModel
+    let side: AppState.PaneSide
+    @State private var columnPath: [URL] = []
+    @State private var columnSelections: [URL: FileItem] = [:]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            HStack(spacing: 0) {
+                ForEach(Array(effectiveColumns.enumerated()), id: \.offset) { index, url in
+                    VStack(spacing: 0) {
+                        columnFileList(for: url, columnIndex: index)
+                    }
+                    .frame(width: 220)
+
+                    if index < effectiveColumns.count - 1 {
+                        Divider()
+                    }
+                }
+
+                // Preview column for selected file
+                if let lastSel = columnSelections[effectiveColumns.last ?? viewModel.currentURL],
+                   !lastSel.isDirectory {
+                    Divider()
+                    filePreviewColumn(lastSel)
+                        .frame(width: 220)
+                }
+            }
+        }
+        .onAppear { rebuildColumns() }
+        .onChange(of: viewModel.currentURL) { rebuildColumns() }
+    }
+
+    private var effectiveColumns: [URL] {
+        [viewModel.currentURL] + columnPath
+    }
+
+    private func rebuildColumns() {
+        columnPath = []
+        columnSelections = [:]
+    }
+
+    private func columnFileList(for directoryURL: URL, columnIndex: Int) -> some View {
+        let items = loadItems(at: directoryURL)
+        return List(selection: Binding<FileItem?>(
+            get: { columnSelections[directoryURL] },
+            set: { item in
+                columnSelections[directoryURL] = item
+                // Trim columns after this one
+                if columnIndex == 0 {
+                    columnPath = []
+                } else {
+                    columnPath = Array(columnPath.prefix(columnIndex))
+                }
+                // If directory, add as next column
+                if let item = item, item.isDirectory {
+                    columnPath.append(item.url)
+                }
+                viewModel.selectedFile = item
+            }
+        )) {
+            ForEach(items) { file in
+                HStack(spacing: 4) {
+                    Image(nsImage: file.nsIcon)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 14, height: 14)
+                    Text(file.name)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                    Spacer()
+                    if file.isDirectory {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8))
+                            .foregroundColor(.secondary.opacity(0.5))
+                    }
+                }
+                .tag(file)
+                .onTapGesture(count: 2) {
+                    viewModel.openItem(file)
+                }
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    private func filePreviewColumn(_ file: FileItem) -> some View {
+        VStack(spacing: 10) {
+            Spacer()
+            Image(nsImage: file.nsIcon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 64, height: 64)
+                .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
+            Text(file.name)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+            VStack(spacing: 3) {
+                Text(file.formattedSize)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundColor(.secondary.opacity(0.7))
+                Text(file.formattedDate)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundColor(.secondary.opacity(0.7))
+            }
+            Spacer()
+        }
+        .padding()
+        .background(Color.primary.opacity(0.02))
+    }
+
+    private func loadItems(at url: URL) -> [FileItem] {
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey],
+            options: viewModel.showHiddenFiles ? [] : [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return contents.map { FileItem(url: $0) }.sorted { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+    }
+}
+
+// MARK: - Quick Look Preview
+
+struct QuickLookPreview: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal)!
+        view.previewItem = url as QLPreviewItem
+        return view
+    }
+
+    func updateNSView(_ nsView: QLPreviewView, context: Context) {
+        nsView.previewItem = url as QLPreviewItem
+    }
+}
+
+// MARK: - Keyboard Handling
+
+struct KeyPressModifier: ViewModifier {
+    let onSpace: () -> Void
+    let onDelete: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onKeyPress(.space) {
+                onSpace()
+                return .handled
+            }
+            .onKeyPress(.delete) {
+                onDelete()
+                return .handled
+            }
+    }
+}

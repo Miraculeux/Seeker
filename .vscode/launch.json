@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Seeker}",
+            "name": "Debug Seeker",
+            "target": "Seeker",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Seeker"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Seeker}",
+            "name": "Release Seeker",
+            "target": "Seeker",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Seeker"
+        }
+    ]
+}

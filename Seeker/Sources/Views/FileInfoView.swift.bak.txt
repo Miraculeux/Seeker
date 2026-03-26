@@ -1,0 +1,150 @@
+import SwiftUI
+import QuickLookUI
+
+struct FileInfoView: View {
+    let file: FileItem?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let file = file {
+                fileInfoContent(file)
+            } else {
+                emptyState
+            }
+        }
+        .frame(minWidth: 220, idealWidth: 260, maxWidth: 300)
+    }
+
+    // MARK: - Empty State
+
+    private var emptyState: some View {
+        VStack {
+            Spacer()
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 40))
+                .foregroundColor(.secondary)
+            Text("No Selection")
+                .font(.headline)
+                .foregroundColor(.secondary)
+                .padding(.top, 8)
+            Text("Select a file to view its info")
+                .font(.caption)
+                .foregroundColor(.secondary.opacity(0.7))
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - File Info Content
+
+    private func fileInfoContent(_ file: FileItem) -> some View {
+        ScrollView {
+            VStack(alignment: .center, spacing: 16) {
+                // Icon and name
+                VStack(spacing: 8) {
+                    fileIcon(file)
+                    Text(file.name)
+                        .font(.headline)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.center)
+
+                    Text(file.typeDescription)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 20)
+
+                Divider()
+
+                // Details
+                VStack(alignment: .leading, spacing: 12) {
+                    if !file.isDirectory {
+                        infoRow(label: "Size", value: file.formattedSize)
+                    } else {
+                        infoRow(label: "Kind", value: "Folder")
+                        if let count = folderItemCount(file.url) {
+                            infoRow(label: "Contains", value: "\(count) items")
+                        }
+                    }
+
+                    if let date = file.modificationDate {
+                        infoRow(label: "Modified", value: formatFullDate(date))
+                    }
+
+                    if let date = file.creationDate {
+                        infoRow(label: "Created", value: formatFullDate(date))
+                    }
+
+                    infoRow(label: "Path", value: file.url.path)
+                }
+                .padding(.horizontal, 16)
+
+                Divider()
+
+                // Quick actions
+                VStack(spacing: 8) {
+                    Button {
+                        NSWorkspace.shared.open(file.url)
+                    } label: {
+                        Label("Open", systemImage: "arrow.up.forward.square")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button {
+                        NSWorkspace.shared.activateFileViewerSelecting([file.url])
+                    } label: {
+                        Label("Show in Finder", systemImage: "folder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    if !file.isDirectory {
+                        ShareLink(item: file.url) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                Spacer()
+            }
+        }
+    }
+
+    private func fileIcon(_ file: FileItem) -> some View {
+        Image(systemName: file.icon)
+            .font(.system(size: 48))
+            .foregroundColor(file.isDirectory ? .accentColor : .secondary)
+            .frame(width: 64, height: 64)
+    }
+
+    private func infoRow(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fontWeight(.medium)
+            Text(value)
+                .font(.caption)
+                .foregroundColor(.primary)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func formatFullDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .long
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
+
+    private func folderItemCount(_ url: URL) -> Int? {
+        try? FileManager.default.contentsOfDirectory(atPath: url.path).count
+    }
+}
