@@ -12,8 +12,21 @@ class FileExplorerViewModel: Identifiable {
     let id = UUID()
     var currentURL: URL
     var files: [FileItem] = []
-    var selectedFile: FileItem?
-    var selectedFiles: Set<FileItem> = []
+    var selectionAnchor: FileItem?
+    var selectedFileIDs: Set<FileItem.ID> = []
+
+    var selectedFile: FileItem? {
+        guard let anchorID = selectionAnchor?.id, selectedFileIDs.contains(anchorID) else {
+            let fileMap = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
+            return selectedFileIDs.first.flatMap { fileMap[$0] }
+        }
+        return selectionAnchor
+    }
+
+    var selectedFiles: Set<FileItem> {
+        let fileMap = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
+        return Set(selectedFileIDs.compactMap { fileMap[$0] })
+    }
     var pathHistory: [URL] = []
     var historyIndex: Int = -1
     var sortOrder: SortOrder = .name
@@ -55,8 +68,8 @@ class FileExplorerViewModel: Identifiable {
         currentURL = url
         searchText = ""
         isSearching = false
-        selectedFile = nil
-        selectedFiles = []
+        selectionAnchor = nil
+        selectedFileIDs = []
 
         // Manage history
         if historyIndex < pathHistory.count - 1 {
@@ -187,7 +200,8 @@ class FileExplorerViewModel: Identifiable {
             loadFiles()
             // Select the new folder and start renaming
             let newItem = FileItem(url: newURL)
-            selectedFile = newItem
+            selectionAnchor = newItem
+            selectedFileIDs = [newItem.id]
             beginRename(newItem)
         } catch {
             showFileError("Could not create folder: \(error.localizedDescription)")
@@ -211,7 +225,8 @@ class FileExplorerViewModel: Identifiable {
             try Data().write(to: newURL)
             loadFiles()
             let newItem = FileItem(url: newURL)
-            selectedFile = newItem
+            selectionAnchor = newItem
+            selectedFileIDs = [newItem.id]
             beginRename(newItem)
         } catch {
             showFileError("Could not create file: \(error.localizedDescription)")
@@ -234,7 +249,9 @@ class FileExplorerViewModel: Identifiable {
             try FileManager.default.moveItem(at: item.url, to: newURL)
             renamingFile = nil
             loadFiles()
-            selectedFile = FileItem(url: newURL)
+            let renamed = FileItem(url: newURL)
+            selectionAnchor = renamed
+            selectedFileIDs = [renamed.id]
         } catch {
             showFileError("Could not rename: \(error.localizedDescription)")
             renamingFile = nil
@@ -340,8 +357,8 @@ class FileExplorerViewModel: Identifiable {
                 return
             }
         }
-        selectedFile = nil
-        selectedFiles = []
+        selectionAnchor = nil
+        selectedFileIDs = []
         loadFiles()
     }
 
@@ -361,10 +378,43 @@ class FileExplorerViewModel: Identifiable {
         loadFiles()
     }
 
+    // MARK: - Multi-Selection
+
+    func handleFileClick(_ file: FileItem, command: Bool, shift: Bool) {
+        if shift, let anchor = selectionAnchor ?? selectedFile {
+            // Shift-click: range select from anchor to clicked file
+            guard let anchorIndex = files.firstIndex(of: anchor),
+                  let clickIndex = files.firstIndex(of: file) else {
+                selectionAnchor = file
+                selectedFileIDs = [file.id]
+                return
+            }
+            let range = min(anchorIndex, clickIndex)...max(anchorIndex, clickIndex)
+            selectedFileIDs = Set(files[range].map(\.id))
+            // Keep anchor for next shift-click
+        } else if command {
+            // Cmd-click: toggle individual file in selection
+            if selectedFileIDs.isEmpty, let current = selectedFile {
+                selectedFileIDs = [current.id]
+            }
+            if selectedFileIDs.contains(file.id) {
+                selectedFileIDs.remove(file.id)
+                selectionAnchor = files.first { selectedFileIDs.contains($0.id) }
+            } else {
+                selectedFileIDs.insert(file.id)
+                selectionAnchor = file
+            }
+        } else {
+            // Plain click: single select
+            selectionAnchor = file
+            selectedFileIDs = [file.id]
+        }
+    }
+
     // MARK: - Helpers
 
     var effectiveSelection: [FileItem] {
-        if !selectedFiles.isEmpty {
+        if !selectedFileIDs.isEmpty {
             return Array(selectedFiles)
         } else if let single = selectedFile {
             return [single]

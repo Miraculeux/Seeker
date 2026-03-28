@@ -35,12 +35,10 @@ struct FileContentView: View {
                     .frame(minWidth: 600, minHeight: 400)
             }
         }
-        .contextMenu {
-            directoryContextMenu
-        }
-        .onChange(of: viewModel.selectedFile) { _, newValue in
-            guard let file = newValue else { return }
-            AppDelegate.shared?.updateQuickLookIfVisible(url: file.url)
+        .onChange(of: viewModel.selectedFileIDs) { _, _ in
+            if let file = viewModel.selectedFile {
+                AppDelegate.shared?.updateQuickLookIfVisible(url: file.url)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .columnSettingsChanged)) { _ in
             columnRefresh += 1
@@ -56,27 +54,33 @@ struct FileContentView: View {
             Divider()
 
             ScrollViewReader { proxy in
-                List(selection: $viewModel.selectedFile) {
+                List {
                     ForEach(viewModel.files) { file in
                         FileListRow(
                             file: file,
+                            isSelected: isFileSelected(file),
                             isRenaming: viewModel.renamingFile == file,
                             renameText: $viewModel.renameText,
                             onCommitRename: { viewModel.commitRename() },
                             onCancelRename: { viewModel.cancelRename() }
                         )
-                        .tag(file)
                         .id(file.id)
-                        .onTapGesture(count: 1) {
-                            viewModel.selectedFile = file
+                        .listRowBackground(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(isFileSelected(file) ? Color.accentColor.opacity(0.2) : Color.clear)
+                        )
+                        .onTapGesture {
+                            let flags = NSEvent.modifierFlags
+                            viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
+                            appState.activePane = side
                         }
                         .contextMenu { fileContextMenu(for: file) }
                         .onDrag { NSItemProvider(object: file.url as NSURL) }
                     }
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: true))
-                .onChange(of: viewModel.selectedFile) { _, newValue in
-                    if let file = newValue {
+                .onChange(of: viewModel.selectedFileIDs) { _, _ in
+                    if let file = viewModel.selectedFile {
                         withAnimation {
                             proxy.scrollTo(file.id, anchor: .center)
                         }
@@ -87,6 +91,11 @@ struct FileContentView: View {
                     return true
                 }
             }
+        }
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .contextMenu { directoryContextMenu }
         }
     }
 
@@ -136,6 +145,13 @@ struct FileContentView: View {
         .buttonStyle(.plain)
     }
 
+    private func isFileSelected(_ file: FileItem) -> Bool {
+        if !viewModel.selectedFileIDs.isEmpty {
+            return viewModel.selectedFileIDs.contains(file.id)
+        }
+        return viewModel.selectedFile == file
+    }
+
     // MARK: - Icon Grid View
 
     private var iconGridView: some View {
@@ -144,14 +160,15 @@ struct FileContentView: View {
                 ForEach(viewModel.files) { file in
                     FileIconCell(
                         file: file,
-                        isSelected: viewModel.selectedFile == file,
+                        isSelected: isFileSelected(file),
                         isRenaming: viewModel.renamingFile == file,
                         renameText: $viewModel.renameText,
                         onCommitRename: { viewModel.commitRename() },
                         onCancelRename: { viewModel.cancelRename() }
                     )
                     .onTapGesture(count: 1) {
-                        viewModel.selectedFile = file
+                        let flags = NSEvent.modifierFlags
+                        viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
                         appState.activePane = side
                     }
                     .contextMenu { fileContextMenu(for: file) }
@@ -160,6 +177,7 @@ struct FileContentView: View {
             }
             .padding(12)
         }
+        .contextMenu { directoryContextMenu }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers: providers)
             return true
@@ -294,6 +312,7 @@ struct FileContentView: View {
 
 struct FileListRow: View {
     let file: FileItem
+    let isSelected: Bool
     let isRenaming: Bool
     @Binding var renameText: String
     let onCommitRename: () -> Void
@@ -466,7 +485,8 @@ struct ColumnBrowserView: View {
                 if let item = item, item.isDirectory {
                     columnPath.append(item.url)
                 }
-                viewModel.selectedFile = item
+                viewModel.selectionAnchor = item
+                viewModel.selectedFileIDs = item.map { Set([$0.id]) } ?? []
             }
         )) {
             ForEach(items) { file in

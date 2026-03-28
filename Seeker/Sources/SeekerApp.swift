@@ -106,9 +106,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         } else { // Up
                             newIndex = (currentIndex == nil) ? 0 : max((currentIndex! - 1), 0)
                         }
-                        vm.selectedFile = files[newIndex]
+                        let newFile = files[newIndex]
+                        if event.modifierFlags.contains(.shift) {
+                            // Shift+Arrow: extend range selection
+                            if vm.selectedFileIDs.isEmpty, let current = vm.selectedFile {
+                                vm.selectedFileIDs = [current.id]
+                            }
+                            vm.selectedFileIDs.insert(newFile.id)
+                            vm.selectionAnchor = newFile
+                        } else {
+                            // Plain arrow: single select
+                            vm.selectionAnchor = newFile
+                            vm.selectedFileIDs = [newFile.id]
+                        }
                     }
-                    return nil // consume arrow keys so the old panel's List doesn't also move
+                    return nil // consume arrow keys
                 }
                 return event
             }
@@ -156,7 +168,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
                 guard let delegate = AppDelegate.shared,
                       let state = delegate.appState,
-                      let window = event.window else { return event }
+                      let window = event.window else {
+                    return event
+                }
                 let windowPoint = event.locationInWindow
                 let screenPoint = window.convertPoint(toScreen: windowPoint)
                 let windowFrame = window.frame
