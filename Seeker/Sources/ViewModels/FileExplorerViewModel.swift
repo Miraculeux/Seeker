@@ -4,6 +4,7 @@ import AppKit
 
 extension Notification.Name {
     static let explorerDidNavigate = Notification.Name("explorerDidNavigate")
+    static let columnSettingsChanged = Notification.Name("columnSettingsChanged")
 }
 
 @MainActor @Observable

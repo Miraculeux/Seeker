@@ -9,6 +9,7 @@ struct FileContentView: View {
     let side: AppState.PaneSide
     @State private var quickLookURL: URL?
     @State private var showQuickLook = false
+    @State private var columnRefresh: Int = 0
 
     var body: some View {
         Group {
@@ -21,6 +22,7 @@ struct FileContentView: View {
                 columnView
             }
         }
+        .id(columnRefresh)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .alert("Error", isPresented: $viewModel.showError) {
             Button("OK") { viewModel.showError = false }
@@ -39,6 +41,9 @@ struct FileContentView: View {
         .onChange(of: viewModel.selectedFile) { _, newValue in
             guard let file = newValue else { return }
             AppDelegate.shared?.updateQuickLookIfVisible(url: file.url)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .columnSettingsChanged)) { _ in
+            columnRefresh += 1
         }
     }
 
@@ -89,12 +94,19 @@ struct FileContentView: View {
         HStack(spacing: 0) {
             sortableHeader("Name", sortKey: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            sortableHeader("Size", sortKey: .size)
-                .frame(width: 80, alignment: .trailing)
-            sortableHeader("Modified", sortKey: .date)
-                .frame(width: 140, alignment: .trailing)
-            sortableHeader("Kind", sortKey: .kind)
-                .frame(width: 100, alignment: .trailing)
+            ForEach(SettingsManager.shared.visibleColumnsOrdered) { col in
+                switch col {
+                case .size:
+                    sortableHeader("Size", sortKey: .size)
+                        .frame(width: 80, alignment: .trailing)
+                case .modified:
+                    sortableHeader("Modified", sortKey: .date)
+                        .frame(width: 140, alignment: .trailing)
+                case .kind:
+                    sortableHeader("Kind", sortKey: .kind)
+                        .frame(width: 100, alignment: .trailing)
+                }
+            }
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 4)
@@ -310,23 +322,28 @@ struct FileListRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // Size
-            Text(file.formattedSize)
-                .font(.system(size: 10, design: .rounded))
-                .foregroundColor(.secondary.opacity(0.7))
-                .frame(width: 80, alignment: .trailing)
-
             // Date
-            Text(file.formattedDate)
-                .font(.system(size: 10, design: .rounded))
-                .foregroundColor(.secondary.opacity(0.7))
-                .frame(width: 140, alignment: .trailing)
-
             // Kind
-            Text(file.typeDescription)
-                .font(.system(size: 10, design: .rounded))
-                .foregroundColor(.secondary.opacity(0.7))
-                .frame(width: 100, alignment: .trailing)
-                .lineLimit(1)
+            ForEach(SettingsManager.shared.visibleColumnsOrdered) { col in
+                switch col {
+                case .size:
+                    Text(file.formattedSize)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundColor(.secondary.opacity(0.7))
+                        .frame(width: 80, alignment: .trailing)
+                case .modified:
+                    Text(file.formattedDate)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundColor(.secondary.opacity(0.7))
+                        .frame(width: 140, alignment: .trailing)
+                case .kind:
+                    Text(file.typeDescription)
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundColor(.secondary.opacity(0.7))
+                        .frame(width: 100, alignment: .trailing)
+                        .lineLimit(1)
+                }
+            }
         }
         .padding(.vertical, 2)
         .padding(.horizontal, 4)
