@@ -5,9 +5,15 @@ import AppKit
 @MainActor @Observable
 class AppState {
     // Panel visibility
-    var showFavorites: Bool = true
-    var showDualPane: Bool = true
-    var showInfoPanel: Bool = false
+    var showFavorites: Bool = SettingsManager.shared.showFavorites {
+        didSet { SettingsManager.shared.showFavorites = showFavorites }
+    }
+    var showDualPane: Bool = SettingsManager.shared.showDualPane {
+        didSet { SettingsManager.shared.showDualPane = showDualPane }
+    }
+    var showInfoPanel: Bool = SettingsManager.shared.showInfoPanel {
+        didSet { SettingsManager.shared.showInfoPanel = showInfoPanel }
+    }
 
     // Panes - each has tabs
     var leftPane = PaneState()
@@ -94,6 +100,27 @@ class AppState {
             candidate = directory.appendingPathComponent(numberedName)
         }
         return candidate
+    }
+
+    // MARK: - Location Persistence
+
+    func restoreLastLocations() {
+        let settings = SettingsManager.shared
+        if let leftURL = settings.savedLeftURL() {
+            leftPane.activeTab.navigateTo(leftURL)
+        }
+        if let rightURL = settings.savedRightURL() {
+            rightPane.activeTab.navigateTo(rightURL)
+        }
+    }
+
+    func saveCurrentLocations() {
+        let settings = SettingsManager.shared
+        guard settings.rememberLastLocation else { return }
+        settings.saveLocations(
+            left: leftPane.activeTab.currentURL,
+            right: rightPane.activeTab.currentURL
+        )
     }
 }
 

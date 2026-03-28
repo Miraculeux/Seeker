@@ -17,6 +17,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    nonisolated func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            appState?.saveCurrentLocations()
+        }
+    }
+
     func installSpaceMonitor(appState: AppState) {
         self.appState = appState
         AppDelegate.shared = self
@@ -146,6 +152,16 @@ struct SeekerApp: App {
                 .environment(appState)
                 .onAppear {
                     appDelegate.installSpaceMonitor(appState: appState)
+                    appState.restoreLastLocations()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+                    appState.saveCurrentLocations()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    appState.saveCurrentLocations()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .explorerDidNavigate)) { _ in
+                    appState.saveCurrentLocations()
                 }
         }
         .windowStyle(.titleBar)
@@ -303,6 +319,10 @@ struct SeekerApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command])
             }
+        }
+
+        Settings {
+            SettingsView()
         }
     }
 }

@@ -2,6 +2,10 @@ import Foundation
 import Observation
 import AppKit
 
+extension Notification.Name {
+    static let explorerDidNavigate = Notification.Name("explorerDidNavigate")
+}
+
 @MainActor @Observable
 class FileExplorerViewModel: Identifiable {
     let id = UUID()
@@ -61,6 +65,9 @@ class FileExplorerViewModel: Identifiable {
         historyIndex = pathHistory.count - 1
 
         loadFiles()
+
+        // Notify so AppState can persist location
+        NotificationCenter.default.post(name: .explorerDidNavigate, object: nil)
     }
 
     func loadFiles() {
