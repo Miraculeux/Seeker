@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct PaneView: View {
     var pane: PaneState
@@ -43,6 +44,26 @@ struct PaneView: View {
         )
         .shadow(color: .black.opacity(isActive ? 0.08 : 0.03), radius: isActive ? 8 : 3, y: 2)
         .padding(4)
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear {
+                        updatePaneFrame(geo)
+                    }
+                    .onChange(of: geo.frame(in: .global)) { _, _ in
+                        updatePaneFrame(geo)
+                    }
+            }
+        )
+    }
+
+    private func updatePaneFrame(_ geo: GeometryProxy) {
+        let frame = geo.frame(in: .global)
+        if side == .left {
+            appState.leftPaneFrame = frame
+        } else {
+            appState.rightPaneFrame = frame
+        }
     }
 
     // MARK: - Tab Bar
@@ -87,7 +108,6 @@ struct PaneView: View {
         }
         .frame(height: 34)
         .background(Color.primary.opacity(0.02))
-        .onTapGesture { appState.activePane = side }
     }
 
     // MARK: - Pane Toolbar
@@ -165,7 +185,6 @@ struct PaneView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(Color.primary.opacity(0.015))
-        .onTapGesture { appState.activePane = side }
     }
 
     // MARK: - File Area

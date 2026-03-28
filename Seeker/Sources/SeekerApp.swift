@@ -6,6 +6,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate?
     var spaceMonitor: Any?
     var doubleClickMonitor: Any?
+    var mouseDownMonitor: Any?
     let quickLookPanel = QuickLookPanelController()
     weak var appState: AppState?
 
@@ -23,9 +24,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if spaceMonitor == nil {
             // Space key → Quick Look, Return key → Open item
             spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                // Skip when typing in a text field
-                if let firstResponder = event.window?.value(forKey: "firstResponder") as? NSResponder,
-                   firstResponder is NSTextView || firstResponder is NSTextField {
+                // Check if user is typing in a text field (search/filter/rename)
+                let isTypingInTextField: Bool = {
+                    guard let firstResponder = event.window?.value(forKey: "firstResponder") as? NSResponder else {
+                        return false
+                    }
+                    // NSTextView field editors used by focused text fields
+                    if let textView = firstResponder as? NSTextView,
+                       textView.isFieldEditor {
+                        // Only block if the parent text field is actually focused for editing
+                        // (has selected text or non-empty string, or it's a search/filter field)
+                        if let selectedRange = textView.selectedRanges.first as? NSRange,
+                           selectedRange.length > 0 {
+                            return true
+                        }
+                        if textView.string.count > 0 {
+                            return true
+                        }
+                        return false
+                    }
+                    if firstResponder is NSTextField {
+                        return true
+                    }
+                    return false
+                }()
+                if isTypingInTextField {
                     return event
                 }
                 if event.keyCode == 49, !event.isARepeat {
@@ -40,6 +63,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                        let file = delegate.appState?.activeExplorer.selectedFile {
                         delegate.appState?.activeExplorer.openItem(file)
                     }
+                } else if event.keyCode == 125 || event.keyCode == 126 {
+                    // Arrow Down (125) / Arrow Up (126) → navigate selection
+                    if let delegate = AppDelegate.shared,
+                       let vm = delegate.appState?.activeExplorer {
+                        let files = vm.files
+                        guard !files.isEmpty else { return event }
+                        let currentIndex = files.firstIndex(where: { $0 == vm.selectedFile })
+                        let newIndex: Int
+                        if event.keyCode == 125 { // Down
+                            newIndex = (currentIndex == nil) ? 0 : min((currentIndex! + 1), files.count - 1)
+                        } else { // Up
+                            newIndex = (currentIndex == nil) ? 0 : max((currentIndex! - 1), 0)
+                        }
+                        vm.selectedFile = files[newIndex]
+                    }
+                    return nil // consume arrow keys so the old panel's List doesn't also move
                 }
                 return event
             }
@@ -52,6 +91,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if let delegate = AppDelegate.shared,
                    let file = delegate.appState?.activeExplorer.selectedFile {
                     delegate.appState?.activeExplorer.openItem(file)
+                }
+                return event
+            }
+        }
+
+        if mouseDownMonitor == nil {
+            // MouseDown → detect which pane was clicked to set activePane
+            mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+                guard let delegate = AppDelegate.shared,
+                      let state = delegate.appState,
+                      let window = event.window else { return event }
+                let windowPoint = event.locationInWindow
+                let screenPoint = window.convertPoint(toScreen: windowPoint)
+                let windowFrame = window.frame
+                let flippedY = windowFrame.maxY - screenPoint.y
+                let globalPoint = CGPoint(x: screenPoint.x - windowFrame.minX, y: flippedY)
+
+                if state.leftPaneFrame.contains(globalPoint) && state.activePane != .left {
+                    DispatchQueue.main.async { state.activePane = .left }
+                } else if state.rightPaneFrame.contains(globalPoint) && state.activePane != .right {
+                    DispatchQueue.main.async { state.activePane = .right }
                 }
                 return event
             }

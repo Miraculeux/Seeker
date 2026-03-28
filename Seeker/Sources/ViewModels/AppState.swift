@@ -7,6 +7,7 @@ class AppState {
     // Panel visibility
     var showFavorites: Bool = true
     var showDualPane: Bool = true
+    var showInfoPanel: Bool = false
 
     // Panes - each has tabs
     var leftPane = PaneState()
@@ -14,6 +15,10 @@ class AppState {
 
     // Which pane is active
     var activePane: PaneSide = .left
+
+    // Pane screen frames for click detection
+    var leftPaneFrame: CGRect = .zero
+    var rightPaneFrame: CGRect = .zero
 
     // Sync browsing
     var syncBrowsing: Bool = false

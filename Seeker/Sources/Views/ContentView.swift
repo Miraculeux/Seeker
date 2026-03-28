@@ -40,6 +40,13 @@ struct ContentView: View {
                     PaneView(pane: appState.leftPane, side: .left)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+
+                // Info panel (rightmost)
+                if appState.showInfoPanel {
+                    Divider()
+                    FileInfoView()
+                        .transition(.move(edge: .trailing))
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -103,6 +110,12 @@ struct ContentView: View {
 
                 ToolbarBtn(icon: "link", isActive: appState.syncBrowsing, tip: "Sync Browsing") {
                     appState.syncBrowsing.toggle()
+                }
+
+                ToolbarSep()
+
+                ToolbarBtn(icon: "sidebar.right", isActive: appState.showInfoPanel, tip: "Info Panel") {
+                    withAnimation(.easeInOut(duration: 0.15)) { appState.showInfoPanel.toggle() }
                 }
             }
             .padding(3)

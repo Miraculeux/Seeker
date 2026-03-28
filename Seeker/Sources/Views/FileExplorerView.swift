@@ -60,21 +60,14 @@ struct FileContentView: View {
                         onCancelRename: { viewModel.cancelRename() }
                     )
                     .tag(file)
-                    .onTapGesture(count: 2) {
-                        viewModel.openItem(file)
-                    }
                     .onTapGesture(count: 1) {
                         viewModel.selectedFile = file
-                        appState.activePane = side
                     }
                     .contextMenu { fileContextMenu(for: file) }
                     .onDrag { NSItemProvider(object: file.url as NSURL) }
                 }
             }
             .listStyle(.inset(alternatesRowBackgrounds: true))
-            .onChange(of: viewModel.selectedFile) { _, _ in
-                appState.activePane = side
-            }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
                 return true
@@ -135,9 +128,6 @@ struct FileContentView: View {
                         onCommitRename: { viewModel.commitRename() },
                         onCancelRename: { viewModel.cancelRename() }
                     )
-                    .onTapGesture(count: 2) {
-                        viewModel.openItem(file)
-                    }
                     .onTapGesture(count: 1) {
                         viewModel.selectedFile = file
                         appState.activePane = side
