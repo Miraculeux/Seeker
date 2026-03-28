@@ -91,13 +91,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if doubleClickMonitor == nil {
-            // Double-click → Open item (only inside pane areas)
+            // Double-click → Open item (only on actual list/collection rows)
             doubleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
                 guard event.clickCount == 2,
                       let delegate = AppDelegate.shared,
                       let state = delegate.appState,
                       let window = event.window else { return event }
+
+                // Only proceed if the click is on a table row (file list row)
                 let windowPoint = event.locationInWindow
+                if let hitView = window.contentView?.hitTest(windowPoint) {
+                    var isOnRow = false
+                    var view: NSView? = hitView
+                    while let v = view {
+                        if v is NSTableRowView || v is NSCollectionView {
+                            isOnRow = true
+                            break
+                        }
+                        view = v.superview
+                    }
+                    guard isOnRow else { return event }
+                }
+
                 let screenPoint = window.convertPoint(toScreen: windowPoint)
                 let windowFrame = window.frame
                 let flippedY = windowFrame.maxY - screenPoint.y
