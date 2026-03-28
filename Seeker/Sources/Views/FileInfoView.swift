@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import ImageIO
+import AVFoundation
 
 struct FileInfoView: View {
     @Environment(AppState.self) var appState
@@ -127,6 +128,14 @@ struct FileInfoView: View {
                         .padding(.horizontal, 12)
 
                     exifSection(exifInfo)
+                }
+
+                // Media info for audio/video
+                if let mediaInfo = mediaMetadata(for: file) {
+                    Divider()
+                        .padding(.horizontal, 12)
+
+                    mediaSection(mediaInfo)
                 }
 
                 Spacer(minLength: 16)
@@ -376,6 +385,219 @@ struct FileInfoView: View {
                 if let lat = meta.latitude { infoRow("Lat", lat) }
                 if let lon = meta.longitude { infoRow("Lon", lon) }
                 if let alt = meta.altitude { infoRow("Alt", alt) }
+            }
+        }
+        .padding(.horizontal, 12)
+    }
+
+    // MARK: - Media Metadata
+
+    private struct MediaInfo {
+        var duration: String?
+        // Video
+        var videoCodec: String?
+        var resolution: String?
+        var frameRate: String?
+        var videoBitrate: String?
+        // Audio
+        var audioCodec: String?
+        var sampleRate: String?
+        var channels: String?
+        var audioBitrate: String?
+        // Common
+        var title: String?
+        var artist: String?
+        var album: String?
+        var genre: String?
+        var year: String?
+    }
+
+    private func mediaMetadata(for file: FileItem) -> MediaInfo? {
+        guard !file.isDirectory else { return nil }
+        let ext = file.url.pathExtension.lowercased()
+        let mediaExts = [
+            "mp4", "mov", "m4v", "avi", "mkv", "wmv", "flv", "webm", "ts", "mpg", "mpeg",
+            "mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ogg", "wma", "opus", "alac"
+        ]
+        guard mediaExts.contains(ext) else { return nil }
+
+        let asset = AVURLAsset(url: file.url)
+        var meta = MediaInfo()
+
+        // Duration
+        let dur = CMTimeGetSeconds(asset.duration)
+        if dur.isFinite && dur > 0 {
+            let h = Int(dur) / 3600
+            let m = (Int(dur) % 3600) / 60
+            let s = Int(dur) % 60
+            if h > 0 {
+                meta.duration = String(format: "%d:%02d:%02d", h, m, s)
+            } else {
+                meta.duration = String(format: "%d:%02d", m, s)
+            }
+        }
+
+        // Video tracks
+        let videoTracks = asset.tracks(withMediaType: .video)
+        if let vt = videoTracks.first {
+            let size = vt.naturalSize.applying(vt.preferredTransform)
+            let w = Int(abs(size.width))
+            let h = Int(abs(size.height))
+            if w > 0 && h > 0 {
+                meta.resolution = "\(w) × \(h)"
+            }
+
+            if vt.nominalFrameRate > 0 {
+                meta.frameRate = String(format: "%.2f fps", vt.nominalFrameRate)
+            }
+
+            if vt.estimatedDataRate > 0 {
+                let mbps = vt.estimatedDataRate / 1_000_000
+                if mbps >= 1 {
+                    meta.videoBitrate = String(format: "%.1f Mbps", mbps)
+                } else {
+                    meta.videoBitrate = String(format: "%.0f kbps", vt.estimatedDataRate / 1000)
+                }
+            }
+
+            for desc in vt.formatDescriptions {
+                let fd = desc as! CMFormatDescription
+                let codec = CMFormatDescriptionGetMediaSubType(fd)
+                meta.videoCodec = fourCCToString(codec)
+                break
+            }
+        }
+
+        // Audio tracks
+        let audioTracks = asset.tracks(withMediaType: .audio)
+        if let at = audioTracks.first {
+            if at.estimatedDataRate > 0 {
+                meta.audioBitrate = String(format: "%.0f kbps", at.estimatedDataRate / 1000)
+            }
+
+            for desc in at.formatDescriptions {
+                let fd = desc as! CMFormatDescription
+                let codec = CMFormatDescriptionGetMediaSubType(fd)
+                meta.audioCodec = fourCCToString(codec)
+
+                if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee {
+                    if asbd.mSampleRate > 0 {
+                        let khz = asbd.mSampleRate / 1000
+                        meta.sampleRate = String(format: "%.1f kHz", khz)
+                    }
+                    if asbd.mChannelsPerFrame > 0 {
+                        switch asbd.mChannelsPerFrame {
+                        case 1: meta.channels = "Mono"
+                        case 2: meta.channels = "Stereo"
+                        case 6: meta.channels = "5.1"
+                        case 8: meta.channels = "7.1"
+                        default: meta.channels = "\(asbd.mChannelsPerFrame) ch"
+                        }
+                    }
+                }
+                break
+            }
+        }
+
+        // Common metadata (title, artist, album, etc.)
+        for item in asset.commonMetadata {
+            guard let key = item.commonKey else { continue }
+            let val = item.stringValue
+            switch key {
+            case .commonKeyTitle: meta.title = val
+            case .commonKeyArtist: meta.artist = val
+            case .commonKeyAlbumName: meta.album = val
+            case .commonKeyCreationDate: meta.year = val
+            default: break
+            }
+        }
+
+        // Genre from iTunes metadata
+        for item in asset.metadata(forFormat: .iTunesMetadata) {
+            if let key = item.commonKey, key == .commonKeyType {
+                meta.genre = item.stringValue
+            }
+        }
+
+        return meta
+    }
+
+    private func fourCCToString(_ code: FourCharCode) -> String {
+        let chars = [
+            Character(UnicodeScalar((code >> 24) & 0xFF)!),
+            Character(UnicodeScalar((code >> 16) & 0xFF)!),
+            Character(UnicodeScalar((code >> 8) & 0xFF)!),
+            Character(UnicodeScalar(code & 0xFF)!),
+        ]
+        let raw = String(chars).trimmingCharacters(in: .whitespaces)
+        // Map common codes to readable names
+        switch raw {
+        case "avc1", "avc3": return "H.264"
+        case "hvc1", "hev1": return "H.265 (HEVC)"
+        case "mp4v": return "MPEG-4"
+        case "ap4h", "ap4x": return "ProRes 4444"
+        case "apch": return "ProRes 422 HQ"
+        case "apcn": return "ProRes 422"
+        case "apcs": return "ProRes 422 LT"
+        case "apco": return "ProRes 422 Proxy"
+        case "aac ": return "AAC"
+        case "mp4a": return "AAC"
+        case "alac": return "ALAC"
+        case ".mp3": return "MP3"
+        case "lpcm": return "LPCM"
+        case "ac-3": return "AC-3"
+        case "ec-3": return "E-AC-3"
+        case "fLaC": return "FLAC"
+        case "opus": return "Opus"
+        default: return raw
+        }
+    }
+
+    private func mediaSection(_ meta: MediaInfo) -> some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text("Media")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer()
+            }
+
+            if let d = meta.duration { infoRow("Duration", d) }
+
+            // Video
+            if meta.resolution != nil || meta.videoCodec != nil {
+                if let codec = meta.videoCodec { infoRow("Video", codec) }
+                if let res = meta.resolution { infoRow("Size", res) }
+                if let fps = meta.frameRate { infoRow("FPS", fps) }
+                if let br = meta.videoBitrate { infoRow("Bitrate", br) }
+            }
+
+            // Audio
+            if meta.audioCodec != nil || meta.sampleRate != nil {
+                if meta.resolution != nil { Divider() }
+
+                if let codec = meta.audioCodec { infoRow("Audio", codec) }
+                if let sr = meta.sampleRate { infoRow("Sample", sr) }
+                if let ch = meta.channels { infoRow("Channels", ch) }
+                if let br = meta.audioBitrate { infoRow("Bitrate", br) }
+            }
+
+            // Tags
+            if meta.title != nil || meta.artist != nil || meta.album != nil {
+                Divider()
+
+                HStack {
+                    Text("Tags")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+
+                if let t = meta.title { infoRow("Title", t) }
+                if let a = meta.artist { infoRow("Artist", a) }
+                if let al = meta.album { infoRow("Album", al) }
+                if let g = meta.genre { infoRow("Genre", g) }
+                if let y = meta.year { infoRow("Year", y) }
             }
         }
         .padding(.horizontal, 12)
