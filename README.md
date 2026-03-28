@@ -2,6 +2,8 @@
 
 A modern dual-pane file manager for macOS, built with SwiftUI.
 
+![Seeker Screenshot](screenshot.png)
+
 ## Features
 
 - **Dual-pane layout** with independent navigation
