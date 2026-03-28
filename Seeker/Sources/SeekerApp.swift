@@ -63,6 +63,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                        let url = delegate.appState?.activeExplorer.selectedFile?.url {
                         delegate.quickLookPanel.togglePreview(for: url)
                     }
+                    return nil // consume space so List doesn't scroll/deselect
                 } else if event.keyCode == 36, !event.isARepeat {
                     // Return → Open selected item
                     if let delegate = AppDelegate.shared,
