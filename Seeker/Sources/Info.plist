@@ -24,6 +24,8 @@
 	<true/>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>Seeker needs access to your Desktop folder to browse and manage files.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
