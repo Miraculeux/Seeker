@@ -5,6 +5,7 @@ import AVFoundation
 
 struct FileInfoView: View {
     @Environment(AppState.self) var appState
+    @State private var mediaInfo: MediaInfo?
 
     private var selectedFile: FileItem? {
         appState.activeExplorer.selectedFile
@@ -131,7 +132,7 @@ struct FileInfoView: View {
                 }
 
                 // Media info for audio/video
-                if let mediaInfo = mediaMetadata(for: file) {
+                if let mediaInfo = mediaInfo {
                     Divider()
                         .padding(.horizontal, 12)
 
@@ -139,6 +140,13 @@ struct FileInfoView: View {
                 }
 
                 Spacer(minLength: 16)
+            }
+        }
+        .task(id: selectedFile?.id) {
+            if let file = selectedFile {
+                mediaInfo = await mediaMetadata(for: file)
+            } else {
+                mediaInfo = nil
             }
         }
     }
@@ -412,7 +420,7 @@ struct FileInfoView: View {
         var year: String?
     }
 
-    private func mediaMetadata(for file: FileItem) -> MediaInfo? {
+    private func mediaMetadata(for file: FileItem) async -> MediaInfo? {
         guard !file.isDirectory else { return nil }
         let ext = file.url.pathExtension.lowercased()
         let mediaExts = [
@@ -425,84 +433,93 @@ struct FileInfoView: View {
         var meta = MediaInfo()
 
         // Duration
-        let dur = CMTimeGetSeconds(asset.duration)
-        if dur.isFinite && dur > 0 {
-            let h = Int(dur) / 3600
-            let m = (Int(dur) % 3600) / 60
-            let s = Int(dur) % 60
-            if h > 0 {
-                meta.duration = String(format: "%d:%02d:%02d", h, m, s)
-            } else {
-                meta.duration = String(format: "%d:%02d", m, s)
+        if let cmDuration = try? await asset.load(.duration) {
+            let dur = CMTimeGetSeconds(cmDuration)
+            if dur.isFinite && dur > 0 {
+                let h = Int(dur) / 3600
+                let m = (Int(dur) % 3600) / 60
+                let s = Int(dur) % 60
+                if h > 0 {
+                    meta.duration = String(format: "%d:%02d:%02d", h, m, s)
+                } else {
+                    meta.duration = String(format: "%d:%02d", m, s)
+                }
             }
         }
 
         // Video tracks
-        let videoTracks = asset.tracks(withMediaType: .video)
+        let videoTracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
         if let vt = videoTracks.first {
-            let size = vt.naturalSize.applying(vt.preferredTransform)
-            let w = Int(abs(size.width))
-            let h = Int(abs(size.height))
-            if w > 0 && h > 0 {
-                meta.resolution = "\(w) × \(h)"
-            }
-
-            if vt.nominalFrameRate > 0 {
-                meta.frameRate = String(format: "%.2f fps", vt.nominalFrameRate)
-            }
-
-            if vt.estimatedDataRate > 0 {
-                let mbps = vt.estimatedDataRate / 1_000_000
-                if mbps >= 1 {
-                    meta.videoBitrate = String(format: "%.1f Mbps", mbps)
-                } else {
-                    meta.videoBitrate = String(format: "%.0f kbps", vt.estimatedDataRate / 1000)
+            let size = try? await vt.load(.naturalSize)
+            let transform = try? await vt.load(.preferredTransform)
+            if let size, let transform {
+                let transformed = size.applying(transform)
+                let w = Int(abs(transformed.width))
+                let h = Int(abs(transformed.height))
+                if w > 0 && h > 0 {
+                    meta.resolution = "\(w) × \(h)"
                 }
             }
 
-            for desc in vt.formatDescriptions {
-                let fd = desc as! CMFormatDescription
-                let codec = CMFormatDescriptionGetMediaSubType(fd)
-                meta.videoCodec = fourCCToString(codec)
-                break
+            if let rate = try? await vt.load(.nominalFrameRate), rate > 0 {
+                meta.frameRate = String(format: "%.2f fps", rate)
+            }
+
+            if let dataRate = try? await vt.load(.estimatedDataRate), dataRate > 0 {
+                let mbps = dataRate / 1_000_000
+                if mbps >= 1 {
+                    meta.videoBitrate = String(format: "%.1f Mbps", mbps)
+                } else {
+                    meta.videoBitrate = String(format: "%.0f kbps", dataRate / 1000)
+                }
+            }
+
+            if let descs = try? await vt.load(.formatDescriptions) {
+                for desc in descs {
+                    let codec = CMFormatDescriptionGetMediaSubType(desc)
+                    meta.videoCodec = fourCCToString(codec)
+                    break
+                }
             }
         }
 
         // Audio tracks
-        let audioTracks = asset.tracks(withMediaType: .audio)
+        let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
         if let at = audioTracks.first {
-            if at.estimatedDataRate > 0 {
-                meta.audioBitrate = String(format: "%.0f kbps", at.estimatedDataRate / 1000)
+            if let dataRate = try? await at.load(.estimatedDataRate), dataRate > 0 {
+                meta.audioBitrate = String(format: "%.0f kbps", dataRate / 1000)
             }
 
-            for desc in at.formatDescriptions {
-                let fd = desc as! CMFormatDescription
-                let codec = CMFormatDescriptionGetMediaSubType(fd)
-                meta.audioCodec = fourCCToString(codec)
+            if let descs = try? await at.load(.formatDescriptions) {
+                for desc in descs {
+                    let codec = CMFormatDescriptionGetMediaSubType(desc)
+                    meta.audioCodec = fourCCToString(codec)
 
-                if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee {
-                    if asbd.mSampleRate > 0 {
-                        let khz = asbd.mSampleRate / 1000
-                        meta.sampleRate = String(format: "%.1f kHz", khz)
-                    }
-                    if asbd.mChannelsPerFrame > 0 {
-                        switch asbd.mChannelsPerFrame {
-                        case 1: meta.channels = "Mono"
-                        case 2: meta.channels = "Stereo"
-                        case 6: meta.channels = "5.1"
-                        case 8: meta.channels = "7.1"
-                        default: meta.channels = "\(asbd.mChannelsPerFrame) ch"
+                    if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee {
+                        if asbd.mSampleRate > 0 {
+                            let khz = asbd.mSampleRate / 1000
+                            meta.sampleRate = String(format: "%.1f kHz", khz)
+                        }
+                        if asbd.mChannelsPerFrame > 0 {
+                            switch asbd.mChannelsPerFrame {
+                            case 1: meta.channels = "Mono"
+                            case 2: meta.channels = "Stereo"
+                            case 6: meta.channels = "5.1"
+                            case 8: meta.channels = "7.1"
+                            default: meta.channels = "\(asbd.mChannelsPerFrame) ch"
+                            }
                         }
                     }
+                    break
                 }
-                break
             }
         }
 
         // Common metadata (title, artist, album, etc.)
-        for item in asset.commonMetadata {
+        let commonMetadata = (try? await asset.load(.commonMetadata)) ?? []
+        for item in commonMetadata {
             guard let key = item.commonKey else { continue }
-            let val = item.stringValue
+            let val = try? await item.load(.stringValue)
             switch key {
             case .commonKeyTitle: meta.title = val
             case .commonKeyArtist: meta.artist = val
@@ -513,10 +530,10 @@ struct FileInfoView: View {
         }
 
         // Genre from iTunes metadata
-        for item in asset.metadata(forFormat: .iTunesMetadata) {
-            if let key = item.commonKey, key == .commonKeyType {
-                meta.genre = item.stringValue
-            }
+        let itunesMetadata = (try? await asset.load(.metadata)) ?? []
+        let filtered = AVMetadataItem.metadataItems(from: itunesMetadata, filteredByIdentifier: .iTunesMetadataUserGenre)
+        if let genreItem = filtered.first {
+            meta.genre = try? await genreItem.load(.stringValue)
         }
 
         return meta

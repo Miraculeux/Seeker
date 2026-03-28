@@ -637,10 +637,14 @@ class QuickLookPanelController: NSObject, @unchecked Sendable, NSWindowDelegate 
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.12
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            panel.animator().alphaValue = 0
+            MainActor.assumeIsolated {
+                panel.animator().alphaValue = 0
+            }
         }, completionHandler: {
-            panel.orderOut(nil)
-            panel.alphaValue = 1
+            MainActor.assumeIsolated {
+                panel.orderOut(nil)
+                panel.alphaValue = 1
+            }
         })
     }
 }
