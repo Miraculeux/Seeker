@@ -270,6 +270,15 @@ class FileExplorerViewModel: Identifiable {
     }
 
     func paste() {
+        pasteFiles(forceMove: false)
+    }
+
+    /// Paste as move (Cmd+Option+V Finder-style)
+    func pasteMoving() {
+        pasteFiles(forceMove: true)
+    }
+
+    private func pasteFiles(forceMove: Bool) {
         let urls: [URL]
         if !Self.clipboard.isEmpty {
             urls = Self.clipboard
@@ -280,11 +289,13 @@ class FileExplorerViewModel: Identifiable {
             urls = pbURLs
         }
 
+        let shouldMove = forceMove || Self.clipboardIsCut
+
         let fm = FileManager.default
         for sourceURL in urls {
             let destURL = uniqueDestination(for: sourceURL, in: currentURL)
             do {
-                if Self.clipboardIsCut {
+                if shouldMove {
                     try fm.moveItem(at: sourceURL, to: destURL)
                 } else {
                     try fm.copyItem(at: sourceURL, to: destURL)
@@ -295,7 +306,7 @@ class FileExplorerViewModel: Identifiable {
             }
         }
 
-        if Self.clipboardIsCut {
+        if shouldMove {
             Self.clipboard = []
             Self.clipboardIsCut = false
         }

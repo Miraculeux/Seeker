@@ -70,6 +70,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                        let file = delegate.appState?.activeExplorer.selectedFile {
                         delegate.appState?.activeExplorer.openItem(file)
                     }
+                } else if event.keyCode == 8, event.modifierFlags.contains(.command) {
+                    // Cmd+C → Copy selected files
+                    if let delegate = AppDelegate.shared {
+                        delegate.appState?.activeExplorer.copySelected()
+                    }
+                    return nil
+                } else if event.keyCode == 9, event.modifierFlags.contains(.command), event.modifierFlags.contains(.option) {
+                    // Cmd+Option+V → Move (paste as move)
+                    if let delegate = AppDelegate.shared {
+                        delegate.appState?.activeExplorer.pasteMoving()
+                    }
+                    return nil
+                } else if event.keyCode == 9, event.modifierFlags.contains(.command) {
+                    // Cmd+V → Paste files
+                    if let delegate = AppDelegate.shared {
+                        delegate.appState?.activeExplorer.paste()
+                    }
+                    return nil
                 } else if event.keyCode == 125 || event.keyCode == 126 {
                     // Arrow Down (125) / Arrow Up (126) → navigate selection
                     if let delegate = AppDelegate.shared,
