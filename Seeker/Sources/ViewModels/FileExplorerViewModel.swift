@@ -50,6 +50,8 @@ class FileExplorerViewModel: Identifiable {
         currentURL = url
         searchText = ""
         isSearching = false
+        selectedFile = nil
+        selectedFiles = []
 
         // Manage history
         if historyIndex < pathHistory.count - 1 {

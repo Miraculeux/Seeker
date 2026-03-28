@@ -22,6 +22,14 @@
 	<string>26.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Seeker needs access to your Desktop folder to browse and manage files.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Seeker needs access to your Documents folder to browse and manage files.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Seeker needs access to your Downloads folder to browse and manage files.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Seeker needs access to removable volumes to browse and manage files.</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<true/>
 	<key>NSSupportsSuddenTermination</key>

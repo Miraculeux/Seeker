@@ -36,6 +36,10 @@ struct FileContentView: View {
         .contextMenu {
             directoryContextMenu
         }
+        .onChange(of: viewModel.selectedFile) { _, newValue in
+            guard let file = newValue else { return }
+            AppDelegate.shared?.updateQuickLookIfVisible(url: file.url)
+        }
     }
 
     // MARK: - List View
@@ -67,7 +71,10 @@ struct FileContentView: View {
                     .onDrag { NSItemProvider(object: file.url as NSURL) }
                 }
             }
-            .listStyle(.plain)
+            .listStyle(.inset(alternatesRowBackgrounds: true))
+            .onChange(of: viewModel.selectedFile) { _, _ in
+                appState.activePane = side
+            }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                 handleDrop(providers: providers)
                 return true
@@ -524,21 +531,101 @@ struct QuickLookPreview: NSViewRepresentable {
     }
 }
 
-// MARK: - Keyboard Handling
+// MARK: - Quick Look Floating Panel (Finder-style)
 
-struct KeyPressModifier: ViewModifier {
-    let onSpace: () -> Void
-    let onDelete: () -> Void
+@MainActor
+class QuickLookPanelController: NSObject, @unchecked Sendable, NSWindowDelegate {
+    private var panel: NSPanel?
+    private var previewView: QLPreviewView?
+    private(set) var isVisible: Bool = false
 
-    func body(content: Content) -> some View {
-        content
-            .onKeyPress(.space) {
-                onSpace()
-                return .handled
+    func togglePreview(for url: URL) {
+        if let p = panel, p.isVisible {
+            close()
+        } else {
+            show(url: url)
+        }
+    }
+
+    func updatePreview(for url: URL) {
+        guard isVisible, let p = panel, p.isVisible else { return }
+        previewView?.previewItem = url as QLPreviewItem
+        panel?.title = url.lastPathComponent
+    }
+
+    // Intercept close button — use orderOut instead of close
+    nonisolated func windowShouldClose(_ sender: NSWindow) -> Bool {
+        MainActor.assumeIsolated {
+            close()
+        }
+        return false // prevent NSWindow.close() from being called
+    }
+
+    private func show(url: URL) {
+        if panel == nil {
+            let p = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
+                styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .utilityWindow],
+                backing: .buffered,
+                defer: false
+            )
+            p.isFloatingPanel = true
+            p.level = .floating
+            p.hidesOnDeactivate = false
+            p.isReleasedWhenClosed = false
+            p.isMovableByWindowBackground = true
+            p.animationBehavior = .utilityWindow
+            p.minSize = NSSize(width: 300, height: 250)
+            p.delegate = self
+
+            guard let contentView = p.contentView,
+                  let qlView = QLPreviewView(frame: contentView.bounds, style: .normal) else {
+                return
             }
-            .onKeyPress(.delete) {
-                onDelete()
-                return .handled
-            }
+            qlView.autoresizingMask = [.width, .height]
+            contentView.addSubview(qlView)
+
+            self.panel = p
+            self.previewView = qlView
+        }
+
+        previewView?.previewItem = url as QLPreviewItem
+        panel?.title = url.lastPathComponent
+
+        if let mainWindow = NSApp.mainWindow ?? NSApp.keyWindow {
+            let mainFrame = mainWindow.frame
+            let panelSize = panel?.frame.size ?? NSSize(width: 600, height: 500)
+            let x = mainFrame.midX - panelSize.width / 2
+            let y = mainFrame.midY - panelSize.height / 2
+            panel?.setFrameOrigin(NSPoint(x: x, y: y))
+        } else {
+            panel?.center()
+        }
+
+        panel?.alphaValue = 0
+        panel?.orderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel?.animator().alphaValue = 1
+        }
+
+        isVisible = true
+        NSApp.mainWindow?.makeKey()
+    }
+
+    func close() {
+        guard let panel = panel, isVisible else { return }
+        isVisible = false
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+        })
     }
 }
+
+// MARK: - Keyboard Handling (unused modifier kept for backward compat)

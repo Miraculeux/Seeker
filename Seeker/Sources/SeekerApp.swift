@@ -1,10 +1,67 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApplication.shared.activate(ignoringOtherApps: true)
+    static var shared: AppDelegate?
+    var spaceMonitor: Any?
+    var doubleClickMonitor: Any?
+    let quickLookPanel = QuickLookPanelController()
+    weak var appState: AppState?
+
+    nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { @MainActor in
+            NSApplication.shared.setActivationPolicy(.regular)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func installSpaceMonitor(appState: AppState) {
+        self.appState = appState
+        AppDelegate.shared = self
+
+        if spaceMonitor == nil {
+            // Space key → Quick Look, Return key → Open item
+            spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Skip when typing in a text field
+                if let firstResponder = event.window?.value(forKey: "firstResponder") as? NSResponder,
+                   firstResponder is NSTextView || firstResponder is NSTextField {
+                    return event
+                }
+                if event.keyCode == 49, !event.isARepeat {
+                    // Space → Quick Look
+                    if let delegate = AppDelegate.shared,
+                       let url = delegate.appState?.activeExplorer.selectedFile?.url {
+                        delegate.quickLookPanel.togglePreview(for: url)
+                    }
+                } else if event.keyCode == 36, !event.isARepeat {
+                    // Return → Open selected item
+                    if let delegate = AppDelegate.shared,
+                       let file = delegate.appState?.activeExplorer.selectedFile {
+                        delegate.appState?.activeExplorer.openItem(file)
+                    }
+                }
+                return event
+            }
+        }
+
+        if doubleClickMonitor == nil {
+            // Double-click → Open item
+            doubleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+                guard event.clickCount == 2 else { return event }
+                if let delegate = AppDelegate.shared,
+                   let file = delegate.appState?.activeExplorer.selectedFile {
+                    delegate.appState?.activeExplorer.openItem(file)
+                }
+                return event
+            }
+        }
+    }
+
+    func updateQuickLookIfVisible(url: URL) {
+        if quickLookPanel.isVisible {
+            quickLookPanel.updatePreview(for: url)
+        }
     }
 }
 
@@ -17,6 +74,9 @@ struct SeekerApp: App {
         WindowGroup {
             ContentView()
                 .environment(appState)
+                .onAppear {
+                    appDelegate.installSpaceMonitor(appState: appState)
+                }
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1200, height: 700)

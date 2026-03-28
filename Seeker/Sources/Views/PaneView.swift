@@ -42,8 +42,6 @@ struct PaneView: View {
                 )
         )
         .shadow(color: .black.opacity(isActive ? 0.08 : 0.03), radius: isActive ? 8 : 3, y: 2)
-        .contentShape(Rectangle())
-        .onTapGesture { appState.activePane = side }
         .padding(4)
     }
 
@@ -89,6 +87,7 @@ struct PaneView: View {
         }
         .frame(height: 34)
         .background(Color.primary.opacity(0.02))
+        .onTapGesture { appState.activePane = side }
     }
 
     // MARK: - Pane Toolbar
@@ -166,6 +165,7 @@ struct PaneView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(Color.primary.opacity(0.015))
+        .onTapGesture { appState.activePane = side }
     }
 
     // MARK: - File Area
