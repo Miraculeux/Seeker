@@ -254,6 +254,7 @@ struct FileContentView: View {
     private func handleDrop(providers: [NSItemProvider]) {
         let destDir = viewModel.currentURL
         let vm = viewModel
+        let otherVM = (side == .left ? appState.rightPane : appState.leftPane).activeTab
         for provider in providers {
             provider.loadItem(forTypeIdentifier: "public.file-url") { data, _ in
                 guard let data = data as? Data,
@@ -263,12 +264,13 @@ struct FileContentView: View {
                 let destURL = destDir.appendingPathComponent(sourceURL.lastPathComponent)
                 Task { @MainActor in
                     do {
-                        if NSEvent.modifierFlags.contains(.option) {
-                            try FileManager.default.copyItem(at: sourceURL, to: destURL)
-                        } else {
+                        if NSEvent.modifierFlags.contains(.shift) {
                             try FileManager.default.moveItem(at: sourceURL, to: destURL)
+                        } else {
+                            try FileManager.default.copyItem(at: sourceURL, to: destURL)
                         }
                         vm.loadFiles()
+                        otherVM.loadFiles()
                     } catch {
                         vm.errorMessage = "Drop failed: \(error.localizedDescription)"
                         vm.showError = true

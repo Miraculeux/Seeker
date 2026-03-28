@@ -14,6 +14,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             NSApplication.shared.setActivationPolicy(.regular)
             NSApplication.shared.activate(ignoringOtherApps: true)
+            if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+                ?? Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+               let iconImage = NSImage(contentsOf: iconURL) {
+                NSApplication.shared.applicationIconImage = iconImage
+            }
         }
     }
 

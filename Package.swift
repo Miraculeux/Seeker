@@ -10,7 +10,8 @@ let package = Package(
             path: "Seeker/Sources",
             exclude: ["Info.plist"],
             resources: [
-                .process("../Assets.xcassets")
+                .process("../Assets.xcassets"),
+                .copy("../Resources/AppIcon.icns")
             ],
             linkerSettings: [
                 .unsafeFlags([
