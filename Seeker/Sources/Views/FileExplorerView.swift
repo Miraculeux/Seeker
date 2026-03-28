@@ -50,27 +50,37 @@ struct FileContentView: View {
             listHeader
             Divider()
 
-            List(selection: $viewModel.selectedFile) {
-                ForEach(viewModel.files) { file in
-                    FileListRow(
-                        file: file,
-                        isRenaming: viewModel.renamingFile == file,
-                        renameText: $viewModel.renameText,
-                        onCommitRename: { viewModel.commitRename() },
-                        onCancelRename: { viewModel.cancelRename() }
-                    )
-                    .tag(file)
-                    .onTapGesture(count: 1) {
-                        viewModel.selectedFile = file
+            ScrollViewReader { proxy in
+                List(selection: $viewModel.selectedFile) {
+                    ForEach(viewModel.files) { file in
+                        FileListRow(
+                            file: file,
+                            isRenaming: viewModel.renamingFile == file,
+                            renameText: $viewModel.renameText,
+                            onCommitRename: { viewModel.commitRename() },
+                            onCancelRename: { viewModel.cancelRename() }
+                        )
+                        .tag(file)
+                        .id(file.id)
+                        .onTapGesture(count: 1) {
+                            viewModel.selectedFile = file
+                        }
+                        .contextMenu { fileContextMenu(for: file) }
+                        .onDrag { NSItemProvider(object: file.url as NSURL) }
                     }
-                    .contextMenu { fileContextMenu(for: file) }
-                    .onDrag { NSItemProvider(object: file.url as NSURL) }
                 }
-            }
-            .listStyle(.inset(alternatesRowBackgrounds: true))
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                handleDrop(providers: providers)
-                return true
+                .listStyle(.inset(alternatesRowBackgrounds: true))
+                .onChange(of: viewModel.selectedFile) { _, newValue in
+                    if let file = newValue {
+                        withAnimation {
+                            proxy.scrollTo(file.id, anchor: .center)
+                        }
+                    }
+                }
+                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                    handleDrop(providers: providers)
+                    return true
+                }
             }
         }
     }
