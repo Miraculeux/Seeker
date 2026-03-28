@@ -85,12 +85,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if doubleClickMonitor == nil {
-            // Double-click → Open item
+            // Double-click → Open item (only inside pane areas)
             doubleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
-                guard event.clickCount == 2 else { return event }
-                if let delegate = AppDelegate.shared,
-                   let file = delegate.appState?.activeExplorer.selectedFile {
-                    delegate.appState?.activeExplorer.openItem(file)
+                guard event.clickCount == 2,
+                      let delegate = AppDelegate.shared,
+                      let state = delegate.appState,
+                      let window = event.window else { return event }
+                let windowPoint = event.locationInWindow
+                let screenPoint = window.convertPoint(toScreen: windowPoint)
+                let windowFrame = window.frame
+                let flippedY = windowFrame.maxY - screenPoint.y
+                let globalPoint = CGPoint(x: screenPoint.x - windowFrame.minX, y: flippedY)
+                // Only trigger if click is inside a pane
+                guard state.leftPaneFrame.contains(globalPoint) ||
+                      state.rightPaneFrame.contains(globalPoint) else { return event }
+                if let file = state.activeExplorer.selectedFile {
+                    state.activeExplorer.openItem(file)
                 }
                 return event
             }
