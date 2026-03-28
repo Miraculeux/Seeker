@@ -22,6 +22,8 @@
 	<string>26.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>NSDesktopFolderUsageDescription</key>
 	<string>Seeker needs access to your Desktop folder to browse and manage files.</string>
 	<key>NSDocumentsFolderUsageDescription</key>

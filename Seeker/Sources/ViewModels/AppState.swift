@@ -20,9 +20,6 @@ class AppState {
     var leftPaneFrame: CGRect = .zero
     var rightPaneFrame: CGRect = .zero
 
-    // Sync browsing
-    var syncBrowsing: Bool = false
-
     enum PaneSide {
         case left, right
     }
@@ -45,9 +42,6 @@ class AppState {
 
     func navigateActivePane(to url: URL) {
         activeExplorer.navigateTo(url)
-        if syncBrowsing {
-            inactiveExplorer.navigateTo(url)
-        }
     }
 
     // Copy/move selected files to inactive pane's directory

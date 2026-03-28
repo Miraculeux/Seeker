@@ -153,11 +153,6 @@ struct SeekerApp: App {
                 }
                 .keyboardShortcut("u", modifiers: [.command])
 
-                Button("Toggle Sync Browsing") {
-                    appState.syncBrowsing.toggle()
-                }
-                .keyboardShortcut("y", modifiers: [.command])
-
                 Divider()
 
                 Button("List View") {

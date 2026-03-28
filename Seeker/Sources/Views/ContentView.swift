@@ -108,10 +108,6 @@ struct ContentView: View {
                     withAnimation(.easeInOut(duration: 0.15)) { appState.showDualPane.toggle() }
                 }
 
-                ToolbarBtn(icon: "link", isActive: appState.syncBrowsing, tip: "Sync Browsing") {
-                    appState.syncBrowsing.toggle()
-                }
-
                 ToolbarSep()
 
                 ToolbarBtn(icon: "sidebar.right", isActive: appState.showInfoPanel, tip: "Info Panel") {
