@@ -55,37 +55,24 @@ class AppState {
         let items = activeExplorer.effectiveSelection
         guard !items.isEmpty else { return }
         let dest = inactiveExplorer.currentURL
-        let fm = FileManager.default
-        for item in items {
-            let destURL = uniqueDestination(for: item.url, in: dest)
-            do {
-                try fm.copyItem(at: item.url, to: destURL)
-            } catch {
-                activeExplorer.errorMessage = "Copy failed: \(error.localizedDescription)"
-                activeExplorer.showError = true
-                return
-            }
+        let sources = items.map(\.url)
+        let inactive = inactiveExplorer
+        FileOperationManager.shared.startCopy(sources: sources, to: dest) {
+            inactive.loadFiles()
         }
-        inactiveExplorer.loadFiles()
     }
 
     func moveToOtherPane() {
         let items = activeExplorer.effectiveSelection
         guard !items.isEmpty else { return }
         let dest = inactiveExplorer.currentURL
-        let fm = FileManager.default
-        for item in items {
-            let destURL = uniqueDestination(for: item.url, in: dest)
-            do {
-                try fm.moveItem(at: item.url, to: destURL)
-            } catch {
-                activeExplorer.errorMessage = "Move failed: \(error.localizedDescription)"
-                activeExplorer.showError = true
-                return
-            }
+        let sources = items.map(\.url)
+        let active = activeExplorer
+        let inactive = inactiveExplorer
+        FileOperationManager.shared.startMove(sources: sources, to: dest) {
+            active.loadFiles()
+            inactive.loadFiles()
         }
-        activeExplorer.loadFiles()
-        inactiveExplorer.loadFiles()
     }
 
     private func uniqueDestination(for source: URL, in directory: URL) -> URL {

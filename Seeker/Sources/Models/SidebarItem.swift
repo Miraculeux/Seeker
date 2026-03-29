@@ -6,6 +6,7 @@ struct SidebarItem: Identifiable, Hashable {
     let icon: String
     let url: URL
     let section: SidebarSection
+    var isEjectable: Bool = false
 }
 
 enum SidebarSection: String, CaseIterable {
@@ -44,11 +45,13 @@ struct SidebarDefaults {
 
         // External volumes
         let volumesURL = URL(fileURLWithPath: "/Volumes")
-        if let volumes = try? FileManager.default.contentsOfDirectory(at: volumesURL, includingPropertiesForKeys: [.isVolumeKey], options: []) {
+        if let volumes = try? FileManager.default.contentsOfDirectory(at: volumesURL, includingPropertiesForKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey], options: []) {
             for volume in volumes {
                 let name = volume.lastPathComponent
                 if name == "Macintosh HD" { continue }
-                items.append(SidebarItem(id: "loc_\(name)", name: name, icon: "externaldrive.fill", url: volume, section: .locations))
+                let rv = try? volume.resourceValues(forKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey])
+                let ejectable = (rv?.volumeIsEjectable == true) || (rv?.volumeIsRemovable == true) || (rv?.volumeIsInternal == false)
+                items.append(SidebarItem(id: "loc_\(name)", name: name, icon: "externaldrive.fill", url: volume, section: .locations, isEjectable: ejectable))
             }
         }
 

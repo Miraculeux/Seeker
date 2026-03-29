@@ -248,6 +248,14 @@ struct SeekerApp: App {
                     appState.activeExplorer.viewMode = .columns
                 }
                 .keyboardShortcut("3", modifiers: [.command])
+
+                Divider()
+
+                Button(appState.activeExplorer.showHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files") {
+                    appState.activeExplorer.showHiddenFiles.toggle()
+                    appState.activeExplorer.loadFiles()
+                }
+                .keyboardShortcut(".", modifiers: [.command, .shift])
             }
 
             // MARK: - File Operations (Edit menu)

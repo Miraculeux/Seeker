@@ -3,7 +3,7 @@ import AppKit
 
 struct SidebarView: View {
     @Environment(AppState.self) var appState
-    let sidebarItems = SidebarDefaults.defaultItems()
+    @State private var sidebarItems = SidebarDefaults.defaultItems()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -33,6 +33,12 @@ struct SidebarView: View {
         }
         .frame(maxHeight: .infinity)
         .background(.ultraThinMaterial)
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
+            sidebarItems = SidebarDefaults.defaultItems()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in
+            sidebarItems = SidebarDefaults.defaultItems()
+        }
     }
 }
 
@@ -57,6 +63,17 @@ struct SidebarRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
+            if item.isEjectable && hovering {
+                Button {
+                    ejectVolume(at: item.url)
+                } label: {
+                    Image(systemName: "eject.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Eject \(item.name)")
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -71,5 +88,21 @@ struct SidebarRow: View {
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: hovering)
         .animation(.easeInOut(duration: 0.1), value: isActive)
+    }
+
+    private func ejectVolume(at url: URL) {
+        Task.detached {
+            do {
+                try NSWorkspace.shared.unmountAndEjectDevice(at: url)
+            } catch {
+                await MainActor.run {
+                    let alert = NSAlert()
+                    alert.messageText = "Eject Failed"
+                    alert.informativeText = error.localizedDescription
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
+            }
+        }
     }
 }

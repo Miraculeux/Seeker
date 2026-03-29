@@ -70,6 +70,7 @@ struct FileContentView: View {
                                 .fill(isFileSelected(file) ? Color.accentColor.opacity(0.2) : Color.clear)
                         )
                         .onTapGesture {
+                            unfocusTextFields()
                             let flags = NSEvent.modifierFlags
                             viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
                             appState.activePane = side
@@ -145,6 +146,10 @@ struct FileContentView: View {
         .buttonStyle(.plain)
     }
 
+    private func unfocusTextFields() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
     private func isFileSelected(_ file: FileItem) -> Bool {
         if !viewModel.selectedFileIDs.isEmpty {
             return viewModel.selectedFileIDs.contains(file.id)
@@ -167,6 +172,7 @@ struct FileContentView: View {
                         onCancelRename: { viewModel.cancelRename() }
                     )
                     .onTapGesture(count: 1) {
+                        unfocusTextFields()
                         let flags = NSEvent.modifierFlags
                         viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
                         appState.activePane = side
@@ -273,26 +279,41 @@ struct FileContentView: View {
         let destDir = viewModel.currentURL
         let vm = viewModel
         let otherVM = (side == .left ? appState.rightPane : appState.leftPane).activeTab
+        let isMove = NSEvent.modifierFlags.contains(.shift)
+
+        // Collect all URLs first, then perform as a single operation
+        final class URLCollector: @unchecked Sendable {
+            private let lock = NSLock()
+            private var urls = [URL]()
+            func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
+            var result: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
+        }
+        let collector = URLCollector()
+        let group = DispatchGroup()
+
         for provider in providers {
+            group.enter()
             provider.loadItem(forTypeIdentifier: "public.file-url") { data, _ in
+                defer { group.leave() }
                 guard let data = data as? Data,
                       let urlString = String(data: data, encoding: .utf8),
                       let sourceURL = URL(string: urlString) else { return }
+                collector.append(sourceURL)
+            }
+        }
 
-                let destURL = destDir.appendingPathComponent(sourceURL.lastPathComponent)
-                Task { @MainActor in
-                    do {
-                        if NSEvent.modifierFlags.contains(.shift) {
-                            try FileManager.default.moveItem(at: sourceURL, to: destURL)
-                        } else {
-                            try FileManager.default.copyItem(at: sourceURL, to: destURL)
-                        }
-                        vm.loadFiles()
-                        otherVM.loadFiles()
-                    } catch {
-                        vm.errorMessage = "Drop failed: \(error.localizedDescription)"
-                        vm.showError = true
-                    }
+        group.notify(queue: .main) {
+            let sourceURLs = collector.result
+            guard !sourceURLs.isEmpty else { return }
+            if isMove {
+                FileOperationManager.shared.startMove(sources: sourceURLs, to: destDir) {
+                    vm.loadFiles()
+                    otherVM.loadFiles()
+                }
+            } else {
+                FileOperationManager.shared.startCopy(sources: sourceURLs, to: destDir) {
+                    vm.loadFiles()
+                    otherVM.loadFiles()
                 }
             }
         }

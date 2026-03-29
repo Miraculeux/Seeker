@@ -307,43 +307,29 @@ class FileExplorerViewModel: Identifiable {
         }
 
         let shouldMove = forceMove || Self.clipboardIsCut
-
-        let fm = FileManager.default
-        for sourceURL in urls {
-            let destURL = uniqueDestination(for: sourceURL, in: currentURL)
-            do {
-                if shouldMove {
-                    try fm.moveItem(at: sourceURL, to: destURL)
-                } else {
-                    try fm.copyItem(at: sourceURL, to: destURL)
-                }
-            } catch {
-                showFileError("Paste failed: \(error.localizedDescription)")
-                return
-            }
-        }
+        let dest = currentURL
 
         if shouldMove {
             Self.clipboard = []
             Self.clipboardIsCut = false
+            FileOperationManager.shared.startMove(sources: urls, to: dest) { [weak self] in
+                self?.loadFiles()
+            }
+        } else {
+            FileOperationManager.shared.startCopy(sources: urls, to: dest) { [weak self] in
+                self?.loadFiles()
+            }
         }
-        loadFiles()
     }
 
     func duplicateSelected() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
-        let fm = FileManager.default
-        for item in items {
-            let destURL = uniqueDestination(for: item.url, in: currentURL, suffix: " copy")
-            do {
-                try fm.copyItem(at: item.url, to: destURL)
-            } catch {
-                showFileError("Duplicate failed: \(error.localizedDescription)")
-                return
-            }
+        let sources = items.map(\.url)
+        let dest = currentURL
+        FileOperationManager.shared.startCopy(sources: sources, to: dest) { [weak self] in
+            self?.loadFiles()
         }
-        loadFiles()
     }
 
     func trashSelected() {
@@ -365,17 +351,10 @@ class FileExplorerViewModel: Identifiable {
     func moveSelectedTo(destination: URL) {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
-        let fm = FileManager.default
-        for item in items {
-            let destURL = destination.appendingPathComponent(item.name)
-            do {
-                try fm.moveItem(at: item.url, to: destURL)
-            } catch {
-                showFileError("Move failed: \(error.localizedDescription)")
-                return
-            }
+        let sources = items.map(\.url)
+        FileOperationManager.shared.startMove(sources: sources, to: destination) { [weak self] in
+            self?.loadFiles()
         }
-        loadFiles()
     }
 
     // MARK: - Multi-Selection

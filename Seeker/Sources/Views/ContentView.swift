@@ -120,8 +120,10 @@ struct ContentView: View {
 
             Spacer()
 
-            // Right group: search + actions
+            // Right group: progress + search + actions
             HStack(spacing: 6) {
+                FileOperationCompactView()
+
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 10, weight: .medium))
