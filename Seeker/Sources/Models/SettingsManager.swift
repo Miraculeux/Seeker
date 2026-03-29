@@ -1,4 +1,5 @@
 import Foundation
+import Carbon.HIToolbox
 
 enum ColumnID: String, CaseIterable, Identifiable {
     case size = "size"
@@ -12,6 +13,156 @@ enum ColumnID: String, CaseIterable, Identifiable {
         case .size: return "Size"
         case .modified: return "Date Modified"
         case .kind: return "Kind"
+        }
+    }
+}
+
+// MARK: - Keyboard Shortcut Configuration
+
+enum ShortcutAction: String, CaseIterable, Identifiable {
+    // File operations
+    case openFile = "openFile"
+    case newFolder = "newFolder"
+    case newFile = "newFile"
+    case duplicate = "duplicate"
+    case moveToTrash = "moveToTrash"
+    case rename = "rename"
+    case copyToOtherPane = "copyToOtherPane"
+    case moveToOtherPane = "moveToOtherPane"
+
+    // Navigation
+    case goBack = "goBack"
+    case goForward = "goForward"
+    case enclosingFolder = "enclosingFolder"
+    case goHome = "goHome"
+    case goDesktop = "goDesktop"
+    case goDownloads = "goDownloads"
+    case goToFolder = "goToFolder"
+
+    // View
+    case toggleFavorites = "toggleFavorites"
+    case toggleDualPane = "toggleDualPane"
+    case listView = "listView"
+    case iconView = "iconView"
+    case columnView = "columnView"
+    case toggleHiddenFiles = "toggleHiddenFiles"
+
+    // Tabs
+    case newTab = "newTab"
+    case closeTab = "closeTab"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .openFile: return "Open File"
+        case .newFolder: return "New Folder"
+        case .newFile: return "New File"
+        case .duplicate: return "Duplicate"
+        case .moveToTrash: return "Move to Trash"
+        case .rename: return "Rename"
+        case .copyToOtherPane: return "Copy to Other Pane"
+        case .moveToOtherPane: return "Move to Other Pane"
+        case .goBack: return "Back"
+        case .goForward: return "Forward"
+        case .enclosingFolder: return "Enclosing Folder"
+        case .goHome: return "Home"
+        case .goDesktop: return "Desktop"
+        case .goDownloads: return "Downloads"
+        case .goToFolder: return "Go to Folder…"
+        case .toggleFavorites: return "Toggle Favorites"
+        case .toggleDualPane: return "Toggle Dual Pane"
+        case .listView: return "List View"
+        case .iconView: return "Icon View"
+        case .columnView: return "Column View"
+        case .toggleHiddenFiles: return "Show/Hide Hidden Files"
+        case .newTab: return "New Tab"
+        case .closeTab: return "Close Tab"
+        }
+    }
+
+    var category: ShortcutCategory {
+        switch self {
+        case .openFile, .newFolder, .newFile, .duplicate, .moveToTrash, .rename, .copyToOtherPane, .moveToOtherPane:
+            return .fileOperations
+        case .goBack, .goForward, .enclosingFolder, .goHome, .goDesktop, .goDownloads, .goToFolder:
+            return .navigation
+        case .toggleFavorites, .toggleDualPane, .listView, .iconView, .columnView, .toggleHiddenFiles:
+            return .view
+        case .newTab, .closeTab:
+            return .tabs
+        }
+    }
+
+    var defaultShortcut: KeyShortcut {
+        switch self {
+        case .openFile: return KeyShortcut(key: "o", modifiers: [.command])
+        case .newFolder: return KeyShortcut(key: "n", modifiers: [.command, .shift])
+        case .newFile: return KeyShortcut(key: "n", modifiers: [.command, .option])
+        case .duplicate: return KeyShortcut(key: "d", modifiers: [.command])
+        case .moveToTrash: return KeyShortcut(key: "⌫", modifiers: [.command])
+        case .rename: return KeyShortcut(key: "⏎", modifiers: [])
+        case .copyToOtherPane: return KeyShortcut(key: "c", modifiers: [.command, .shift])
+        case .moveToOtherPane: return KeyShortcut(key: "m", modifiers: [.command, .shift])
+        case .goBack: return KeyShortcut(key: "[", modifiers: [.command])
+        case .goForward: return KeyShortcut(key: "]", modifiers: [.command])
+        case .enclosingFolder: return KeyShortcut(key: "↑", modifiers: [.command])
+        case .goHome: return KeyShortcut(key: "h", modifiers: [.command, .shift])
+        case .goDesktop: return KeyShortcut(key: "d", modifiers: [.command, .shift])
+        case .goDownloads: return KeyShortcut(key: "l", modifiers: [.command, .shift])
+        case .goToFolder: return KeyShortcut(key: "g", modifiers: [.command, .shift])
+        case .toggleFavorites: return KeyShortcut(key: "b", modifiers: [.command])
+        case .toggleDualPane: return KeyShortcut(key: "u", modifiers: [.command])
+        case .listView: return KeyShortcut(key: "1", modifiers: [.command])
+        case .iconView: return KeyShortcut(key: "2", modifiers: [.command])
+        case .columnView: return KeyShortcut(key: "3", modifiers: [.command])
+        case .toggleHiddenFiles: return KeyShortcut(key: ".", modifiers: [.command, .shift])
+        case .newTab: return KeyShortcut(key: "t", modifiers: [.command])
+        case .closeTab: return KeyShortcut(key: "w", modifiers: [.command])
+        }
+    }
+}
+
+enum ShortcutCategory: String, CaseIterable {
+    case fileOperations = "File Operations"
+    case navigation = "Navigation"
+    case view = "View"
+    case tabs = "Tabs"
+}
+
+struct KeyShortcut: Codable, Equatable {
+    var key: String
+    var modifiers: Set<KeyModifier>
+
+    enum KeyModifier: String, Codable, CaseIterable {
+        case command
+        case shift
+        case option
+        case control
+    }
+
+    var displayString: String {
+        var parts: [String] = []
+        if modifiers.contains(.control) { parts.append("⌃") }
+        if modifiers.contains(.option) { parts.append("⌥") }
+        if modifiers.contains(.shift) { parts.append("⇧") }
+        if modifiers.contains(.command) { parts.append("⌘") }
+        parts.append(keyDisplayString)
+        return parts.joined()
+    }
+
+    private var keyDisplayString: String {
+        switch key.lowercased() {
+        case "⌫", "delete": return "⌫"
+        case "⏎", "return": return "⏎"
+        case "↑", "uparrow": return "↑"
+        case "↓", "downarrow": return "↓"
+        case "←", "leftarrow": return "←"
+        case "→", "rightarrow": return "→"
+        case " ", "space": return "Space"
+        case "⇥", "tab": return "⇥"
+        case "⎋", "escape": return "⎋"
+        default: return key.uppercased()
         }
     }
 }
@@ -33,11 +184,17 @@ final class SettingsManager {
         static let showModifiedColumn = "showModifiedColumn"
         static let showKindColumn = "showKindColumn"
         static let columnOrder = "columnOrder"
+        static let showFileExtensions = "showFileExtensions"
     }
 
     var rememberLastLocation: Bool {
         get { defaults.bool(forKey: Keys.rememberLastLocation) }
         set { defaults.set(newValue, forKey: Keys.rememberLastLocation) }
+    }
+
+    var showFileExtensions: Bool {
+        get { defaults.object(forKey: Keys.showFileExtensions) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: Keys.showFileExtensions) }
     }
 
     var showFavorites: Bool {
@@ -133,5 +290,86 @@ final class SettingsManager {
               let path = lastRightPanePath else { return nil }
         let url = URL(fileURLWithPath: path)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    // MARK: - Keyboard Shortcuts
+
+    private var shortcutCache: [ShortcutAction: KeyShortcut] = [:]
+
+    func shortcut(for action: ShortcutAction) -> KeyShortcut {
+        if let cached = shortcutCache[action] { return cached }
+        if let data = defaults.data(forKey: "shortcut_\(action.rawValue)"),
+           let decoded = try? JSONDecoder().decode(KeyShortcut.self, from: data) {
+            shortcutCache[action] = decoded
+            return decoded
+        }
+        return action.defaultShortcut
+    }
+
+    func setShortcut(_ shortcut: KeyShortcut, for action: ShortcutAction) {
+        shortcutCache[action] = shortcut
+        if let data = try? JSONEncoder().encode(shortcut) {
+            defaults.set(data, forKey: "shortcut_\(action.rawValue)")
+        }
+        NotificationCenter.default.post(name: .shortcutsChanged, object: nil)
+    }
+
+    func resetShortcut(for action: ShortcutAction) {
+        shortcutCache.removeValue(forKey: action)
+        defaults.removeObject(forKey: "shortcut_\(action.rawValue)")
+        NotificationCenter.default.post(name: .shortcutsChanged, object: nil)
+    }
+
+    func resetAllShortcuts() {
+        shortcutCache.removeAll()
+        for action in ShortcutAction.allCases {
+            defaults.removeObject(forKey: "shortcut_\(action.rawValue)")
+        }
+        NotificationCenter.default.post(name: .shortcutsChanged, object: nil)
+    }
+}
+
+extension Notification.Name {
+    static let shortcutsChanged = Notification.Name("shortcutsChanged")
+}
+
+// MARK: - SwiftUI KeyboardShortcut conversion
+
+import SwiftUI
+
+extension KeyShortcut {
+    var swiftUIKeyboardShortcut: KeyboardShortcut? {
+        guard let keyEquivalent = swiftUIKeyEquivalent else { return nil }
+        return KeyboardShortcut(keyEquivalent, modifiers: swiftUIModifiers)
+    }
+
+    private var swiftUIKeyEquivalent: KeyEquivalent? {
+        switch key.lowercased() {
+        case "⌫", "delete": return .delete
+        case "⏎", "return": return .return
+        case "⇥", "tab": return .tab
+        case "space", " ": return .space
+        case "⎋", "escape": return .escape
+        case "↑", "uparrow": return .upArrow
+        case "↓", "downarrow": return .downArrow
+        case "←", "leftarrow": return .leftArrow
+        case "→", "rightarrow": return .rightArrow
+        case "home": return .home
+        case "end": return .end
+        case "pgup": return .pageUp
+        case "pgdn": return .pageDown
+        default:
+            guard let char = key.lowercased().first else { return nil }
+            return KeyEquivalent(char)
+        }
+    }
+
+    private var swiftUIModifiers: SwiftUI.EventModifiers {
+        var m: SwiftUI.EventModifiers = []
+        if modifiers.contains(.command) { m.insert(.command) }
+        if modifiers.contains(.shift) { m.insert(.shift) }
+        if modifiers.contains(.option) { m.insert(.option) }
+        if modifiers.contains(.control) { m.insert(.control) }
+        return m
     }
 }

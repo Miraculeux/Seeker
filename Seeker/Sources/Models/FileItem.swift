@@ -56,4 +56,12 @@ struct FileItem: Identifiable, Hashable {
         }
         return url.pathExtension.uppercased()
     }
+
+    var displayName: String {
+        let showExtensions = UserDefaults.standard.object(forKey: "showFileExtensions") as? Bool ?? false
+        if showExtensions || isDirectory || url.pathExtension.isEmpty {
+            return name
+        }
+        return url.deletingPathExtension().lastPathComponent
+    }
 }

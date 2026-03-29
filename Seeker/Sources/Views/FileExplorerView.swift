@@ -339,6 +339,7 @@ struct FileListRow: View {
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
     @State private var hovering = false
+    @FocusState private var isRenameFocused: Bool
 
     var body: some View {
         HStack(spacing: 0) {
@@ -353,9 +354,11 @@ struct FileListRow: View {
                     TextField("Name", text: $renameText, onCommit: onCommitRename)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12))
+                        .focused($isRenameFocused)
                         .onExitCommand(perform: onCancelRename)
+                        .onAppear { isRenameFocused = true }
                 } else {
-                    Text(file.name)
+                    Text(file.displayName)
                         .font(.system(size: 12, weight: hovering ? .medium : .regular))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -407,6 +410,7 @@ struct FileIconCell: View {
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
     @State private var hovering = false
+    @FocusState private var isRenameFocused: Bool
 
     var body: some View {
         VStack(spacing: 6) {
@@ -422,9 +426,11 @@ struct FileIconCell: View {
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 10))
                     .multilineTextAlignment(.center)
+                    .focused($isRenameFocused)
                     .onExitCommand(perform: onCancelRename)
+                    .onAppear { isRenameFocused = true }
             } else {
-                Text(file.name)
+                Text(file.displayName)
                     .font(.system(size: 10, weight: isSelected ? .medium : .regular))
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
@@ -516,7 +522,7 @@ struct ColumnBrowserView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 14, height: 14)
-                    Text(file.name)
+                    Text(file.displayName)
                         .font(.system(size: 11))
                         .lineLimit(1)
                     Spacer()
@@ -543,7 +549,7 @@ struct ColumnBrowserView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 64, height: 64)
                 .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
-            Text(file.name)
+            Text(file.displayName)
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .lineLimit(2)
                 .multilineTextAlignment(.center)

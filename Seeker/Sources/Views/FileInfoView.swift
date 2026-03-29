@@ -64,7 +64,7 @@ struct FileInfoView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 64, height: 64)
 
-                    Text(file.name)
+                    Text(file.displayName)
                         .font(.system(size: 12, weight: .semibold))
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
