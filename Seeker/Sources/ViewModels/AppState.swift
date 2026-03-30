@@ -14,6 +14,7 @@ class AppState {
     var showInfoPanel: Bool = SettingsManager.shared.showInfoPanel {
         didSet { SettingsManager.shared.showInfoPanel = showInfoPanel }
     }
+    var showGoToFolder: Bool = false
 
     // Panes - each has tabs
     var leftPane = PaneState()

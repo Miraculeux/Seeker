@@ -287,7 +287,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             appState.activeExplorer.navigateTo(
                 FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads"))
         case .goToFolder:
-            break // TODO
+            appState.showGoToFolder = true
         case .toggleFavorites:
             withAnimation { appState.showFavorites.toggle() }
         case .toggleDualPane:
@@ -481,7 +481,7 @@ struct SeekerApp: App {
                 Divider()
 
                 Button("Go to Folder…") {
-                    // TODO: implement Go to Folder sheet
+                    appState.showGoToFolder = true
                 }
                 .shortcut(for: .goToFolder)
             }

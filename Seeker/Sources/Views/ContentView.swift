@@ -51,6 +51,13 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 900, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+        .sheet(isPresented: Binding(
+            get: { appState.showGoToFolder },
+            set: { appState.showGoToFolder = $0 }
+        )) {
+            GoToFolderSheet()
+                .environment(appState)
+        }
     }
 
 // MARK: - Modern Toolbar
@@ -208,5 +215,53 @@ struct ToolbarBtn: View {
         .help(tip)
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: hovering)
+    }
+}
+
+// MARK: - Go to Folder Sheet
+
+private struct GoToFolderSheet: View {
+    @Environment(AppState.self) var appState
+    @State private var path: String = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Go to Folder")
+                .font(.headline)
+
+            Text("Enter a path to navigate to:")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            TextField("/path/to/folder", text: $path)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 400)
+                .onSubmit { go() }
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Go") { go() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(path.isEmpty)
+            }
+        }
+        .padding(24)
+        .onAppear {
+            path = appState.activeExplorer.currentURL.path
+        }
+    }
+
+    private func go() {
+        let expanded = NSString(string: path).expandingTildeInPath
+        let url = URL(fileURLWithPath: expanded)
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            appState.activeExplorer.navigateTo(url)
+            dismiss()
+        } else {
+            NSSound.beep()
+        }
     }
 }
