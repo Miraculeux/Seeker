@@ -229,6 +229,13 @@ struct FileContentView: View {
 
         Divider()
 
+        Button("Compress") { viewModel.compressSelected() }
+        if viewModel.canDecompress(file) {
+            Button("Decompress") { viewModel.decompressFile(file) }
+        }
+
+        Divider()
+
         Button("Copy Path") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(file.url.path, forType: .string)

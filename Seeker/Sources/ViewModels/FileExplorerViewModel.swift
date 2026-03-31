@@ -5,6 +5,7 @@ import AppKit
 extension Notification.Name {
     static let explorerDidNavigate = Notification.Name("explorerDidNavigate")
     static let columnSettingsChanged = Notification.Name("columnSettingsChanged")
+    static let filesDidChange = Notification.Name("filesDidChange")
 }
 
 @MainActor @Observable
@@ -57,9 +58,23 @@ class FileExplorerViewModel: Identifiable {
         case kind = "Kind"
     }
 
+    private nonisolated(unsafe) var filesChangedObserver: Any?
+
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.currentURL = url
         navigateTo(url)
+        filesChangedObserver = NotificationCenter.default.addObserver(
+            forName: .filesDidChange, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, notification.object as AnyObject? !== self else { return }
+            self.loadFiles()
+        }
+    }
+
+    deinit {
+        if let observer = filesChangedObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     // MARK: - Navigation
@@ -157,6 +172,8 @@ class FileExplorerViewModel: Identifiable {
     func openItem(_ item: FileItem) {
         if item.isDirectory {
             navigateTo(item.url)
+        } else if canDecompress(item) {
+            decompressAndOpen(item)
         } else {
             NSWorkspace.shared.open(item.url)
         }
@@ -198,6 +215,7 @@ class FileExplorerViewModel: Identifiable {
         do {
             try fm.createDirectory(at: newURL, withIntermediateDirectories: false)
             loadFiles()
+            notifyFilesChanged()
             // Select the new folder and start renaming
             let newItem = FileItem(url: newURL)
             selectionAnchor = newItem
@@ -224,6 +242,7 @@ class FileExplorerViewModel: Identifiable {
         do {
             try Data().write(to: newURL)
             loadFiles()
+            notifyFilesChanged()
             let newItem = FileItem(url: newURL)
             selectionAnchor = newItem
             selectedFileIDs = [newItem.id]
@@ -249,6 +268,7 @@ class FileExplorerViewModel: Identifiable {
             try FileManager.default.moveItem(at: item.url, to: newURL)
             renamingFile = nil
             loadFiles()
+            notifyFilesChanged()
             let renamed = FileItem(url: newURL)
             selectionAnchor = renamed
             selectedFileIDs = [renamed.id]
@@ -314,10 +334,12 @@ class FileExplorerViewModel: Identifiable {
             Self.clipboardIsCut = false
             FileOperationManager.shared.startMove(sources: urls, to: dest) { [weak self] in
                 self?.loadFiles()
+                self?.notifyFilesChanged()
             }
         } else {
             FileOperationManager.shared.startCopy(sources: urls, to: dest) { [weak self] in
                 self?.loadFiles()
+                self?.notifyFilesChanged()
             }
         }
     }
@@ -329,6 +351,7 @@ class FileExplorerViewModel: Identifiable {
         let dest = currentURL
         FileOperationManager.shared.startCopy(sources: sources, to: dest) { [weak self] in
             self?.loadFiles()
+            self?.notifyFilesChanged()
         }
     }
 
@@ -346,6 +369,7 @@ class FileExplorerViewModel: Identifiable {
         selectionAnchor = nil
         selectedFileIDs = []
         loadFiles()
+        notifyFilesChanged()
     }
 
     func moveSelectedTo(destination: URL) {
@@ -354,6 +378,7 @@ class FileExplorerViewModel: Identifiable {
         let sources = items.map(\.url)
         FileOperationManager.shared.startMove(sources: sources, to: destination) { [weak self] in
             self?.loadFiles()
+            self?.notifyFilesChanged()
         }
     }
 
@@ -429,8 +454,144 @@ class FileExplorerViewModel: Identifiable {
         return candidate
     }
 
+    // MARK: - Compress / Decompress
+
+    private nonisolated static func runDitto(arguments: [String]) -> (status: Int32, error: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = arguments
+        let errPipe = Pipe()
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            return (-1, error.localizedDescription)
+        }
+        process.waitUntilExit()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (process.terminationStatus, errMsg)
+    }
+
+    func compressSelected() {
+        let items = effectiveSelection
+        guard !items.isEmpty else { return }
+        let urls = items.map(\.url)
+        let dir = currentURL
+
+        let archiveName: String
+        if urls.count == 1 {
+            archiveName = urls[0].deletingPathExtension().lastPathComponent + ".zip"
+        } else {
+            archiveName = "Archive.zip"
+        }
+
+        let dest = uniqueDestination(for: dir.appendingPathComponent(archiveName), in: dir)
+
+        var tmpDir: URL?
+        let args: [String]
+        do {
+            if urls.count > 1 {
+                let fm = FileManager.default
+                let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+                tmpDir = tmp
+                for url in urls {
+                    try fm.copyItem(at: url, to: tmp.appendingPathComponent(url.lastPathComponent))
+                }
+                args = ["-c", "-k", "--sequesterRsrc", tmp.path, dest.path]
+            } else {
+                args = ["-c", "-k", "--sequesterRsrc", "--keepParent", urls[0].path, dest.path]
+            }
+        } catch {
+            showFileError("Compression failed: \(error.localizedDescription)")
+            return
+        }
+
+        let cleanupDir = tmpDir
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Self.runDitto(arguments: args)
+            if let cleanupDir { try? FileManager.default.removeItem(at: cleanupDir) }
+            DispatchQueue.main.async { [weak self] in
+                if result.status != 0 {
+                    self?.showFileError("Compression failed: \(result.error)")
+                }
+                self?.loadFiles()
+                self?.notifyFilesChanged()
+            }
+        }
+    }
+
+    func decompressFile(_ file: FileItem) {
+        let sourcePath = file.url.path
+        let folderName = file.url.deletingPathExtension().lastPathComponent
+        let extractDir = uniqueDestination(
+            for: currentURL.appendingPathComponent(folderName),
+            in: currentURL
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.showFileError("Decompression failed: \(error.localizedDescription)")
+                }
+                return
+            }
+            let result = Self.runDitto(arguments: ["-x", "-k", sourcePath, extractDir.path])
+            DispatchQueue.main.async { [weak self] in
+                if result.status != 0 {
+                    self?.showFileError("Decompression failed: \(result.error)")
+                }
+                self?.loadFiles()
+                self?.notifyFilesChanged()
+            }
+        }
+    }
+
+    private func decompressAndOpen(_ file: FileItem) {
+        let sourcePath = file.url.path
+        let folderName = file.url.deletingPathExtension().lastPathComponent
+        let extractDir = uniqueDestination(
+            for: currentURL.appendingPathComponent(folderName),
+            in: currentURL
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.showFileError("Decompression failed: \(error.localizedDescription)")
+                }
+                return
+            }
+            let result = Self.runDitto(arguments: ["-x", "-k", sourcePath, extractDir.path])
+            DispatchQueue.main.async { [weak self] in
+                if result.status != 0 {
+                    self?.showFileError("Decompression failed: \(result.error)")
+                } else {
+                    self?.navigateTo(extractDir)
+                }
+                self?.loadFiles()
+                self?.notifyFilesChanged()
+            }
+        }
+    }
+
+    private static let decompressableExtensions: Set<String> = ["zip", "cpgz", "cpio"]
+
+    func canDecompress(_ file: FileItem) -> Bool {
+        !file.isDirectory && Self.decompressableExtensions.contains(file.url.pathExtension.lowercased())
+    }
+
     private func showFileError(_ message: String) {
         errorMessage = message
         showError = true
+    }
+
+    private func notifyFilesChanged() {
+        NotificationCenter.default.post(name: .filesDidChange, object: self)
     }
 }
