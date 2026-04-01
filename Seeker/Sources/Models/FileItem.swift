@@ -64,4 +64,8 @@ struct FileItem: Identifiable, Hashable {
         }
         return url.deletingPathExtension().lastPathComponent
     }
+
+    var isNCMFile: Bool {
+        url.pathExtension.lowercased() == "ncm"
+    }
 }

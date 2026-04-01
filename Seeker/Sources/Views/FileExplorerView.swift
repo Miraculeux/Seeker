@@ -234,6 +234,12 @@ struct FileContentView: View {
             Button("Decompress") { viewModel.decompressFile(file) }
         }
 
+        if viewModel.effectiveSelection.contains(where: \.isNCMFile) {
+            let ncmFiles = viewModel.effectiveSelection.filter(\.isNCMFile)
+            Divider()
+            Button("Dump Music (\(ncmFiles.count))") { viewModel.dumpNCMFiles(ncmFiles) }
+        }
+
         Divider()
 
         Button("Copy Path") {

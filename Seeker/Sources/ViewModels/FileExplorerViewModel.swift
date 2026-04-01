@@ -473,6 +473,31 @@ class FileExplorerViewModel: Identifiable {
         return (process.terminationStatus, errMsg)
     }
 
+    func dumpNCMFiles(_ files: [FileItem]) {
+        let ncmFiles = files.filter(\.isNCMFile)
+        guard !ncmFiles.isEmpty else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            var errors: [String] = []
+            for file in ncmFiles {
+                let outputDir = file.url.deletingLastPathComponent().path
+                do {
+                    var crypt = try NCMCrypt(path: file.url.path)
+                    try crypt.dump(outputDir: outputDir)
+                    try crypt.fixMetadata()
+                } catch {
+                    errors.append("\(file.name): \(error.localizedDescription)")
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.loadFiles()
+                self?.notifyFilesChanged()
+                if !errors.isEmpty {
+                    self?.showFileError("NCM dump failed:\n\(errors.joined(separator: "\n"))")
+                }
+            }
+        }
+    }
+
     func compressSelected() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
