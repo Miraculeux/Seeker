@@ -498,6 +498,39 @@ class FileExplorerViewModel: Identifiable {
         }
     }
 
+    func dumpNCMFilesInFolder(_ folder: FileItem) {
+        guard folder.isDirectory else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            guard let enumerator = fm.enumerator(
+                at: folder.url,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { return }
+            var errors: [String] = []
+            var count = 0
+            for case let fileURL as URL in enumerator {
+                guard fileURL.pathExtension.lowercased() == "ncm" else { continue }
+                let outputDir = fileURL.deletingLastPathComponent().path
+                do {
+                    var crypt = try NCMCrypt(path: fileURL.path)
+                    try crypt.dump(outputDir: outputDir)
+                    try crypt.fixMetadata()
+                    count += 1
+                } catch {
+                    errors.append("\(fileURL.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.loadFiles()
+                self?.notifyFilesChanged()
+                if !errors.isEmpty {
+                    self?.showFileError("NCM dump failed (\(count) ok, \(errors.count) failed):\n\(errors.joined(separator: "\n"))")
+                }
+            }
+        }
+    }
+
     func compressSelected() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }

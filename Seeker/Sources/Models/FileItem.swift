@@ -68,4 +68,13 @@ struct FileItem: Identifiable, Hashable {
     var isNCMFile: Bool {
         url.pathExtension.lowercased() == "ncm"
     }
+
+    /// Shallow check: does this folder contain any .ncm files?
+    var containsNCMFiles: Bool {
+        guard isDirectory else { return false }
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+        ) else { return false }
+        return contents.contains { $0.pathExtension.lowercased() == "ncm" }
+    }
 }

@@ -251,6 +251,11 @@ struct FileContentView: View {
             NSWorkspace.shared.activateFileViewerSelecting([file.url])
         }
 
+        if file.isDirectory && file.containsNCMFiles {
+            Divider()
+            Button("Dump Music") { viewModel.dumpNCMFilesInFolder(file) }
+        }
+
         if file.isDirectory {
             Divider()
             Button("Open in New Tab") {
