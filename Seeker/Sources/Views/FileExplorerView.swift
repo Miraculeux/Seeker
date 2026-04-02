@@ -1,5 +1,6 @@
 import SwiftUI
 import QuickLookUI
+import UniformTypeIdentifiers
 
 // MARK: - File Content View (supports list, icon, column modes)
 
@@ -76,7 +77,9 @@ struct FileContentView: View {
                             appState.activePane = side
                         }
                         .contextMenu { fileContextMenu(for: file) }
-                        .onDrag { NSItemProvider(object: file.url as NSURL) }
+                        .onDrag {
+                            fileDragProvider(for: file.url)
+                        }
                     }
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: true))
@@ -150,6 +153,17 @@ struct FileContentView: View {
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
+    private func fileDragProvider(for url: URL) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.suggestedName = url.lastPathComponent
+        let data = url.dataRepresentation
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier, visibility: .all) { completion in
+            completion(data, nil)
+            return nil
+        }
+        return provider
+    }
+
     private func isFileSelected(_ file: FileItem) -> Bool {
         if !viewModel.selectedFileIDs.isEmpty {
             return viewModel.selectedFileIDs.contains(file.id)
@@ -171,6 +185,9 @@ struct FileContentView: View {
                         onCommitRename: { viewModel.commitRename() },
                         onCancelRename: { viewModel.cancelRename() }
                     )
+                    .onTapGesture(count: 2) {
+                        viewModel.openItem(file)
+                    }
                     .onTapGesture(count: 1) {
                         unfocusTextFields()
                         let flags = NSEvent.modifierFlags
@@ -178,7 +195,9 @@ struct FileContentView: View {
                         appState.activePane = side
                     }
                     .contextMenu { fileContextMenu(for: file) }
-                    .onDrag { NSItemProvider(object: file.url as NSURL) }
+                    .onDrag {
+                        fileDragProvider(for: file.url)
+                    }
                 }
             }
             .padding(12)
