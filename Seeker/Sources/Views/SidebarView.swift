@@ -52,39 +52,41 @@ struct SidebarRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 16, height: 16)
-            Text(item.name)
-                .font(.system(size: 12, weight: isActive ? .semibold : .regular))
-                .foregroundColor(isActive ? .primary : (hovering ? .primary : .secondary.opacity(0.9)))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            if item.isEjectable && hovering {
-                Button {
-                    ejectVolume(at: item.url)
-                } label: {
-                    Image(systemName: "eject.fill")
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Eject \(item.name)")
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isActive ? Color.accentColor.opacity(0.12) : (hovering ? Color.primary.opacity(0.05) : Color.clear))
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             appState.navigateActivePane(to: item.url)
+        } label: {
+            HStack(spacing: 7) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 16, height: 16)
+                Text(item.name)
+                    .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                    .foregroundColor(isActive ? .primary : (hovering ? .primary : .secondary.opacity(0.9)))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                if item.isEjectable && hovering {
+                    Button {
+                        ejectVolume(at: item.url)
+                    } label: {
+                        Image(systemName: "eject.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Eject \(item.name)")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isActive ? Color.accentColor.opacity(0.12) : (hovering ? Color.primary.opacity(0.05) : Color.clear))
+            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: hovering)
         .animation(.easeInOut(duration: 0.1), value: isActive)

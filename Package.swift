@@ -8,7 +8,12 @@ let package = Package(
         .executableTarget(
             name: "Seeker",
             path: "Seeker/Sources",
-            exclude: ["Info.plist"],
+            exclude: [
+                "Info.plist",
+                "Views/FileExplorerView.swift.bak.txt",
+                "Views/FileInfoView.swift.bak.txt",
+                "Views/PaneView.swift.bak.txt"
+            ],
             resources: [
                 .process("../Assets.xcassets"),
                 .copy("../Resources/AppIcon.icns")

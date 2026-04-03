@@ -155,6 +155,12 @@ struct PaneView: View {
             .frame(width: 96)
             .controlSize(.small)
 
+            // Share button
+            ShareButton(viewModel: pane.activeTab)
+
+            // Refresh button
+            NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
+
             // Filter field
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass")
@@ -345,5 +351,39 @@ struct ModernTabItem: View {
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.15), value: isSelected)
         .animation(.easeInOut(duration: 0.1), value: hovering)
+    }
+}
+
+// MARK: - Share Button
+
+struct ShareButton: View {
+    @Bindable var viewModel: FileExplorerViewModel
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            let urls = viewModel.effectiveSelection.map(\.url)
+            guard !urls.isEmpty else { return }
+            let picker = NSSharingServicePicker(items: urls)
+            if let window = NSApp.keyWindow, let contentView = window.contentView {
+                let point = contentView.convert(NSEvent.mouseLocation, from: nil)
+                picker.show(relativeTo: NSRect(origin: point, size: .zero), of: contentView, preferredEdge: .minY)
+            }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(hasSelection ? (hovering ? .primary : .secondary) : .secondary.opacity(0.25))
+                .frame(width: 24, height: 22)
+                .background(hovering && hasSelection ? Color.primary.opacity(0.06) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        }
+        .buttonStyle(.borderless)
+        .disabled(!hasSelection)
+        .onHover { hovering = $0 }
+        .help("Share")
+    }
+
+    private var hasSelection: Bool {
+        viewModel.selectedFile != nil || !viewModel.selectedFileIDs.isEmpty
     }
 }

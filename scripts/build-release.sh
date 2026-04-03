@@ -10,23 +10,23 @@ DMG_DIR="${BUILD_DIR}/dmg"
 DMG_OUTPUT="${PROJECT_DIR}/dist/${APP_NAME}-${VERSION}.dmg"
 ZIP_OUTPUT="${PROJECT_DIR}/dist/${APP_NAME}-${VERSION}.zip"
 
-echo "==> Building ${APP_NAME} v${VERSION} (universal binary)..."
+echo "==> Building ${APP_NAME} v${VERSION} (arm64)..."
 cd "$PROJECT_DIR"
-swift build -c release --arch arm64 --arch x86_64
+swift build -c release --arch arm64
 
 echo "==> Creating app bundle..."
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-cp .build/apple/Products/Release/Seeker "$APP_BUNDLE/Contents/MacOS/Seeker"
+cp .build/arm64-apple-macosx/release/Seeker "$APP_BUNDLE/Contents/MacOS/Seeker"
 cp Seeker/Sources/Info.plist "$APP_BUNDLE/Contents/Info.plist"
 cp Seeker/Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-cp -r .build/apple/Products/Release/Seeker_Seeker.bundle "$APP_BUNDLE/Contents/Resources/"
+cp -r .build/arm64-apple-macosx/release/Seeker_Seeker.bundle "$APP_BUNDLE/Contents/Resources/"
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
 echo "==> Ad-hoc code signing..."
-codesign --force --deep --sign - "$APP_BUNDLE"
+codesign --force --deep --sign - --entitlements Seeker/Seeker.entitlements "$APP_BUNDLE"
 codesign --verify --deep "$APP_BUNDLE"
 
 echo "==> Creating DMG..."

@@ -58,21 +58,23 @@ class FileExplorerViewModel: Identifiable {
         case kind = "Kind"
     }
 
-    private nonisolated(unsafe) var filesChangedObserver: Any?
+    private let _observer = UncheckedSendableBox<Any?>(nil)
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.currentURL = url
         navigateTo(url)
-        filesChangedObserver = NotificationCenter.default.addObserver(
+        _observer.value = NotificationCenter.default.addObserver(
             forName: .filesDidChange, object: nil, queue: .main
         ) { [weak self] notification in
             guard let self, notification.object as AnyObject? !== self else { return }
-            self.loadFiles()
+            MainActor.assumeIsolated {
+                self.loadFiles()
+            }
         }
     }
 
     deinit {
-        if let observer = filesChangedObserver {
+        if let observer = _observer.value {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -80,18 +82,21 @@ class FileExplorerViewModel: Identifiable {
     // MARK: - Navigation
 
     func navigateTo(_ url: URL) {
+        let isSameURL = (currentURL == url)
         currentURL = url
         searchText = ""
         isSearching = false
         selectionAnchor = nil
         selectedFileIDs = []
 
-        // Manage history
-        if historyIndex < pathHistory.count - 1 {
-            pathHistory = Array(pathHistory.prefix(historyIndex + 1))
+        // Manage history (skip duplicate if navigating to same URL)
+        if !isSameURL {
+            if historyIndex < pathHistory.count - 1 {
+                pathHistory = Array(pathHistory.prefix(historyIndex + 1))
+            }
+            pathHistory.append(url)
+            historyIndex = pathHistory.count - 1
         }
-        pathHistory.append(url)
-        historyIndex = pathHistory.count - 1
 
         loadFiles()
 
@@ -101,15 +106,27 @@ class FileExplorerViewModel: Identifiable {
 
     func loadFiles() {
         do {
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: currentURL,
-                includingPropertiesForKeys: [
-                    .isDirectoryKey, .fileSizeKey,
-                    .contentModificationDateKey, .creationDateKey,
-                    .isHiddenKey, .isPackageKey
-                ],
-                options: showHiddenFiles ? [] : [.skipsHiddenFiles]
-            )
+            let url = currentURL.standardizedFileURL
+            let resourceKeys: [URLResourceKey] = [
+                .isDirectoryKey, .fileSizeKey,
+                .contentModificationDateKey, .creationDateKey,
+                .isHiddenKey, .isPackageKey
+            ]
+            let options: FileManager.DirectoryEnumerationOptions = showHiddenFiles ? [] : [.skipsHiddenFiles]
+
+            // Try the URL as-is first, then resolve symlinks on failure
+            let contents: [URL]
+            do {
+                contents = try FileManager.default.contentsOfDirectory(
+                    at: url, includingPropertiesForKeys: resourceKeys, options: options
+                )
+            } catch {
+                let resolved = url.resolvingSymlinksInPath()
+                contents = try FileManager.default.contentsOfDirectory(
+                    at: resolved, includingPropertiesForKeys: resourceKeys, options: options
+                )
+            }
+
             var items = contents.map { FileItem(url: $0) }
 
             // Apply search filter
@@ -120,6 +137,7 @@ class FileExplorerViewModel: Identifiable {
             items = sortItems(items)
             files = items
         } catch {
+            print("[Seeker] Failed to load files at \(currentURL.path): \(error)")
             files = []
         }
     }
@@ -170,7 +188,18 @@ class FileExplorerViewModel: Identifiable {
     }
 
     func openItem(_ item: FileItem) {
-        if item.isDirectory {
+        // Packages (.app, .bundle, etc.) should be opened by the system, not navigated into
+        if item.isPackage {
+            NSWorkspace.shared.open(item.url)
+            return
+        }
+        // Resolve symlinks to get the real path for directory check
+        let resolvedURL = item.url.resolvingSymlinksInPath()
+        let isDir = item.isDirectory || {
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }()
+        if isDir {
             navigateTo(item.url)
         } else if canDecompress(item) {
             decompressAndOpen(item)
@@ -483,7 +512,7 @@ class FileExplorerViewModel: Identifiable {
                 do {
                     var crypt = try NCMCrypt(path: file.url.path)
                     try crypt.dump(outputDir: outputDir)
-                    try crypt.fixMetadata()
+                    crypt.fixMetadata()
                 } catch {
                     errors.append("\(file.name): \(error.localizedDescription)")
                 }
@@ -515,7 +544,7 @@ class FileExplorerViewModel: Identifiable {
                 do {
                     var crypt = try NCMCrypt(path: fileURL.path)
                     try crypt.dump(outputDir: outputDir)
-                    try crypt.fixMetadata()
+                    crypt.fixMetadata()
                     count += 1
                 } catch {
                     errors.append("\(fileURL.lastPathComponent): \(error.localizedDescription)")
@@ -652,4 +681,9 @@ class FileExplorerViewModel: Identifiable {
     private func notifyFilesChanged() {
         NotificationCenter.default.post(name: .filesDidChange, object: self)
     }
+}
+
+final class UncheckedSendableBox<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
 }

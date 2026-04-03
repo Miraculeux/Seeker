@@ -70,12 +70,15 @@ struct FileContentView: View {
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .fill(isFileSelected(file) ? Color.accentColor.opacity(0.2) : Color.clear)
                         )
-                        .onTapGesture {
+                        .onTapGesture(count: 2) {
+                            viewModel.openItem(file)
+                        }
+                        .simultaneousGesture(TapGesture(count: 1).onEnded {
                             unfocusTextFields()
                             let flags = NSEvent.modifierFlags
                             viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
                             appState.activePane = side
-                        }
+                        })
                         .contextMenu { fileContextMenu(for: file) }
                         .onDrag {
                             fileDragProvider(for: file.url)
@@ -85,9 +88,7 @@ struct FileContentView: View {
                 .listStyle(.inset(alternatesRowBackgrounds: true))
                 .onChange(of: viewModel.selectedFileIDs) { _, _ in
                     if let file = viewModel.selectedFile {
-                        withAnimation {
-                            proxy.scrollTo(file.id, anchor: .center)
-                        }
+                        proxy.scrollTo(file.id)
                     }
                 }
                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
@@ -188,12 +189,12 @@ struct FileContentView: View {
                     .onTapGesture(count: 2) {
                         viewModel.openItem(file)
                     }
-                    .onTapGesture(count: 1) {
+                    .simultaneousGesture(TapGesture(count: 1).onEnded {
                         unfocusTextFields()
                         let flags = NSEvent.modifierFlags
                         viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
                         appState.activePane = side
-                    }
+                    })
                     .contextMenu { fileContextMenu(for: file) }
                     .onDrag {
                         fileDragProvider(for: file.url)
@@ -221,6 +222,10 @@ struct FileContentView: View {
     private func fileContextMenu(for file: FileItem) -> some View {
         Button("Open") { viewModel.openItem(file) }
 
+        if file.isPackage {
+            Button("Show Package Contents") { viewModel.navigateTo(file.url) }
+        }
+
         if !file.isDirectory {
             Button("Quick Look") {
                 quickLookURL = file.url
@@ -233,7 +238,6 @@ struct FileContentView: View {
         Button("Copy") { viewModel.copySelected() }
         Button("Cut") { viewModel.cutSelected() }
         Button("Paste") { viewModel.paste() }
-        Button("Duplicate") { viewModel.duplicateSelected() }
 
         Divider()
 
@@ -268,6 +272,16 @@ struct FileContentView: View {
 
         Button("Show in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([file.url])
+        }
+
+        Button("Share…") {
+            let urls = viewModel.effectiveSelection.map(\.url)
+            guard !urls.isEmpty else { return }
+            let picker = NSSharingServicePicker(items: urls)
+            if let window = NSApp.keyWindow, let contentView = window.contentView {
+                let point = contentView.convert(NSEvent.mouseLocation, from: nil)
+                picker.show(relativeTo: NSRect(origin: point, size: .zero), of: contentView, preferredEdge: .minY)
+            }
         }
 
         if file.isDirectory && file.containsNCMFiles {

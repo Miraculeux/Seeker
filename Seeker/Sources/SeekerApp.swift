@@ -9,6 +9,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var mouseDownMonitor: Any?
     let quickLookPanel = QuickLookPanelController()
     weak var appState: AppState?
+    private var typeAheadBuffer: String = ""
+    private var typeAheadTimer: Timer?
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
@@ -126,6 +128,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                    let delegate = AppDelegate.shared,
                    let state = delegate.appState {
                     Self.executeShortcutAction(matched, appState: state)
+                    return nil
+                }
+
+                // Type-ahead: printable characters jump to matching file
+                if !event.modifierFlags.contains(.command),
+                   !event.modifierFlags.contains(.control),
+                   let chars = event.characters, !chars.isEmpty,
+                   let scalar = chars.unicodeScalars.first,
+                   CharacterSet.alphanumerics.union(.punctuationCharacters).union(.symbols).contains(scalar),
+                   let delegate = AppDelegate.shared,
+                   let vm = delegate.appState?.activeExplorer {
+                    delegate.typeAheadBuffer += chars
+                    delegate.typeAheadTimer?.invalidate()
+                    delegate.typeAheadTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { _ in
+                        MainActor.assumeIsolated {
+                            delegate.typeAheadBuffer = ""
+                        }
+                    }
+                    let prefix = delegate.typeAheadBuffer.lowercased()
+                    if let match = vm.files.first(where: { $0.name.lowercased().hasPrefix(prefix) }) {
+                        vm.selectionAnchor = match
+                        vm.selectedFileIDs = [match.id]
+                    }
                     return nil
                 }
 

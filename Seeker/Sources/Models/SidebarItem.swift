@@ -21,10 +21,10 @@ struct SidebarDefaults {
         // Favorites
         let homeURL = FileManager.default.homeDirectoryForCurrentUser
         let favorites: [(String, String, String)] = [
+            ("Applications", "app.fill", "/Applications"),
             ("Desktop", "menubar.dock.rectangle", "Desktop"),
             ("Documents", "doc.on.doc.fill", "Documents"),
             ("Downloads", "arrow.down.circle.fill", "Downloads"),
-            ("Applications", "app.fill", "/Applications"),
         ]
 
         for (name, icon, path) in favorites {
