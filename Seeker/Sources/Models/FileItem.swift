@@ -59,7 +59,10 @@ struct FileItem: Identifiable, Hashable {
 
     var displayName: String {
         let showExtensions = UserDefaults.standard.object(forKey: "showFileExtensions") as? Bool ?? false
-        if showExtensions || isDirectory || url.pathExtension.isEmpty {
+        if showExtensions || url.pathExtension.isEmpty {
+            return name
+        }
+        if !showExtensions && isDirectory && !isPackage {
             return name
         }
         return url.deletingPathExtension().lastPathComponent

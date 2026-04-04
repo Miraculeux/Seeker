@@ -9,10 +9,7 @@ let package = Package(
             name: "Seeker",
             path: "Seeker/Sources",
             exclude: [
-                "Info.plist",
-                "Views/FileExplorerView.swift.bak.txt",
-                "Views/FileInfoView.swift.bak.txt",
-                "Views/PaneView.swift.bak.txt"
+                "Info.plist"
             ],
             resources: [
                 .process("../Assets.xcassets"),
