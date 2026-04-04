@@ -93,18 +93,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         delegate.appState?.activeExplorer.paste()
                     }
                     return nil
-                } else if event.keyCode == 125 || event.keyCode == 126 {
-                    // Arrow Down (125) / Arrow Up (126) → navigate selection
+                } else if event.keyCode == 0, event.modifierFlags.contains(.command) {
+                    // Cmd+A → Select all files
+                    if let delegate = AppDelegate.shared {
+                        delegate.appState?.activeExplorer.selectAll()
+                    }
+                    return nil
+                } else if event.keyCode == 125 || event.keyCode == 126 || event.keyCode == 123 || event.keyCode == 124 {
+                    // Arrow keys: Down(125) Up(126) Left(123) Right(124)
                     if let delegate = AppDelegate.shared,
                        let vm = delegate.appState?.activeExplorer {
                         let files = vm.files
                         guard !files.isEmpty else { return event }
                         let currentIndex = files.firstIndex(where: { $0 == vm.selectedFile })
+
+                        let step: Int
+                        let forward: Bool
+                        switch (vm.viewMode, event.keyCode) {
+                        case (.icons, 125): // Icon view Down → jump one row down
+                            step = vm.iconGridColumnCount; forward = true
+                        case (.icons, 126): // Icon view Up → jump one row up
+                            step = vm.iconGridColumnCount; forward = false
+                        case (.icons, 124): // Icon view Right → next item
+                            step = 1; forward = true
+                        case (.icons, 123): // Icon view Left → previous item
+                            step = 1; forward = false
+                        case (_, 125): // List/Column Down → next item
+                            step = 1; forward = true
+                        case (_, 126): // List/Column Up → previous item
+                            step = 1; forward = false
+                        default:
+                            return event // ignore left/right in list/column mode
+                        }
+
                         let newIndex: Int
-                        if event.keyCode == 125 { // Down
-                            newIndex = (currentIndex == nil) ? 0 : min((currentIndex! + 1), files.count - 1)
-                        } else { // Up
-                            newIndex = (currentIndex == nil) ? 0 : max((currentIndex! - 1), 0)
+                        if forward {
+                            newIndex = (currentIndex == nil) ? 0 : min((currentIndex! + step), files.count - 1)
+                        } else {
+                            newIndex = (currentIndex == nil) ? 0 : max((currentIndex! - step), 0)
                         }
                         let newFile = files[newIndex]
                         if event.modifierFlags.contains(.shift) {

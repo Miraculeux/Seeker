@@ -185,6 +185,8 @@ final class SettingsManager {
         static let showKindColumn = "showKindColumn"
         static let columnOrder = "columnOrder"
         static let showFileExtensions = "showFileExtensions"
+        static let leftPaneViewMode = "lastLeftPaneViewMode"
+        static let rightPaneViewMode = "lastRightPaneViewMode"
     }
 
     var rememberLastLocation: Bool {
@@ -272,9 +274,21 @@ final class SettingsManager {
         set { defaults.set(newValue, forKey: Keys.rightPanePath) }
     }
 
-    func saveLocations(left: URL, right: URL) {
+    var lastLeftPaneViewMode: String? {
+        get { defaults.string(forKey: Keys.leftPaneViewMode) }
+        set { defaults.set(newValue, forKey: Keys.leftPaneViewMode) }
+    }
+
+    var lastRightPaneViewMode: String? {
+        get { defaults.string(forKey: Keys.rightPaneViewMode) }
+        set { defaults.set(newValue, forKey: Keys.rightPaneViewMode) }
+    }
+
+    func saveLocations(left: URL, right: URL, leftViewMode: String, rightViewMode: String) {
         lastLeftPanePath = left.path
         lastRightPanePath = right.path
+        lastLeftPaneViewMode = leftViewMode
+        lastRightPaneViewMode = rightViewMode
         defaults.synchronize()
     }
 

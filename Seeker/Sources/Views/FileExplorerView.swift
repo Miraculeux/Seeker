@@ -165,6 +165,14 @@ struct FileContentView: View {
         return provider
     }
 
+    private func updateIconGridColumnCount(width: CGFloat) {
+        let itemMin: CGFloat = 90
+        let spacing: CGFloat = 8
+        let padded = width - 24 // 12pt padding on each side
+        let count = max(1, Int((padded + spacing) / (itemMin + spacing)))
+        viewModel.iconGridColumnCount = count
+    }
+
     private func isFileSelected(_ file: FileItem) -> Bool {
         if !viewModel.selectedFileIDs.isEmpty {
             return viewModel.selectedFileIDs.contains(file.id)
@@ -202,6 +210,16 @@ struct FileContentView: View {
                 }
             }
             .padding(12)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.onAppear {
+                        updateIconGridColumnCount(width: geo.size.width)
+                    }
+                    .onChange(of: geo.size.width) { _, newWidth in
+                        updateIconGridColumnCount(width: newWidth)
+                    }
+                }
+            )
         }
         .contextMenu { directoryContextMenu }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in

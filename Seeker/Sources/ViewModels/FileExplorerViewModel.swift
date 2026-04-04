@@ -15,6 +15,7 @@ class FileExplorerViewModel: Identifiable {
     var files: [FileItem] = []
     var selectionAnchor: FileItem?
     var selectedFileIDs: Set<FileItem.ID> = []
+    var iconGridColumnCount: Int = 1
 
     var selectedFile: FileItem? {
         guard let anchorID = selectionAnchor?.id, selectedFileIDs.contains(anchorID) else {
@@ -412,6 +413,12 @@ class FileExplorerViewModel: Identifiable {
     }
 
     // MARK: - Multi-Selection
+
+    func selectAll() {
+        guard !files.isEmpty else { return }
+        selectedFileIDs = Set(files.map(\.id))
+        selectionAnchor = files.first
+    }
 
     func handleFileClick(_ file: FileItem, command: Bool, shift: Bool) {
         if shift, let anchor = selectionAnchor ?? selectedFile {

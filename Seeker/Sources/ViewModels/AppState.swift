@@ -100,6 +100,16 @@ class AppState {
         if let rightURL = settings.savedRightURL() {
             rightPane.activeTab.navigateTo(rightURL)
         }
+        if settings.rememberLastLocation {
+            if let raw = settings.lastLeftPaneViewMode,
+               let mode = FileExplorerViewModel.ViewMode(rawValue: raw) {
+                leftPane.activeTab.viewMode = mode
+            }
+            if let raw = settings.lastRightPaneViewMode,
+               let mode = FileExplorerViewModel.ViewMode(rawValue: raw) {
+                rightPane.activeTab.viewMode = mode
+            }
+        }
     }
 
     func saveCurrentLocations() {
@@ -107,7 +117,9 @@ class AppState {
         guard settings.rememberLastLocation else { return }
         settings.saveLocations(
             left: leftPane.activeTab.currentURL,
-            right: rightPane.activeTab.currentURL
+            right: rightPane.activeTab.currentURL,
+            leftViewMode: leftPane.activeTab.viewMode.rawValue,
+            rightViewMode: rightPane.activeTab.viewMode.rawValue
         )
     }
 }
