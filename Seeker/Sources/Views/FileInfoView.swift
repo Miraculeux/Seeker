@@ -6,9 +6,15 @@ import AVFoundation
 struct FileInfoView: View {
     @Environment(AppState.self) var appState
     @State private var mediaInfo: MediaInfo?
+    @State private var multiSelectionTotalSize: Int64?
+    @State private var multiSelectionSizeTask: Task<Void, Never>?
 
     private var selectedFile: FileItem? {
         appState.activeExplorer.selectedFile
+    }
+
+    private var selectedFileIDs: Set<FileItem.ID> {
+        appState.activeExplorer.selectedFileIDs
     }
 
     var body: some View {
@@ -26,7 +32,9 @@ struct FileInfoView: View {
 
             Divider()
 
-            if let file = selectedFile {
+            if selectedFileIDs.count > 1 {
+                multiSelectionContent
+            } else if let file = selectedFile {
                 fileInfoContent(file)
             } else {
                 noSelection
@@ -34,6 +42,104 @@ struct FileInfoView: View {
         }
         .frame(width: 220)
         .background(.background)
+    }
+
+    // MARK: - Multi-Selection Summary
+
+    private var multiSelectionContent: some View {
+        let files = appState.activeExplorer.selectedFiles
+
+        return VStack(spacing: 16) {
+            Spacer()
+
+            Image(systemName: "doc.on.doc.fill")
+                .font(.system(size: 36, weight: .thin))
+                .foregroundColor(.accentColor.opacity(0.6))
+
+            VStack(spacing: 4) {
+                Text("\(files.count) items selected")
+                    .font(.system(size: 13, weight: .semibold))
+
+                let folders = files.filter { $0.isDirectory }.count
+                let regularFiles = files.count - folders
+                if folders > 0 && regularFiles > 0 {
+                    Text("\(regularFiles) file\(regularFiles == 1 ? "" : "s"), \(folders) folder\(folders == 1 ? "" : "s")")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                } else if folders > 0 {
+                    Text("\(folders) folder\(folders == 1 ? "" : "s")")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("\(regularFiles) file\(regularFiles == 1 ? "" : "s")")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Divider()
+                .padding(.horizontal, 12)
+
+            VStack(spacing: 10) {
+                if let totalSize = multiSelectionTotalSize {
+                    infoRow("Total Size", ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))
+                } else {
+                    HStack {
+                        Text("Total Size")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .frame(width: 58, alignment: .trailing)
+                        ProgressView()
+                            .controlSize(.mini)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: selectedFileIDs) { _, newIDs in
+            calculateMultiSelectionSize(ids: newIDs)
+        }
+        .onAppear {
+            calculateMultiSelectionSize(ids: selectedFileIDs)
+        }
+    }
+
+    private func calculateMultiSelectionSize(ids: Set<FileItem.ID>) {
+        multiSelectionSizeTask?.cancel()
+        multiSelectionTotalSize = nil
+        let files = appState.activeExplorer.selectedFiles
+        let urls = Array(files.map(\.url))
+        multiSelectionSizeTask = Task {
+            let total = await Task.detached(priority: .utility) { () -> Int64 in
+                var size: Int64 = 0
+                let fm = FileManager.default
+                for url in urls {
+                    var isDir: ObjCBool = false
+                    guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
+                    if isDir.boolValue {
+                        if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) {
+                            while let fileURL = enumerator.nextObject() as? URL {
+                                if Task.isCancelled { return -1 }
+                                let fileSize = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                                size += Int64(fileSize)
+                            }
+                        }
+                    } else {
+                        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                        size += Int64(fileSize)
+                    }
+                    if Task.isCancelled { return -1 }
+                }
+                return size
+            }.value
+            if !Task.isCancelled && total >= 0 {
+                multiSelectionTotalSize = total
+            }
+        }
     }
 
     // MARK: - No Selection

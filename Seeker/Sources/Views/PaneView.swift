@@ -119,6 +119,12 @@ struct PaneView: View {
                 NavButton(icon: "chevron.left", action: pane.activeTab.goBack, disabled: !pane.activeTab.canGoBack)
                 NavButton(icon: "chevron.right", action: pane.activeTab.goForward, disabled: !pane.activeTab.canGoForward)
                 NavButton(icon: "chevron.up", action: pane.activeTab.goUp, disabled: !pane.activeTab.canGoUp)
+                if appState.showDualPane {
+                    NavButton(icon: "arrow.left.arrow.right", action: {
+                        let otherPane = side == .left ? appState.rightPane : appState.leftPane
+                        pane.activeTab.navigateTo(otherPane.activeTab.currentURL)
+                    }, disabled: false)
+                }
             }
             .padding(2)
             .background(Color.primary.opacity(0.04))
@@ -160,6 +166,22 @@ struct PaneView: View {
 
             // Refresh button
             NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
+
+            // Show hidden files
+            NavButton(icon: pane.activeTab.showHiddenFiles ? "eye" : "eye.slash", action: {
+                pane.activeTab.showHiddenFiles.toggle()
+                pane.activeTab.loadFiles()
+            }, disabled: false)
+
+            // Open Terminal here
+            NavButton(icon: "terminal", action: {
+                let escapedPath = pane.activeTab.currentURL.path.replacingOccurrences(of: "'", with: "'\\''")
+                let script = "tell application \"Terminal\" to do script \"cd '\(escapedPath)'\""
+                if let appleScript = NSAppleScript(source: script) {
+                    var error: NSDictionary?
+                    appleScript.executeAndReturnError(&error)
+                }
+            }, disabled: false)
 
             // Filter field
             HStack(spacing: 4) {

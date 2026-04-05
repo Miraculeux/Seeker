@@ -51,7 +51,7 @@ All shortcuts are configurable in **Settings → Shortcuts**.
 ## Build & Run
 
 ```bash
-swift build
+swift buildr
 swift run
 ```
 

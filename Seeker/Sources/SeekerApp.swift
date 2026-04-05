@@ -51,14 +51,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     // NSTextView field editors used by focused text fields
                     if let textView = firstResponder as? NSTextView,
                        textView.isFieldEditor {
-                        if let selectedRange = textView.selectedRanges.first as? NSRange,
-                           selectedRange.length > 0 {
-                            return true
-                        }
-                        if textView.string.count > 0 {
-                            return true
-                        }
-                        return false
+                        return true
                     }
                     if firstResponder is NSTextField {
                         return true
@@ -66,8 +59,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return false
                 }()
                 if isTypingInTextField {
+                    // Still allow Cmd shortcuts (Cmd+C, Cmd+V, Cmd+A) to work normally in text fields
                     return event
                 }
+
                 if event.keyCode == 49, !event.isARepeat {
                     // Space → Quick Look
                     if let delegate = AppDelegate.shared,

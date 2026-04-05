@@ -132,6 +132,10 @@ class FileOperationManager {
                     try await copyWithProgress(from: sourceURL, to: destURL, operation: op)
                 }
                 op.filesCompleted += 1
+            } catch is CancellationError {
+                // Remove the partially copied top-level item (file or folder)
+                try? FileManager.default.removeItem(at: destURL)
+                break
             } catch {
                 if !op.isCancelled {
                     op.error = "\(op.kind.rawValue) failed: \(error.localizedDescription)"
@@ -172,34 +176,76 @@ class FileOperationManager {
     private func copyWithProgress(from source: URL, to destination: URL, operation: FileOperation) async throws {
         let manifest = buildCopyManifest(source: source, destination: destination)
 
-        // Batch files to reduce MainActor hops — update UI at most every 50ms
-        var pendingBytes: Int64 = 0
-        var lastUpdate = ContinuousClock.now
-
-        for (src, dst, size) in manifest {
+        for (src, dst, _) in manifest {
             guard !operation.isCancelled else { throw CancellationError() }
+            operation.currentFile = src.lastPathComponent
 
-            // Copy on background thread using OS-optimized copy (supports APFS clones)
             try await Task.detached(priority: .userInitiated) {
                 let fm = FileManager.default
                 let parent = dst.deletingLastPathComponent()
                 try fm.createDirectory(at: parent, withIntermediateDirectories: true)
-                try fm.copyItem(at: src, to: dst)
+
+                // Use chunked copy for incremental progress
+                guard let readHandle = FileHandle(forReadingAtPath: src.path) else {
+                    throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: src.path])
+                }
+                defer { readHandle.closeFile() }
+
+                fm.createFile(atPath: dst.path, contents: nil)
+                guard let writeHandle = FileHandle(forWritingAtPath: dst.path) else {
+                    throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: dst.path])
+                }
+                defer { writeHandle.closeFile() }
+
+                let chunkSize = 1024 * 1024  // 1 MB chunks
+                var lastUpdate = ContinuousClock.now
+                var pendingBytes: Int64 = 0
+
+                var cancelled = false
+                while true {
+                    if await operation.isCancelled {
+                        cancelled = true
+                        break
+                    }
+
+                    let data = readHandle.readData(ofLength: chunkSize)
+                    if data.isEmpty { break }
+                    writeHandle.write(data)
+                    pendingBytes += Int64(data.count)
+
+                    // Update UI at most every 50ms
+                    let now = ContinuousClock.now
+                    if now - lastUpdate > .milliseconds(50) {
+                        let bytes = pendingBytes
+                        pendingBytes = 0
+                        lastUpdate = now
+                        await MainActor.run { operation.copiedBytes += bytes }
+                    }
+                }
+
+                // On cancellation, close handles and delete the partial file
+                if cancelled {
+                    readHandle.closeFile()
+                    writeHandle.closeFile()
+                    try? fm.removeItem(at: dst)
+                    throw CancellationError()
+                }
+
+                // Flush remaining bytes
+                if pendingBytes > 0 {
+                    let bytes = pendingBytes
+                    await MainActor.run { operation.copiedBytes += bytes }
+                }
+
+                // Copy file attributes (permissions, dates, etc.)
+                if let attrs = try? fm.attributesOfItem(atPath: src.path) {
+                    var modAttrs: [FileAttributeKey: Any] = [:]
+                    if let perms = attrs[.posixPermissions] { modAttrs[.posixPermissions] = perms }
+                    if let modDate = attrs[.modificationDate] { modAttrs[.modificationDate] = modDate }
+                    if let creationDate = attrs[.creationDate] { modAttrs[.creationDate] = creationDate }
+                    try? fm.setAttributes(modAttrs, ofItemAtPath: dst.path)
+                }
             }.value
-
-            pendingBytes += size
-            let now = ContinuousClock.now
-            if now - lastUpdate > .milliseconds(50) || pendingBytes > 10_000_000 {
-                operation.copiedBytes += pendingBytes
-                operation.currentFile = src.lastPathComponent
-                pendingBytes = 0
-                lastUpdate = now
-            }
-        }
-
-        // Flush remaining
-        if pendingBytes > 0 {
-            operation.copiedBytes += pendingBytes
         }
     }
 

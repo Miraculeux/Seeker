@@ -3,13 +3,6 @@ import SwiftUI
 struct ContentView: View {
     @Environment(AppState.self) var appState
 
-    private var toolbarSearchBinding: Binding<String> {
-        Binding(
-            get: { appState.activeExplorer.searchText },
-            set: { appState.activeExplorer.searchText = $0 }
-        )
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             // ForkLift-style main toolbar
@@ -127,51 +120,9 @@ struct ContentView: View {
 
             Spacer()
 
-            // Right group: progress + search + actions
+            // Right group: progress indicator
             HStack(spacing: 6) {
                 FileOperationCompactView()
-
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary.opacity(0.6))
-                    TextField("Search", text: toolbarSearchBinding)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 11))
-                        .onChange(of: appState.activeExplorer.searchText) {
-                            appState.activeExplorer.loadFiles()
-                        }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Color.primary.opacity(0.04))
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .frame(width: 170)
-
-                Menu {
-                    Toggle("Show Hidden Files", isOn: Binding(
-                        get: { appState.activeExplorer.showHiddenFiles },
-                        set: { appState.activeExplorer.showHiddenFiles = $0; appState.activeExplorer.loadFiles() }
-                    ))
-                    Divider()
-                    Button("Open Terminal Here") {
-                        let escapedPath = appState.activeExplorer.currentURL.path.replacingOccurrences(of: "'", with: "'\\''") 
-                        let script = "tell application \"Terminal\" to do script \"cd '\(escapedPath)'\""
-                        if let appleScript = NSAppleScript(source: script) {
-                            var error: NSDictionary?
-                            appleScript.executeAndReturnError(&error)
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .frame(width: 28, height: 28)
-                        .background(Color.primary.opacity(0.04))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .menuStyle(.borderlessButton)
-                .frame(width: 28)
             }
             .padding(.trailing, 12)
         }
