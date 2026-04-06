@@ -375,12 +375,12 @@ struct FileContentView: View {
             let sourceURLs = collector.result
             guard !sourceURLs.isEmpty else { return }
             if isMove {
-                FileOperationManager.shared.startMove(sources: sourceURLs, to: destDir) {
+                FileOperationManager.shared.startMove(sources: sourceURLs, to: destDir) { _ in
                     vm.loadFiles()
                     otherVM.loadFiles()
                 }
             } else {
-                FileOperationManager.shared.startCopy(sources: sourceURLs, to: destDir) {
+                FileOperationManager.shared.startCopy(sources: sourceURLs, to: destDir) { _ in
                     vm.loadFiles()
                     otherVM.loadFiles()
                 }

@@ -41,6 +41,17 @@ class FileExplorerViewModel: Identifiable {
     var errorMessage: String?
     var showError: Bool = false
     var viewMode: ViewMode = .list
+    var undoStack: [UndoableAction] = []
+
+    enum UndoableAction {
+        case trash(originalURLs: [URL], trashURLs: [URL])
+        case create(url: URL)
+        case rename(oldURL: URL, newURL: URL)
+        case copy(destinationURLs: [URL])
+        case move(originalURLs: [URL], destinationURLs: [URL])
+    }
+
+    var canUndo: Bool { !undoStack.isEmpty }
 
     // Clipboard for copy/cut operations
     static nonisolated(unsafe) var clipboard: [URL] = []
@@ -244,6 +255,7 @@ class FileExplorerViewModel: Identifiable {
         let newURL = currentURL.appendingPathComponent(name)
         do {
             try fm.createDirectory(at: newURL, withIntermediateDirectories: false)
+            undoStack.append(.create(url: newURL))
             loadFiles()
             notifyFilesChanged()
             // Select the new folder and start renaming
@@ -271,6 +283,7 @@ class FileExplorerViewModel: Identifiable {
         let newURL = currentURL.appendingPathComponent(name)
         do {
             try Data().write(to: newURL)
+            undoStack.append(.create(url: newURL))
             loadFiles()
             notifyFilesChanged()
             let newItem = FileItem(url: newURL)
@@ -296,6 +309,7 @@ class FileExplorerViewModel: Identifiable {
         let newURL = item.url.deletingLastPathComponent().appendingPathComponent(renameText)
         do {
             try FileManager.default.moveItem(at: item.url, to: newURL)
+            undoStack.append(.rename(oldURL: item.url, newURL: newURL))
             renamingFile = nil
             loadFiles()
             notifyFilesChanged()
@@ -362,14 +376,21 @@ class FileExplorerViewModel: Identifiable {
         if shouldMove {
             Self.clipboard = []
             Self.clipboardIsCut = false
-            FileOperationManager.shared.startMove(sources: urls, to: dest) { [weak self] in
+            FileOperationManager.shared.startMove(sources: urls, to: dest) { [weak self] op in
                 self?.loadFiles()
                 self?.notifyFilesChanged()
+                if !op.completedDestinations.isEmpty {
+                    let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
+                    self?.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
+                }
             }
         } else {
-            FileOperationManager.shared.startCopy(sources: urls, to: dest) { [weak self] in
+            FileOperationManager.shared.startCopy(sources: urls, to: dest) { [weak self] op in
                 self?.loadFiles()
                 self?.notifyFilesChanged()
+                if !op.completedDestinations.isEmpty {
+                    self?.undoStack.append(.copy(destinationURLs: op.completedDestinations))
+                }
             }
         }
     }
@@ -379,22 +400,35 @@ class FileExplorerViewModel: Identifiable {
         guard !items.isEmpty else { return }
         let sources = items.map(\.url)
         let dest = currentURL
-        FileOperationManager.shared.startCopy(sources: sources, to: dest) { [weak self] in
+        FileOperationManager.shared.startCopy(sources: sources, to: dest) { [weak self] op in
             self?.loadFiles()
             self?.notifyFilesChanged()
+            if !op.completedDestinations.isEmpty {
+                self?.undoStack.append(.copy(destinationURLs: op.completedDestinations))
+            }
         }
     }
 
     func trashSelected() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
+        var originalURLs: [URL] = []
+        var trashURLs: [URL] = []
         for item in items {
             do {
-                try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+                var resultingURL: NSURL?
+                try FileManager.default.trashItem(at: item.url, resultingItemURL: &resultingURL)
+                originalURLs.append(item.url)
+                if let trashURL = resultingURL as URL? {
+                    trashURLs.append(trashURL)
+                }
             } catch {
                 showFileError("Could not move to Trash: \(error.localizedDescription)")
                 return
             }
+        }
+        if !originalURLs.isEmpty && originalURLs.count == trashURLs.count {
+            undoStack.append(.trash(originalURLs: originalURLs, trashURLs: trashURLs))
         }
         selectionAnchor = nil
         selectedFileIDs = []
@@ -406,10 +440,61 @@ class FileExplorerViewModel: Identifiable {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
         let sources = items.map(\.url)
-        FileOperationManager.shared.startMove(sources: sources, to: destination) { [weak self] in
+        FileOperationManager.shared.startMove(sources: sources, to: destination) { [weak self] op in
             self?.loadFiles()
             self?.notifyFilesChanged()
+            if !op.completedDestinations.isEmpty {
+                let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
+                self?.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
+            }
         }
+    }
+
+    // MARK: - Undo
+
+    func undo() {
+        guard let action = undoStack.popLast() else { return }
+        let fm = FileManager.default
+        switch action {
+        case .trash(let originalURLs, let trashURLs):
+            for (original, trashURL) in zip(originalURLs, trashURLs) {
+                do {
+                    try fm.moveItem(at: trashURL, to: original)
+                } catch {
+                    showFileError("Undo failed: \(error.localizedDescription)")
+                }
+            }
+        case .create(let url):
+            do {
+                try fm.trashItem(at: url, resultingItemURL: nil)
+            } catch {
+                showFileError("Undo failed: \(error.localizedDescription)")
+            }
+        case .rename(let oldURL, let newURL):
+            do {
+                try fm.moveItem(at: newURL, to: oldURL)
+            } catch {
+                showFileError("Undo failed: \(error.localizedDescription)")
+            }
+        case .copy(let destinationURLs):
+            for dest in destinationURLs {
+                do {
+                    try fm.trashItem(at: dest, resultingItemURL: nil)
+                } catch {
+                    showFileError("Undo failed: \(error.localizedDescription)")
+                }
+            }
+        case .move(let originalURLs, let destinationURLs):
+            for (original, dest) in zip(originalURLs, destinationURLs) {
+                do {
+                    try fm.moveItem(at: dest, to: original)
+                } catch {
+                    showFileError("Undo failed: \(error.localizedDescription)")
+                }
+            }
+        }
+        loadFiles()
+        notifyFilesChanged()
     }
 
     // MARK: - Multi-Selection

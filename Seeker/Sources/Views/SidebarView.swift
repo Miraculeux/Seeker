@@ -66,6 +66,17 @@ struct SidebarRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
+                if item.isTrash && hovering {
+                    Button {
+                        emptyTrash()
+                    } label: {
+                        Image(systemName: "trash.slash.fill")
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Empty Trash")
+                }
                 if item.isEjectable && hovering {
                     Button {
                         ejectVolume(at: item.url)
@@ -105,6 +116,33 @@ struct SidebarRow: View {
                     alert.runModal()
                 }
             }
+        }
+    }
+
+    private func emptyTrash() {
+        let alert = NSAlert()
+        alert.messageText = "Empty Trash?"
+        alert.informativeText = "All items in the Trash will be permanently deleted. This action cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Empty Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        do {
+            let contents = try FileManager.default.contentsOfDirectory(at: trashURL, includingPropertiesForKeys: nil)
+            for item in contents {
+                try FileManager.default.removeItem(at: item)
+            }
+            if appState.activeExplorer.currentURL == trashURL {
+                appState.activeExplorer.loadFiles()
+            }
+        } catch {
+            let errAlert = NSAlert()
+            errAlert.messageText = "Failed to Empty Trash"
+            errAlert.informativeText = error.localizedDescription
+            errAlert.alertStyle = .warning
+            errAlert.runModal()
         }
     }
 }

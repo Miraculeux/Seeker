@@ -16,6 +16,7 @@ class FileOperation: Identifiable {
     var isFinished: Bool = false
     var isCancelled: Bool = false
     var error: String?
+    var completedDestinations: [URL] = []
 
     enum Kind: String {
         case copy = "Copying"
@@ -87,22 +88,22 @@ class FileOperationManager {
         !activeOperations.isEmpty
     }
 
-    func startCopy(sources: [URL], to destination: URL, onComplete: @escaping @MainActor () -> Void) {
+    func startCopy(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
         let op = FileOperation(kind: .copy, sourceURLs: sources, destinationDir: destination)
         operations.append(op)
         Task {
             await performOperation(op)
-            onComplete()
+            onComplete(op)
             cleanupFinished()
         }
     }
 
-    func startMove(sources: [URL], to destination: URL, onComplete: @escaping @MainActor () -> Void) {
+    func startMove(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
         let op = FileOperation(kind: .move, sourceURLs: sources, destinationDir: destination)
         operations.append(op)
         Task {
             await performOperation(op)
-            onComplete()
+            onComplete(op)
             cleanupFinished()
         }
     }
@@ -131,6 +132,7 @@ class FileOperationManager {
                 } else {
                     try await copyWithProgress(from: sourceURL, to: destURL, operation: op)
                 }
+                op.completedDestinations.append(destURL)
                 op.filesCompleted += 1
             } catch is CancellationError {
                 // Remove the partially copied top-level item (file or folder)

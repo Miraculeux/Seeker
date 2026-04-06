@@ -58,8 +58,12 @@ class AppState {
         let dest = inactiveExplorer.currentURL
         let sources = items.map(\.url)
         let inactive = inactiveExplorer
-        FileOperationManager.shared.startCopy(sources: sources, to: dest) {
+        let active = activeExplorer
+        FileOperationManager.shared.startCopy(sources: sources, to: dest) { op in
             inactive.loadFiles()
+            if !op.completedDestinations.isEmpty {
+                active.undoStack.append(.copy(destinationURLs: op.completedDestinations))
+            }
         }
     }
 
@@ -70,9 +74,13 @@ class AppState {
         let sources = items.map(\.url)
         let active = activeExplorer
         let inactive = inactiveExplorer
-        FileOperationManager.shared.startMove(sources: sources, to: dest) {
+        FileOperationManager.shared.startMove(sources: sources, to: dest) { op in
             active.loadFiles()
             inactive.loadFiles()
+            if !op.completedDestinations.isEmpty {
+                let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
+                active.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
+            }
         }
     }
 

@@ -94,6 +94,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         delegate.appState?.activeExplorer.selectAll()
                     }
                     return nil
+                } else if event.keyCode == 6, event.modifierFlags.contains(.command) {
+                    // Cmd+Z → Undo last file operation
+                    if let delegate = AppDelegate.shared {
+                        delegate.appState?.activeExplorer.undo()
+                    }
+                    return nil
+                } else if (event.keyCode == 124 || event.keyCode == 123), event.modifierFlags.contains(.command) {
+                    // Cmd+Right / Cmd+Left → Switch active pane
+                    if let delegate = AppDelegate.shared, let state = delegate.appState, state.showDualPane {
+                        state.activePane = (event.keyCode == 124) ? .right : .left
+                    }
+                    return nil
                 } else if event.keyCode == 125 || event.keyCode == 126 || event.keyCode == 123 || event.keyCode == 124 {
                     // Arrow keys: Down(125) Up(126) Left(123) Right(124)
                     if let delegate = AppDelegate.shared,

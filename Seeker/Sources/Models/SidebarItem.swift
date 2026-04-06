@@ -7,6 +7,7 @@ struct SidebarItem: Identifiable, Hashable {
     let url: URL
     let section: SidebarSection
     var isEjectable: Bool = false
+    var isTrash: Bool = false
 }
 
 enum SidebarSection: String, CaseIterable {
@@ -57,6 +58,10 @@ struct SidebarDefaults {
 
         // Home folder
         items.append(SidebarItem(id: "loc_home", name: NSUserName(), icon: "house.fill", url: homeURL, section: .locations))
+
+        // Trash
+        let trashURL = homeURL.appendingPathComponent(".Trash")
+        items.append(SidebarItem(id: "loc_trash", name: "Trash", icon: "trash.fill", url: trashURL, section: .locations, isTrash: true))
 
         return items
     }

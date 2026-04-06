@@ -173,16 +173,6 @@ struct PaneView: View {
                 pane.activeTab.loadFiles()
             }, disabled: false)
 
-            // Open Terminal here
-            NavButton(icon: "terminal", action: {
-                let escapedPath = pane.activeTab.currentURL.path.replacingOccurrences(of: "'", with: "'\\''")
-                let script = "tell application \"Terminal\" to do script \"cd '\(escapedPath)'\""
-                if let appleScript = NSAppleScript(source: script) {
-                    var error: NSDictionary?
-                    appleScript.executeAndReturnError(&error)
-                }
-            }, disabled: false)
-
             // Filter field
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass")
