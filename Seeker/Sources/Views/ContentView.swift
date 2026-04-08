@@ -44,6 +44,13 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 900, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                if let window = NSApp.keyWindow ?? NSApp.windows.first {
+                    window.makeFirstResponder(window.contentView)
+                }
+            }
+        }
         .sheet(isPresented: Binding(
             get: { appState.showGoToFolder },
             set: { appState.showGoToFolder = $0 }

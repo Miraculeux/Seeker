@@ -5,6 +5,7 @@ struct PaneView: View {
     var pane: PaneState
     @Environment(AppState.self) var appState
     let side: AppState.PaneSide
+    @FocusState private var isFilterFocused: Bool
 
     var isActive: Bool {
         appState.activePane == side
@@ -181,6 +182,7 @@ struct PaneView: View {
                 TextField("Filter", text: searchTextBinding)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11))
+                    .focused($isFilterFocused)
                     .onChange(of: pane.activeTab.searchText) { pane.activeTab.loadFiles() }
                 if !pane.activeTab.searchText.isEmpty {
                     Button {

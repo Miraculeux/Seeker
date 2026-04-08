@@ -56,10 +56,17 @@ struct SidebarRow: View {
             appState.navigateActivePane(to: item.url)
         } label: {
             HStack(spacing: 7) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 16, height: 16)
+                Group {
+                    if item.isTrash {
+                        Image(systemName: "trash.fill")
+                            .foregroundColor(.secondary)
+                    } else {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                    }
+                }
+                .frame(width: 16, height: 16)
                 Text(item.name)
                     .font(.system(size: 12, weight: isActive ? .semibold : .regular))
                     .foregroundColor(isActive ? .primary : (hovering ? .primary : .secondary.opacity(0.9)))

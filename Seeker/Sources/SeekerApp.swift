@@ -24,6 +24,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var hasResignedInitialFocus = false
+
+    nonisolated func applicationDidBecomeActive(_ notification: Notification) {
+        Task { @MainActor in
+            guard !hasResignedInitialFocus else { return }
+            hasResignedInitialFocus = true
+            // Remove focus from text fields (filter) on first activation
+            if let window = NSApp.keyWindow ?? NSApp.windows.first {
+                if let responder = window.firstResponder as? NSTextView, responder.isFieldEditor {
+                    window.makeFirstResponder(window.contentView)
+                }
+            }
+        }
+    }
+
     nonisolated func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             appState?.saveCurrentLocations()
