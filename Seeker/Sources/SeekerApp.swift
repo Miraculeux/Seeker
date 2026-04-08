@@ -91,6 +91,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         delegate.appState?.activeExplorer.copySelected()
                     }
                     return nil
+                } else if event.keyCode == 7, event.modifierFlags.contains(.command) {
+                    // Cmd+X → Cut selected files
+                    if let delegate = AppDelegate.shared {
+                        delegate.appState?.activeExplorer.cutSelected()
+                    }
+                    return nil
                 } else if event.keyCode == 9, event.modifierFlags.contains(.command), event.modifierFlags.contains(.option) {
                     // Cmd+Option+V → Move (paste as move)
                     if let delegate = AppDelegate.shared {

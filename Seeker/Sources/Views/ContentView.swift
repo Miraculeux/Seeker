@@ -122,6 +122,8 @@ struct ContentView: View {
                     }
                 }
 
+                ShareToolbarBtn(appState: appState)
+
                 ToolbarSep()
 
                 ToolbarBtn(icon: "rectangle.split.2x1", isActive: appState.showDualPane, tip: "Dual Pane") {
@@ -185,6 +187,43 @@ struct ToolbarBtn: View {
         .buttonStyle(.borderless)
         .help(tip)
         .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.1), value: hovering)
+    }
+}
+
+// MARK: - Share Toolbar Button
+
+struct ShareToolbarBtn: View {
+    var appState: AppState
+    @State private var hovering = false
+
+    private var hasSelection: Bool {
+        appState.activeExplorer.selectedFile != nil || !appState.activeExplorer.selectedFileIDs.isEmpty
+    }
+
+    var body: some View {
+        Button {
+            let urls = appState.activeExplorer.effectiveSelection.map(\.url)
+            guard !urls.isEmpty else { return }
+            let picker = NSSharingServicePicker(items: urls)
+            if let window = NSApp.keyWindow, let contentView = window.contentView {
+                let point = contentView.convert(NSEvent.mouseLocation, from: nil)
+                picker.show(relativeTo: NSRect(origin: point, size: .zero), of: contentView, preferredEdge: .minY)
+            }
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(hasSelection ? (hovering ? .primary : .secondary) : .secondary.opacity(0.25))
+                .frame(width: 28, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(hovering && hasSelection ? Color.primary.opacity(0.06) : Color.clear)
+                )
+        }
+        .buttonStyle(.borderless)
+        .disabled(!hasSelection)
+        .onHover { hovering = $0 }
+        .help("Share")
         .animation(.easeInOut(duration: 0.1), value: hovering)
     }
 }

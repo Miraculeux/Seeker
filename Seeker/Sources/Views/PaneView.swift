@@ -162,9 +162,6 @@ struct PaneView: View {
             .frame(width: 96)
             .controlSize(.small)
 
-            // Share button
-            ShareButton(viewModel: pane.activeTab)
-
             // Refresh button
             NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
 
