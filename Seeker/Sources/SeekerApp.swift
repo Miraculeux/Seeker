@@ -21,6 +21,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                let iconImage = NSImage(contentsOf: iconURL) {
                 NSApplication.shared.applicationIconImage = iconImage
             }
+            checkFullDiskAccess()
+        }
+    }
+
+    private func checkFullDiskAccess() {
+        let testURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        let hasAccess = (try? FileManager.default.contentsOfDirectory(atPath: testURL.path)) != nil
+        if !hasAccess {
+            let alert = NSAlert()
+            alert.messageText = "Full Disk Access Required"
+            alert.informativeText = "Seeker needs Full Disk Access to browse all files and folders, including Trash.\n\nGo to System Settings → Privacy & Security → Full Disk Access and enable Seeker."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "Later")
+            if alert.runModal() == .alertFirstButtonReturn {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
         }
     }
 

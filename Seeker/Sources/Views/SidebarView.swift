@@ -135,21 +135,27 @@ struct SidebarRow: View {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-        do {
-            let contents = try FileManager.default.contentsOfDirectory(at: trashURL, includingPropertiesForKeys: nil)
-            for item in contents {
-                try FileManager.default.removeItem(at: item)
+        let script = """
+            tell application "Finder"
+                empty the trash
+            end tell
+            """
+        if let appleScript = NSAppleScript(source: script) {
+            var errorInfo: NSDictionary?
+            let result = appleScript.executeAndReturnError(&errorInfo)
+            if result.descriptorType == typeNull, let errorInfo = errorInfo,
+               let errorMsg = errorInfo[NSAppleScript.errorMessage] as? String {
+                let errAlert = NSAlert()
+                errAlert.messageText = "Failed to Empty Trash"
+                errAlert.informativeText = errorMsg
+                errAlert.alertStyle = .warning
+                errAlert.runModal()
+            } else {
+                let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+                if appState.activeExplorer.currentURL == trashURL {
+                    appState.activeExplorer.loadFiles()
+                }
             }
-            if appState.activeExplorer.currentURL == trashURL {
-                appState.activeExplorer.loadFiles()
-            }
-        } catch {
-            let errAlert = NSAlert()
-            errAlert.messageText = "Failed to Empty Trash"
-            errAlert.informativeText = error.localizedDescription
-            errAlert.alertStyle = .warning
-            errAlert.runModal()
         }
     }
 }

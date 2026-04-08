@@ -133,6 +133,12 @@ class FileExplorerViewModel: Identifiable {
                     at: url, includingPropertiesForKeys: resourceKeys, options: options
                 )
             } catch {
+                // If this is the Trash directory, use Finder AppleScript to list contents
+                let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+                if url.standardizedFileURL == trashURL.standardizedFileURL || url.resolvingSymlinksInPath() == trashURL.resolvingSymlinksInPath() {
+                    files = loadTrashViaFinder()
+                    return
+                }
                 let resolved = url.resolvingSymlinksInPath()
                 contents = try FileManager.default.contentsOfDirectory(
                     at: resolved, includingPropertiesForKeys: resourceKeys, options: options
@@ -152,6 +158,42 @@ class FileExplorerViewModel: Identifiable {
             print("[Seeker] Failed to load files at \(currentURL.path): \(error)")
             files = []
         }
+    }
+
+    private func loadTrashViaFinder() -> [FileItem] {
+        let script = """
+            tell application "Finder"
+                set trashItems to items of trash
+                set pathList to {}
+                repeat with anItem in trashItems
+                    set end of pathList to POSIX path of (anItem as alias)
+                end repeat
+                return pathList
+            end tell
+            """
+        guard let appleScript = NSAppleScript(source: script) else { return [] }
+        var error: NSDictionary?
+        let result = appleScript.executeAndReturnError(&error)
+        guard error == nil else {
+            print("[Seeker] Failed to list trash via Finder: \(error!)")
+            return []
+        }
+
+        var items: [FileItem] = []
+        let count = result.numberOfItems
+        guard count > 0 else { return [] }
+        for i in 1...count {
+            if let pathDesc = result.atIndex(i), let path = pathDesc.stringValue {
+                let url = URL(fileURLWithPath: path)
+                items.append(FileItem(url: url))
+            }
+        }
+
+        if !searchText.isEmpty {
+            items = items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        }
+
+        return sortItems(items)
     }
 
     func sortItems(_ items: [FileItem]) -> [FileItem] {

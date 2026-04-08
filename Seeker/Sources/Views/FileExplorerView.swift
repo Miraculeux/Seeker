@@ -86,6 +86,7 @@ struct FileContentView: View {
                     }
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: true))
+                .contextMenu { directoryContextMenu }
                 .onChange(of: viewModel.selectedFileIDs) { _, _ in
                     if let file = viewModel.selectedFile {
                         proxy.scrollTo(file.id)
