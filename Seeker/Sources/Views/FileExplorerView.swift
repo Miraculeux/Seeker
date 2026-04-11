@@ -241,6 +241,29 @@ struct FileContentView: View {
     private func fileContextMenu(for file: FileItem) -> some View {
         Button("Open") { viewModel.openItem(file) }
 
+        if !file.isDirectory || file.isPackage {
+            let appURLs = NSWorkspace.shared.urlsForApplications(toOpen: file.url)
+            if !appURLs.isEmpty {
+                Menu("Open With") {
+                    ForEach(appURLs, id: \.self) { appURL in
+                        Button(FileManager.default.displayName(atPath: appURL.path)) {
+                            NSWorkspace.shared.open([file.url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+                        }
+                    }
+                    Divider()
+                    Button("Other…") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.application]
+                        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+                        panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let appURL = panel.url {
+                            NSWorkspace.shared.open([file.url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+                        }
+                    }
+                }
+            }
+        }
+
         if file.isPackage {
             Button("Show Package Contents") { viewModel.navigateTo(file.url) }
         }
