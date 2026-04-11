@@ -26,7 +26,7 @@ cp -r .build/arm64-apple-macosx/release/Seeker_Seeker.bundle "$APP_BUNDLE/Conten
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
 echo "==> Ad-hoc code signing..."
-codesign --force --deep --sign - --entitlements Seeker/Seeker.entitlements "$APP_BUNDLE"
+codesign --force --deep --sign "Apple Development: marvelzhu@gmail.com (M54Y4GPL75)" --entitlements Seeker/Seeker.entitlements "$APP_BUNDLE"
 codesign --verify --deep "$APP_BUNDLE"
 
 echo "==> Creating DMG..."

@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func checkFullDiskAccess() {
+        if UserDefaults.standard.bool(forKey: "hasPromptedFullDiskAccess") { return }
         let testURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
         let hasAccess = (try? FileManager.default.contentsOfDirectory(atPath: testURL.path)) != nil
         if !hasAccess {
@@ -34,11 +35,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "Seeker needs Full Disk Access to browse all files and folders, including Trash.\n\nGo to System Settings → Privacy & Security → Full Disk Access and enable Seeker."
             alert.alertStyle = .informational
             alert.addButton(withTitle: "Open System Settings")
+            alert.addButton(withTitle: "Don't Ask Again")
             alert.addButton(withTitle: "Later")
-            if alert.runModal() == .alertFirstButtonReturn {
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
+                UserDefaults.standard.set(true, forKey: "hasPromptedFullDiskAccess")
                 if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
                     NSWorkspace.shared.open(url)
                 }
+            } else if response == .alertSecondButtonReturn {
+                UserDefaults.standard.set(true, forKey: "hasPromptedFullDiskAccess")
             }
         }
     }

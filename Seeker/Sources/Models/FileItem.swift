@@ -13,22 +13,56 @@ struct FileItem: Identifiable, Hashable {
     let isHidden: Bool
     let isPackage: Bool
 
+    /// Directories under ~ that trigger TCC prompts when accessed
+    private static let tccProtectedNames: Set<String> = ["Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures"]
+
+    private static let homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path
+
     init(url: URL) {
         self.id = url.absoluteString
         self.url = url
         self.name = url.lastPathComponent
 
-        let resourceValues = try? url.resourceValues(forKeys: [
-            .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
-            .creationDateKey, .isHiddenKey, .isPackageKey
-        ])
+        // Check if this is a TCC-protected directory under ~ to avoid prompts
+        let parentPath = url.deletingLastPathComponent().path
+        if parentPath == FileItem.homeDirectory && FileItem.tccProtectedNames.contains(url.lastPathComponent) {
+            self.isDirectory = true
+            self.fileSize = 0
+            self.modificationDate = nil
+            self.creationDate = nil
+            self.isHidden = false
+            self.isPackage = false
+            return
+        }
 
-        self.isDirectory = resourceValues?.isDirectory ?? false
-        self.fileSize = Int64(resourceValues?.fileSize ?? 0)
-        self.modificationDate = resourceValues?.contentModificationDate
-        self.creationDate = resourceValues?.creationDate
-        self.isHidden = resourceValues?.isHidden ?? false
-        self.isPackage = resourceValues?.isPackage ?? false
+        // Use lstat to check directory status without triggering TCC prompts
+        var statInfo = stat()
+        let isDir: Bool
+        let size: Int64
+        let mDate: Date?
+        let cDate: Date?
+        let hidden: Bool
+
+        if lstat(url.path, &statInfo) == 0 {
+            isDir = (statInfo.st_mode & S_IFMT) == S_IFDIR
+            size = isDir ? 0 : Int64(statInfo.st_size)
+            mDate = Date(timeIntervalSince1970: Double(statInfo.st_mtimespec.tv_sec))
+            cDate = Date(timeIntervalSince1970: Double(statInfo.st_birthtimespec.tv_sec))
+            hidden = url.lastPathComponent.hasPrefix(".")
+        } else {
+            isDir = false
+            size = 0
+            mDate = nil
+            cDate = nil
+            hidden = url.lastPathComponent.hasPrefix(".")
+        }
+
+        self.isDirectory = isDir
+        self.fileSize = size
+        self.modificationDate = mDate
+        self.creationDate = cDate
+        self.isHidden = hidden
+        self.isPackage = isDir && NSWorkspace.shared.isFilePackage(atPath: url.path)
     }
 
     /// Native macOS file icon, matching Finder's display

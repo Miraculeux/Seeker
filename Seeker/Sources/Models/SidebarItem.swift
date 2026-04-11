@@ -35,9 +35,7 @@ struct SidebarDefaults {
             } else {
                 url = homeURL.appendingPathComponent(path)
             }
-            if FileManager.default.fileExists(atPath: url.path) {
-                items.append(SidebarItem(id: "fav_\(name)", name: name, icon: icon, url: url, section: .favorites))
-            }
+            items.append(SidebarItem(id: "fav_\(name)", name: name, icon: icon, url: url, section: .favorites))
         }
 
         // Locations - root disk

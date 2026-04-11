@@ -119,18 +119,14 @@ class FileExplorerViewModel: Identifiable {
     func loadFiles() {
         do {
             let url = currentURL.standardizedFileURL
-            let resourceKeys: [URLResourceKey] = [
-                .isDirectoryKey, .fileSizeKey,
-                .contentModificationDateKey, .creationDateKey,
-                .isHiddenKey, .isPackageKey
-            ]
             let options: FileManager.DirectoryEnumerationOptions = showHiddenFiles ? [] : [.skipsHiddenFiles]
 
             // Try the URL as-is first, then resolve symlinks on failure
+            // Pass nil for resource keys to avoid TCC prompts on protected directories
             let contents: [URL]
             do {
                 contents = try FileManager.default.contentsOfDirectory(
-                    at: url, includingPropertiesForKeys: resourceKeys, options: options
+                    at: url, includingPropertiesForKeys: nil, options: options
                 )
             } catch {
                 // If this is the Trash directory, use Finder AppleScript to list contents
@@ -141,7 +137,7 @@ class FileExplorerViewModel: Identifiable {
                 }
                 let resolved = url.resolvingSymlinksInPath()
                 contents = try FileManager.default.contentsOfDirectory(
-                    at: resolved, includingPropertiesForKeys: resourceKeys, options: options
+                    at: resolved, includingPropertiesForKeys: nil, options: options
                 )
             }
 
