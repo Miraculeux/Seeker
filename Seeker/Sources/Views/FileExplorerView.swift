@@ -70,14 +70,15 @@ struct FileContentView: View {
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
                                 .fill(isFileSelected(file) ? Color.accentColor.opacity(0.2) : Color.clear)
                         )
-                        .onTapGesture(count: 2) {
-                            viewModel.openItem(file)
-                        }
                         .simultaneousGesture(TapGesture(count: 1).onEnded {
-                            unfocusTextFields()
-                            let flags = NSEvent.modifierFlags
-                            viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
-                            appState.activePane = side
+                            if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
+                                viewModel.openItem(file)
+                            } else {
+                                unfocusTextFields()
+                                let flags = NSEvent.modifierFlags
+                                viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
+                                appState.activePane = side
+                            }
                         })
                         .contextMenu { fileContextMenu(for: file) }
                         .onDrag {
@@ -195,14 +196,15 @@ struct FileContentView: View {
                         onCommitRename: { viewModel.commitRename() },
                         onCancelRename: { viewModel.cancelRename() }
                     )
-                    .onTapGesture(count: 2) {
-                        viewModel.openItem(file)
-                    }
                     .simultaneousGesture(TapGesture(count: 1).onEnded {
-                        unfocusTextFields()
-                        let flags = NSEvent.modifierFlags
-                        viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
-                        appState.activePane = side
+                        if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
+                            viewModel.openItem(file)
+                        } else {
+                            unfocusTextFields()
+                            let flags = NSEvent.modifierFlags
+                            viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
+                            appState.activePane = side
+                        }
                     })
                     .contextMenu { fileContextMenu(for: file) }
                     .onDrag {
@@ -626,8 +628,10 @@ struct ColumnBrowserView: View {
                     }
                 }
                 .tag(file)
-                .onTapGesture(count: 2) {
-                    viewModel.openItem(file)
+                .onTapGesture {
+                    if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
+                        viewModel.openItem(file)
+                    }
                 }
             }
         }

@@ -5,7 +5,6 @@ import AppKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate?
     var spaceMonitor: Any?
-    var doubleClickMonitor: Any?
     var mouseDownMonitor: Any?
     let quickLookPanel = QuickLookPanelController()
     weak var appState: AppState?
@@ -233,43 +232,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return nil
                 }
 
-                return event
-            }
-        }
-
-        if doubleClickMonitor == nil {
-            // Double-click → Open item (only on actual list/collection rows)
-            doubleClickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
-                guard event.clickCount == 2,
-                      let delegate = AppDelegate.shared,
-                      let state = delegate.appState,
-                      let window = event.window else { return event }
-
-                // Only proceed if the click is on a table row (file list row)
-                let windowPoint = event.locationInWindow
-                if let hitView = window.contentView?.hitTest(windowPoint) {
-                    var isOnRow = false
-                    var view: NSView? = hitView
-                    while let v = view {
-                        if v is NSTableRowView || v is NSCollectionView {
-                            isOnRow = true
-                            break
-                        }
-                        view = v.superview
-                    }
-                    guard isOnRow else { return event }
-                }
-
-                let screenPoint = window.convertPoint(toScreen: windowPoint)
-                let windowFrame = window.frame
-                let flippedY = windowFrame.maxY - screenPoint.y
-                let globalPoint = CGPoint(x: screenPoint.x - windowFrame.minX, y: flippedY)
-                // Only trigger if click is inside a pane
-                guard state.leftPaneFrame.contains(globalPoint) ||
-                      state.rightPaneFrame.contains(globalPoint) else { return event }
-                if let file = state.activeExplorer.selectedFile {
-                    state.activeExplorer.openItem(file)
-                }
                 return event
             }
         }
