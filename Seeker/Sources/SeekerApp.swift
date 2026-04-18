@@ -238,7 +238,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if mouseDownMonitor == nil {
             // MouseDown → detect which pane was clicked to set activePane
-            mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
                 guard let delegate = AppDelegate.shared,
                       let state = delegate.appState,
                       let window = event.window else {
