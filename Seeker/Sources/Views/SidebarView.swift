@@ -35,9 +35,39 @@ struct SidebarView: View {
         .background(.ultraThinMaterial)
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
             sidebarItems = SidebarDefaults.defaultItems()
+            // Refresh any tab viewing /Volumes so the new disk appears
+            let volumesDir = URL(fileURLWithPath: "/Volumes").standardizedFileURL
+            for pane in [appState.leftPane, appState.rightPane] {
+                for tab in pane.tabs where tab.currentURL.standardizedFileURL == volumesDir {
+                    tab.loadFiles()
+                }
+            }
         }
-        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in
-            sidebarItems = SidebarDefaults.defaultItems()
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { notification in
+            // Immediately remove the ejected volume to avoid race with filesystem
+            if let volumeURL = notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL {
+                sidebarItems.removeAll { $0.url.standardizedFileURL == volumeURL.standardizedFileURL }
+
+                // Navigate panes away from the ejected volume, and refresh any viewing /Volumes
+                let home = FileManager.default.homeDirectoryForCurrentUser
+                let volumePath = volumeURL.standardizedFileURL.path
+                let volumesDir = URL(fileURLWithPath: "/Volumes").standardizedFileURL
+                for pane in [appState.leftPane, appState.rightPane] {
+                    for tab in pane.tabs {
+                        let tabPath = tab.currentURL.standardizedFileURL
+                        if tabPath.path.hasPrefix(volumePath) {
+                            tab.navigateTo(home)
+                        } else if tabPath == volumesDir {
+                            tab.loadFiles()
+                        }
+                    }
+                }
+            }
+
+            // Full reload after a brief delay to catch any remaining filesystem changes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                sidebarItems = SidebarDefaults.defaultItems()
+            }
         }
     }
 }
