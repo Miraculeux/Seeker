@@ -585,11 +585,16 @@ struct SeekerApp: App {
 // MARK: - Configurable Shortcut Modifier
 
 extension View {
+    /// Apply a user-configured keyboard shortcut without `AnyView` erasure.
+    /// Returning a concrete `some View` keeps SwiftUI's structural diffing
+    /// intact for menu commands (every menu item used `AnyView` previously,
+    /// defeating diffing across menu rebuilds).
+    @ViewBuilder
     func shortcut(for action: ShortcutAction) -> some View {
-        let ks = SettingsManager.shared.shortcut(for: action)
-        if let shortcut = ks.swiftUIKeyboardShortcut {
-            return AnyView(self.keyboardShortcut(shortcut))
+        if let s = SettingsManager.shared.shortcut(for: action).swiftUIKeyboardShortcut {
+            self.keyboardShortcut(s)
+        } else {
+            self
         }
-        return AnyView(self)
     }
 }

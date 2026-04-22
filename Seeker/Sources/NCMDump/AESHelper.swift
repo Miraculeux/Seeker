@@ -2,11 +2,15 @@ import Foundation
 import CommonCrypto
 
 enum AESHelper {
+    /// AES-128-ECB decrypt with PKCS#7 padding removal.
+    /// Returns an empty array on failure (callers must treat empty as error).
     static func ecbDecrypt(key: [UInt8], data: [UInt8]) -> [UInt8] {
         let blockSize = kCCBlockSizeAES128
-        let numBlocks = data.count / blockSize
-        guard numBlocks > 0 else { return [] }
+        guard key.count == kCCKeySizeAES128,
+              data.count > 0,
+              data.count % blockSize == 0 else { return [] }
 
+        // PKCS#7 output is at most data.count bytes.
         let outputSize = data.count
         var output = [UInt8](repeating: 0, count: outputSize)
         var dataOutMoved: Int = 0
@@ -17,7 +21,10 @@ enum AESHelper {
                     CCCrypt(
                         CCOperation(kCCDecrypt),
                         CCAlgorithm(kCCAlgorithmAES),
-                        CCOptions(kCCOptionECBMode),
+                        // Let CommonCrypto validate and strip PKCS#7 padding;
+                        // do NOT roll our own (avoids truncating unpadded plaintext
+                        // and avoids a hand-built padding oracle).
+                        CCOptions(kCCOptionECBMode | kCCOptionPKCS7Padding),
                         keyPtr.baseAddress, kCCKeySizeAES128,
                         nil,
                         dataPtr.baseAddress, data.count,
@@ -28,16 +35,7 @@ enum AESHelper {
             }
         }
 
-        guard status == kCCSuccess else { return [] }
-
-        // Remove PKCS7 padding
-        if dataOutMoved > 0 {
-            let pad = Int(output[dataOutMoved - 1])
-            if pad > 0, pad <= blockSize {
-                dataOutMoved -= pad
-            }
-        }
-
+        guard status == kCCSuccess, dataOutMoved <= outputSize else { return [] }
         return Array(output[..<dataOutMoved])
     }
 }

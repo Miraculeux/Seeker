@@ -17,6 +17,10 @@ class FileOperation: Identifiable {
     var isCancelled: Bool = false
     var error: String?
     var completedDestinations: [URL] = []
+    /// Whether `cleanupFinished` has already scheduled an auto-dismiss task
+    /// for this operation's error. Prevents stacking sleeps if cleanup runs
+    /// multiple times.
+    var dismissalScheduled: Bool = false
 
     enum Kind: String {
         case copy = "Copying"
@@ -109,11 +113,16 @@ class FileOperationManager {
     }
 
     private func performOperation(_ op: FileOperation) async {
-        // Calculate total size off main thread
+        // Calculate per-source sizes once, off the main thread, and reuse
+        // them when crediting progress for moves. The previous implementation
+        // walked each source tree twice (once for the up-front total and
+        // once per `moveItem` for progress) — for forests with many small
+        // files this dominated wall time.
         let urls = op.sourceURLs
-        op.totalBytes = await Task.detached(priority: .userInitiated) {
-            self.calculateTotalSize(urls: urls)
+        let sizeMap: [URL: Int64] = await Task.detached(priority: .userInitiated) {
+            self.calculateSizeMap(urls: urls)
         }.value
+        op.totalBytes = sizeMap.values.reduce(0, +)
         op.startTime = .now
 
         for sourceURL in op.sourceURLs {
@@ -124,7 +133,7 @@ class FileOperationManager {
 
             do {
                 if op.kind == .move {
-                    let size = calculateTotalSize(urls: [sourceURL])
+                    let size = sizeMap[sourceURL] ?? 0
                     try await Task.detached(priority: .userInitiated) {
                         try FileManager.default.moveItem(at: sourceURL, to: destURL)
                     }.value
@@ -178,7 +187,7 @@ class FileOperationManager {
     private func copyWithProgress(from source: URL, to destination: URL, operation: FileOperation) async throws {
         let manifest = buildCopyManifest(source: source, destination: destination)
 
-        for (src, dst, _) in manifest {
+        for (src, dst, size) in manifest {
             guard !operation.isCancelled else { throw CancellationError() }
             operation.currentFile = src.lastPathComponent
 
@@ -187,17 +196,31 @@ class FileOperationManager {
                 let parent = dst.deletingLastPathComponent()
                 try fm.createDirectory(at: parent, withIntermediateDirectories: true)
 
-                // Use chunked copy for incremental progress
-                guard let readHandle = FileHandle(forReadingAtPath: src.path) else {
+                // APFS fast-path: try a clone first. On the same APFS
+                // volume this is effectively instant (copy-on-write) and
+                // skips reading/writing entirely. Falls through to the
+                // chunked copy if cloning isn't supported (cross-volume,
+                // non-APFS, etc.).
+                if Self.tryClone(from: src, to: dst) {
+                    if size > 0 {
+                        await MainActor.run { operation.copiedBytes += size }
+                    }
+                    return
+                }
+
+                // Use chunked copy for incremental progress; modern
+                // throwing APIs surface I/O errors instead of silently
+                // returning empty data / discarding writes.
+                guard let readHandle = try? FileHandle(forReadingFrom: src) else {
                     throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: src.path])
                 }
-                defer { readHandle.closeFile() }
+                defer { try? readHandle.close() }
 
                 fm.createFile(atPath: dst.path, contents: nil)
-                guard let writeHandle = FileHandle(forWritingAtPath: dst.path) else {
+                guard let writeHandle = try? FileHandle(forWritingTo: dst) else {
                     throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: dst.path])
                 }
-                defer { writeHandle.closeFile() }
+                defer { try? writeHandle.close() }
 
                 let chunkSize = 1024 * 1024  // 1 MB chunks
                 var lastUpdate = ContinuousClock.now
@@ -210,9 +233,9 @@ class FileOperationManager {
                         break
                     }
 
-                    let data = readHandle.readData(ofLength: chunkSize)
-                    if data.isEmpty { break }
-                    writeHandle.write(data)
+                    guard let data = try readHandle.read(upToCount: chunkSize),
+                          !data.isEmpty else { break }
+                    try writeHandle.write(contentsOf: data)
                     pendingBytes += Int64(data.count)
 
                     // Update UI at most every 50ms
@@ -227,8 +250,8 @@ class FileOperationManager {
 
                 // On cancellation, close handles and delete the partial file
                 if cancelled {
-                    readHandle.closeFile()
-                    writeHandle.closeFile()
+                    try? readHandle.close()
+                    try? writeHandle.close()
                     try? fm.removeItem(at: dst)
                     throw CancellationError()
                 }
@@ -251,26 +274,53 @@ class FileOperationManager {
         }
     }
 
+    /// APFS clonefile fast-path. Returns true on success, false if cloning
+    /// is unsupported for this src/dst pair (e.g. cross-volume) so the
+    /// caller can fall back to chunked copy.
+    private nonisolated static func tryClone(from src: URL, to dst: URL) -> Bool {
+        // `clonefile` requires the destination not to exist.
+        let fm = FileManager.default
+        if fm.fileExists(atPath: dst.path) { return false }
+        return src.withUnsafeFileSystemRepresentation { srcPath in
+            guard let srcPath else { return false }
+            return dst.withUnsafeFileSystemRepresentation { dstPath in
+                guard let dstPath else { return false }
+                return clonefile(srcPath, dstPath, 0) == 0
+            }
+        }
+    }
+
     private nonisolated func calculateTotalSize(urls: [URL]) -> Int64 {
-        var total: Int64 = 0
+        return calculateSizeMap(urls: urls).values.reduce(0, +)
+    }
+
+    /// Compute byte sizes for each top-level source URL in a single pass per
+    /// source, recursing into directories. Returned map keys are exactly the
+    /// input URLs so callers can credit progress without re-walking.
+    private nonisolated func calculateSizeMap(urls: [URL]) -> [URL: Int64] {
+        var map: [URL: Int64] = [:]
         let fm = FileManager.default
         for url in urls {
             var isDir: ObjCBool = false
-            if fm.fileExists(atPath: url.path, isDirectory: &isDir) {
-                if isDir.boolValue {
-                    if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) {
-                        for case let fileURL as URL in enumerator {
-                            let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                            total += Int64(size)
-                        }
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else {
+                map[url] = 0
+                continue
+            }
+            if isDir.boolValue {
+                var total: Int64 = 0
+                if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) {
+                    for case let fileURL as URL in enumerator {
+                        let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                        total += Int64(size)
                     }
-                } else {
-                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-                    total += Int64(size)
                 }
+                map[url] = total
+            } else {
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                map[url] = Int64(size)
             }
         }
-        return total
+        return map
     }
 
     private func uniqueDestination(for source: URL, in directory: URL) -> URL {
@@ -288,10 +338,20 @@ class FileOperationManager {
     }
 
     private func cleanupFinished() {
-        // Remove finished operations after a delay
+        // Remove finished operations after a delay; schedule error dismissal
+        // for any failed operation (previously triggered from inside the
+        // SwiftUI `body`, which could fire repeatedly on every redraw).
         Task {
             try? await Task.sleep(for: .seconds(3))
             operations.removeAll { $0.isFinished && $0.error == nil }
+        }
+        for op in operations where op.error != nil && !op.dismissalScheduled {
+            op.dismissalScheduled = true
+            let id = op.id
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                self?.operations.removeAll { $0.id == id }
+            }
         }
     }
 }

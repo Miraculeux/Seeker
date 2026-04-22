@@ -216,17 +216,26 @@ final class SettingsManager {
 
     var showSizeColumn: Bool {
         get { defaults.object(forKey: Keys.showSizeColumn) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Keys.showSizeColumn) }
+        set {
+            defaults.set(newValue, forKey: Keys.showSizeColumn)
+            Self._cachedVisibleColumns = nil
+        }
     }
 
     var showModifiedColumn: Bool {
         get { defaults.object(forKey: Keys.showModifiedColumn) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Keys.showModifiedColumn) }
+        set {
+            defaults.set(newValue, forKey: Keys.showModifiedColumn)
+            Self._cachedVisibleColumns = nil
+        }
     }
 
     var showKindColumn: Bool {
         get { defaults.object(forKey: Keys.showKindColumn) as? Bool ?? true }
-        set { defaults.set(newValue, forKey: Keys.showKindColumn) }
+        set {
+            defaults.set(newValue, forKey: Keys.showKindColumn)
+            Self._cachedVisibleColumns = nil
+        }
     }
 
     var columnOrder: [ColumnID] {
@@ -241,6 +250,7 @@ final class SettingsManager {
         }
         set {
             defaults.set(newValue.map(\.rawValue), forKey: Keys.columnOrder)
+            Self._cachedVisibleColumns = nil
         }
     }
 
@@ -260,8 +270,17 @@ final class SettingsManager {
         }
     }
 
+    /// Cached `visibleColumnsOrdered`. The unfiltered/uncached version reads
+    /// `UserDefaults` four times (once per column setting + once for the
+    /// order array) and reallocates two arrays. SwiftUI calls this from row
+    /// `body` closures, so caching it removes O(rows × columns) UserDefaults
+    /// reads per redraw. Invalidated by the setters above.
+    private static var _cachedVisibleColumns: [ColumnID]?
     var visibleColumnsOrdered: [ColumnID] {
-        columnOrder.filter { isColumnVisible($0) }
+        if let cached = Self._cachedVisibleColumns { return cached }
+        let computed = columnOrder.filter { isColumnVisible($0) }
+        Self._cachedVisibleColumns = computed
+        return computed
     }
 
     var lastLeftPanePath: String? {

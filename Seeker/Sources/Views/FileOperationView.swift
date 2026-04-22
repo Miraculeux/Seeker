@@ -39,13 +39,13 @@ struct FileOperationCompactView: View {
                             .frame(width: 60)
                             .controlSize(.small)
                     } else if let errOp = manager.operations.first(where: { $0.error != nil }) {
+                        let _ = errOp  // referenced for body dependency only
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 9))
                             .foregroundColor(.orange)
                         Text("Failed")
                             .font(.system(size: 9, weight: .medium))
                             .foregroundColor(.orange)
-                        let _ = scheduleErrorDismissal(errOp)
                     }
                 }
                 .padding(.horizontal, 6)
@@ -64,10 +64,10 @@ struct FileOperationCompactView: View {
     }
 
     private func scheduleErrorDismissal(_ op: FileOperation) -> Bool {
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(5))
-            FileOperationManager.shared.operations.removeAll { $0.id == op.id }
-        }
+        // Deprecated: the manager now schedules error auto-dismissal in
+        // `cleanupFinished`. Kept as a no-op shim to avoid breaking call
+        // sites that may still reference it; do not invoke from `body`.
+        _ = op
         return true
     }
 }

@@ -97,6 +97,15 @@ enum ID3Writer {
         guard bytes[0] == 0x49, bytes[1] == 0x44, bytes[2] == 0x33 else {
             return data
         }
+        // Syncsafe size: each of the 4 size bytes must have its high bit clear.
+        // A malformed tag with the high bit set is not a valid ID3v2 size and
+        // would otherwise produce an inflated `totalTagSize`.
+        guard bytes[6] & 0x80 == 0,
+              bytes[7] & 0x80 == 0,
+              bytes[8] & 0x80 == 0,
+              bytes[9] & 0x80 == 0 else {
+            return data
+        }
         // Read syncsafe size
         let size = (Int(bytes[6]) << 21) | (Int(bytes[7]) << 14) | (Int(bytes[8]) << 7) | Int(bytes[9])
         let totalTagSize = size + 10

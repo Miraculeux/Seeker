@@ -180,11 +180,11 @@ struct PaneView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 11))
                     .focused($isFilterFocused)
-                    .onChange(of: pane.activeTab.searchText) { pane.activeTab.loadFiles() }
+                    .onChange(of: pane.activeTab.searchText) { pane.activeTab.refilter() }
                 if !pane.activeTab.searchText.isEmpty {
                     Button {
                         pane.activeTab.searchText = ""
-                        pane.activeTab.loadFiles()
+                        pane.activeTab.refilter()
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 10))
@@ -251,9 +251,50 @@ struct PaneView: View {
     }
 
     private func freeSpace() -> String? {
-        guard let values = try? pane.activeTab.currentURL.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+        return FreeSpaceCache.shared.formatted(for: pane.activeTab.currentURL)
+    }
+}
+
+/// Caches `volumeAvailableCapacityForImportantUsage` results per volume.
+///
+/// `volumeAvailableCapacityForImportantUsage` is documented as expensive
+/// (it queries the volume daemon). The status bar reads it from `body`,
+/// which fires on every selection / hover / focus change — without caching
+/// this is one of the hottest items in Instruments. We refresh on volume
+/// mount/unmount notifications and at most every 5 seconds otherwise.
+@MainActor
+final class FreeSpaceCache {
+    static let shared = FreeSpaceCache()
+
+    private struct Entry {
+        var formatted: String
+        var fetchedAt: Date
+    }
+    private var byVolume: [URL: Entry] = [:]
+    private let ttl: TimeInterval = 5.0
+
+    private init() {
+        let nc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification,
+                     NSWorkspace.didUnmountNotification,
+                     NSWorkspace.didRenameVolumeNotification] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.byVolume.removeAll() }
+            }
+        }
+    }
+
+    func formatted(for url: URL) -> String? {
+        let volumeURL = (try? url.resourceValues(forKeys: [.volumeURLKey]))?.volume ?? url
+        if let entry = byVolume[volumeURL],
+           Date().timeIntervalSince(entry.fetchedAt) < ttl {
+            return entry.formatted
+        }
+        guard let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
               let bytes = values.volumeAvailableCapacityForImportantUsage else { return nil }
-        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) + " free"
+        let str = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) + " free"
+        byVolume[volumeURL] = Entry(formatted: str, fetchedAt: Date())
+        return str
     }
 }
 

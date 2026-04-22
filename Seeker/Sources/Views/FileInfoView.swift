@@ -8,6 +8,9 @@ struct FileInfoView: View {
     @State private var mediaInfo: MediaInfo?
     @State private var multiSelectionTotalSize: Int64?
     @State private var multiSelectionSizeTask: Task<Void, Never>?
+    @State private var folderSize: Int64?
+    @State private var folderSizeTask: Task<Void, Never>?
+    @State private var folderSizeTargetID: FileItem.ID?
 
     private var selectedFile: FileItem? {
         appState.activeExplorer.selectedFile
@@ -191,6 +194,7 @@ struct FileInfoView: View {
                         infoRow("Bytes", formattedBytes(file.fileSize))
                     } else {
                         infoRow("Kind", "Folder")
+                        folderSizeRow
                     }
 
                     if let created = file.creationDate {
@@ -255,6 +259,104 @@ struct FileInfoView: View {
                 mediaInfo = nil
             }
         }
+        .onChange(of: selectedFile?.id) { _, _ in
+            startFolderSizeIfNeeded()
+        }
+        .onAppear {
+            startFolderSizeIfNeeded()
+        }
+        .onDisappear {
+            folderSizeTask?.cancel()
+            folderSizeTask = nil
+        }
+    }
+
+    // MARK: - Folder size (async, cancellable)
+
+    @ViewBuilder
+    private var folderSizeRow: some View {
+        if let size = folderSize {
+            infoRow("Size", ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+        } else {
+            HStack {
+                Text("Size")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(width: 58, alignment: .trailing)
+                ProgressView()
+                    .controlSize(.mini)
+                    .scaleEffect(0.7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    /// Kicks off (or cancels) folder-size enumeration when the selected
+    /// item changes. The actual walk runs on a detached utility-priority
+    /// Task so it never blocks the main actor or user actions, and is
+    /// cancelled the moment the selection changes or the panel disappears.
+    private func startFolderSizeIfNeeded() {
+        // Always cancel any in-flight walk first.
+        folderSizeTask?.cancel()
+        folderSizeTask = nil
+
+        guard let file = selectedFile, file.isDirectory else {
+            folderSize = nil
+            folderSizeTargetID = nil
+            return
+        }
+
+        // If the selection is the same folder we already sized, keep it.
+        if folderSizeTargetID == file.id, folderSize != nil { return }
+
+        folderSize = nil
+        folderSizeTargetID = file.id
+        let url = file.url
+        let targetID = file.id
+
+        folderSizeTask = Task { @MainActor in
+            let total = await Task.detached(priority: .utility) { () -> Int64 in
+                Self.directorySize(at: url)
+            }.value
+
+            // Drop the result if the user moved on to a different item
+            // while we were walking.
+            guard !Task.isCancelled, folderSizeTargetID == targetID else { return }
+            if total >= 0 { folderSize = total }
+        }
+    }
+
+    /// Sums regular-file sizes under `url`. Returns -1 on cancellation.
+    /// Uses `.fileAllocatedSize` when available (matches Finder's
+    /// "On disk" measurement) and falls back to logical `.fileSize`.
+    private nonisolated static func directorySize(at url: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey]
+        let keySet = Set(keys)
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: [.skipsPackageDescendants],
+            errorHandler: { _, _ in true }
+        ) else { return 0 }
+
+        var total: Int64 = 0
+        var checkCounter = 0
+        while let next = enumerator.nextObject() as? URL {
+            // Cancellation check every 256 entries keeps overhead low
+            // while still aborting promptly on selection changes.
+            checkCounter &+= 1
+            if checkCounter & 0xFF == 0, Task.isCancelled { return -1 }
+
+            guard let rv = try? next.resourceValues(forKeys: keySet) else { continue }
+            guard rv.isRegularFile == true else { continue }
+            if let allocated = rv.totalFileAllocatedSize ?? rv.fileAllocatedSize {
+                total += Int64(allocated)
+            } else if let size = rv.fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
     }
 
     // MARK: - Info Row

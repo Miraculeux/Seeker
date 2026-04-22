@@ -11,23 +11,44 @@ extension Notification.Name {
 @MainActor @Observable
 class FileExplorerViewModel: Identifiable {
     let id = UUID()
-    var currentURL: URL
-    var files: [FileItem] = []
+    var currentURL: URL {
+        didSet { _cachedPathComponents = nil }
+    }
+    /// Sorted, unfiltered listing as loaded from disk. Source of truth for
+    /// the visible `files` list — filter changes do not touch the disk.
+    private var allFiles: [FileItem] = []
+    /// Currently displayed (filtered) files. Maintained alongside an O(1)
+    /// id→index lookup so `selectedFile`/`selectedFiles` don't rebuild a
+    /// dictionary on every access.
+    var files: [FileItem] = [] {
+        didSet {
+            var idx: [FileItem.ID: Int] = [:]
+            idx.reserveCapacity(files.count)
+            for (i, f) in files.enumerated() { idx[f.id] = i }
+            fileIndex = idx
+        }
+    }
+    private var fileIndex: [FileItem.ID: Int] = [:]
     var selectionAnchor: FileItem?
     var selectedFileIDs: Set<FileItem.ID> = []
     var iconGridColumnCount: Int = 1
 
     var selectedFile: FileItem? {
-        guard let anchorID = selectionAnchor?.id, selectedFileIDs.contains(anchorID) else {
-            let fileMap = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
-            return selectedFileIDs.first.flatMap { fileMap[$0] }
+        if let anchor = selectionAnchor, selectedFileIDs.contains(anchor.id) {
+            return anchor
         }
-        return selectionAnchor
+        guard let firstID = selectedFileIDs.first,
+              let i = fileIndex[firstID] else { return nil }
+        return files[i]
     }
 
     var selectedFiles: Set<FileItem> {
-        let fileMap = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
-        return Set(selectedFileIDs.compactMap { fileMap[$0] })
+        var result = Set<FileItem>()
+        result.reserveCapacity(selectedFileIDs.count)
+        for id in selectedFileIDs {
+            if let i = fileIndex[id] { result.insert(files[i]) }
+        }
+        return result
     }
     var pathHistory: [URL] = []
     var historyIndex: Int = -1
@@ -79,7 +100,18 @@ class FileExplorerViewModel: Identifiable {
             forName: .filesDidChange, object: nil, queue: .main
         ) { [weak self] notification in
             guard let self, notification.object as AnyObject? !== self else { return }
+            // Extract the affected dir on the notification's queue (.main),
+            // before hopping into the MainActor isolation context.
+            let affectedDir = notification.userInfo?[Self.affectedDirKey] as? URL
             MainActor.assumeIsolated {
+                // Skip the reload if we know which directory changed and
+                // it's not the one this tab is viewing. Cuts cross-tab
+                // fan-out from O(tabs) to O(tabs viewing same dir).
+                if let dir = affectedDir {
+                    let here = self.currentURL.standardizedFileURL
+                    let changed = dir.standardizedFileURL
+                    if here != changed { return }
+                }
                 self.loadFiles()
             }
         }
@@ -117,46 +149,103 @@ class FileExplorerViewModel: Identifiable {
     }
 
     func loadFiles() {
-        do {
-            let url = currentURL.standardizedFileURL
-            let options: FileManager.DirectoryEnumerationOptions = showHiddenFiles ? [] : [.skipsHiddenFiles]
+        // Snapshot all main-actor state needed for the off-main enumeration,
+        // then hop back to assign results. Bulk `URLResourceValues` keys are
+        // batched by Foundation in a single getattrlistbulk sweep — far
+        // cheaper than per-file lstat + NSWorkspace.isFilePackage in init.
+        let url = currentURL.standardizedFileURL
+        let options: FileManager.DirectoryEnumerationOptions =
+            showHiddenFiles ? [] : [.skipsHiddenFiles]
+        let trashURL = FileManager.default
+            .homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        let isTrash = url.standardizedFileURL == trashURL.standardizedFileURL
+            || url.resolvingSymlinksInPath() == trashURL.resolvingSymlinksInPath()
+        let token = nextLoadToken()
 
-            // Try the URL as-is first, then resolve symlinks on failure
-            // Pass nil for resource keys to avoid TCC prompts on protected directories
-            let contents: [URL]
-            do {
-                contents = try FileManager.default.contentsOfDirectory(
-                    at: url, includingPropertiesForKeys: nil, options: options
-                )
-            } catch {
-                // If this is the Trash directory, use Finder AppleScript to list contents
-                let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-                if url.standardizedFileURL == trashURL.standardizedFileURL || url.resolvingSymlinksInPath() == trashURL.resolvingSymlinksInPath() {
-                    files = loadTrashViaFinder()
-                    return
+        Task.detached(priority: .userInitiated) {
+            var items: [FileItem]
+            if isTrash {
+                items = Self.loadTrashViaFinder()
+                if items.isEmpty {
+                    // If AppleScript returned nothing, still try the
+                    // direct enumeration as a fall-through.
+                    items = Self.enumerate(url: url, options: options) ?? []
                 }
-                let resolved = url.resolvingSymlinksInPath()
-                contents = try FileManager.default.contentsOfDirectory(
-                    at: resolved, includingPropertiesForKeys: nil, options: options
-                )
+            } else {
+                items = Self.enumerate(url: url, options: options) ?? []
             }
 
-            var items = contents.map { FileItem(url: $0) }
-
-            // Apply search filter
-            if !searchText.isEmpty {
-                items = items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+            await MainActor.run { [weak self] in
+                guard let self, self.currentLoadToken == token else { return }
+                let sorted = self.sortItems(items)
+                self.allFiles = sorted
+                self.files = self.applyFilter(to: sorted)
             }
-
-            items = sortItems(items)
-            files = items
-        } catch {
-            print("[Seeker] Failed to load files at \(currentURL.path): \(error)")
-            files = []
         }
     }
 
-    private func loadTrashViaFinder() -> [FileItem] {
+    /// Off-actor directory enumeration. Returns `nil` on error so the
+    /// caller can decide whether to fall back to a special-cased path
+    /// (e.g. Trash via Finder AppleScript).
+    private nonisolated static func enumerate(
+        url: URL,
+        options: FileManager.DirectoryEnumerationOptions
+    ) -> [FileItem]? {
+        let fm = FileManager.default
+        let keys = FileItem.prefetchKeys
+        let contents: [URL]
+        do {
+            contents = try fm.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: keys, options: options
+            )
+        } catch {
+            // Try resolving symlinks as a one-shot retry.
+            let resolved = url.resolvingSymlinksInPath()
+            guard let alt = try? fm.contentsOfDirectory(
+                at: resolved, includingPropertiesForKeys: keys, options: options
+            ) else { return nil }
+            return Self.buildItems(from: alt, keys: keys)
+        }
+        return Self.buildItems(from: contents, keys: keys)
+    }
+
+    private nonisolated static func buildItems(from urls: [URL], keys: [URLResourceKey]) -> [FileItem] {
+        let keySet = Set(keys)
+        var items: [FileItem] = []
+        items.reserveCapacity(urls.count)
+        for u in urls {
+            let rv = (try? u.resourceValues(forKeys: keySet)) ?? URLResourceValues()
+            items.append(FileItem(url: u, resourceValues: rv))
+        }
+        return items
+    }
+
+    /// Monotonically increasing token used to drop stale `loadFiles()`
+    /// results when navigation happens faster than enumeration completes.
+    private var _loadToken: UInt64 = 0
+    private var currentLoadToken: UInt64 { _loadToken }
+    private func nextLoadToken() -> UInt64 {
+        _loadToken &+= 1
+        return _loadToken
+    }
+
+    /// Apply the in-memory filter to a sorted listing. Cheap (O(n) string
+    /// compare) and does not touch the disk — safe to call on every keystroke.
+    private func applyFilter(to items: [FileItem]) -> [FileItem] {
+        guard !searchText.isEmpty else { return items }
+        return items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    /// Re-apply the search filter to the current listing without re-reading
+    /// from disk. Bind this to `searchText` changes instead of `loadFiles()`.
+    func refilter() {
+        files = applyFilter(to: allFiles)
+    }
+
+    /// Off-actor Trash enumeration via Finder AppleScript. Validates each
+    /// returned path is a real file URL pointing at a still-existing item
+    /// before constructing a `FileItem`. Returns an empty array on failure.
+    private nonisolated static func loadTrashViaFinder() -> [FileItem] {
         let script = """
             tell application "Finder"
                 set trashItems to items of trash
@@ -175,47 +264,47 @@ class FileExplorerViewModel: Identifiable {
             return []
         }
 
-        var items: [FileItem] = []
+        let fm = FileManager.default
         let count = result.numberOfItems
         guard count > 0 else { return [] }
+
+        let keys = FileItem.prefetchKeys
+        let keySet = Set(keys)
+        var items: [FileItem] = []
+        items.reserveCapacity(count)
         for i in 1...count {
-            if let pathDesc = result.atIndex(i), let path = pathDesc.stringValue {
-                let url = URL(fileURLWithPath: path)
-                items.append(FileItem(url: url))
-            }
+            guard let pathDesc = result.atIndex(i),
+                  let path = pathDesc.stringValue else { continue }
+            let url = URL(fileURLWithPath: path)
+            guard url.isFileURL,
+                  fm.fileExists(atPath: url.path) else { continue }
+            let rv = (try? url.resourceValues(forKeys: keySet)) ?? URLResourceValues()
+            items.append(FileItem(url: url, resourceValues: rv))
         }
-
-        if !searchText.isEmpty {
-            items = items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-        }
-
-        return sortItems(items)
+        return items
     }
 
     func sortItems(_ items: [FileItem]) -> [FileItem] {
-        let sorted = items.sorted { a, b in
+        let asc = sortAscending
+        let order = sortOrder
+        return items.sorted { a, b in
             // Directories first
-            if a.isDirectory != b.isDirectory {
-                return a.isDirectory
-            }
-            switch sortOrder {
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            switch order {
             case .name:
-                return sortAscending
-                    ? a.name.localizedStandardCompare(b.name) == .orderedAscending
-                    : a.name.localizedStandardCompare(b.name) == .orderedDescending
+                let r = a.name.localizedStandardCompare(b.name)
+                return asc ? r == .orderedAscending : r == .orderedDescending
             case .date:
                 let dateA = a.modificationDate ?? Date.distantPast
                 let dateB = b.modificationDate ?? Date.distantPast
-                return sortAscending ? dateA < dateB : dateA > dateB
+                return asc ? dateA < dateB : dateA > dateB
             case .size:
-                return sortAscending ? a.fileSize < b.fileSize : a.fileSize > b.fileSize
+                return asc ? a.fileSize < b.fileSize : a.fileSize > b.fileSize
             case .kind:
-                return sortAscending
-                    ? a.typeDescription.localizedStandardCompare(b.typeDescription) == .orderedAscending
-                    : a.typeDescription.localizedStandardCompare(b.typeDescription) == .orderedDescending
+                let r = a.typeDescription.localizedStandardCompare(b.typeDescription)
+                return asc ? r == .orderedAscending : r == .orderedDescending
             }
         }
-        return sorted
     }
 
     func goBack() {
@@ -267,15 +356,19 @@ class FileExplorerViewModel: Identifiable {
     }
 
     var pathComponents: [(String, URL)] {
+        if let cached = _cachedPathComponents { return cached }
         var components: [(String, URL)] = []
         var url = currentURL
         while url.path != "/" {
-            components.insert((url.lastPathComponent, url), at: 0)
+            components.append((url.lastPathComponent, url))
             url = url.deletingLastPathComponent()
         }
-        components.insert(("/", URL(fileURLWithPath: "/")), at: 0)
+        components.append(("/", URL(fileURLWithPath: "/")))
+        components.reverse()
+        _cachedPathComponents = components
         return components
     }
+    private var _cachedPathComponents: [(String, URL)]?
 
     // MARK: - File Operations
 
@@ -344,7 +437,35 @@ class FileExplorerViewModel: Identifiable {
             return
         }
 
-        let newURL = item.url.deletingLastPathComponent().appendingPathComponent(renameText)
+        // Reject names that would escape the current directory or contain
+        // path separators / NUL. Prevents accidental path traversal via rename.
+        if renameText == "." || renameText == ".."
+            || renameText.contains("/")
+            || renameText.contains("\0") {
+            showFileError("Invalid file name.")
+            renamingFile = nil
+            return
+        }
+
+        let parent = item.url.deletingLastPathComponent()
+        let newURL = parent.appendingPathComponent(renameText)
+
+        // Ensure the resolved path stays inside the parent directory.
+        let parentPath = parent.standardizedFileURL.path
+        let newParentPath = newURL.standardizedFileURL.deletingLastPathComponent().path
+        guard newParentPath == parentPath else {
+            showFileError("Invalid file name.")
+            renamingFile = nil
+            return
+        }
+
+        // Refuse to silently overwrite an existing file.
+        if FileManager.default.fileExists(atPath: newURL.path) {
+            showFileError("A file named '\(renameText)' already exists.")
+            renamingFile = nil
+            return
+        }
+
         do {
             try FileManager.default.moveItem(at: item.url, to: newURL)
             undoStack.append(.rename(oldURL: item.url, newURL: newURL))
@@ -635,19 +756,10 @@ class FileExplorerViewModel: Identifiable {
     func dumpNCMFiles(_ files: [FileItem]) {
         let ncmFiles = files.filter(\.isNCMFile)
         guard !ncmFiles.isEmpty else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            var errors: [String] = []
-            for file in ncmFiles {
-                let outputDir = file.url.deletingLastPathComponent().path
-                do {
-                    var crypt = try NCMCrypt(path: file.url.path)
-                    try crypt.dump(outputDir: outputDir)
-                    crypt.fixMetadata()
-                } catch {
-                    errors.append("\(file.name): \(error.localizedDescription)")
-                }
-            }
-            DispatchQueue.main.async { [weak self] in
+        let urls = ncmFiles.map(\.url)
+        Task.detached(priority: .userInitiated) {
+            let errors = await Self.runNCMDumps(urls: urls)
+            await MainActor.run { [weak self] in
                 self?.loadFiles()
                 self?.notifyFilesChanged()
                 if !errors.isEmpty {
@@ -659,34 +771,66 @@ class FileExplorerViewModel: Identifiable {
 
     func dumpNCMFilesInFolder(_ folder: FileItem) {
         guard folder.isDirectory else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task.detached(priority: .userInitiated) {
             let fm = FileManager.default
             guard let enumerator = fm.enumerator(
                 at: folder.url,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             ) else { return }
-            var errors: [String] = []
-            var count = 0
-            for case let fileURL as URL in enumerator {
-                guard fileURL.pathExtension.lowercased() == "ncm" else { continue }
-                let outputDir = fileURL.deletingLastPathComponent().path
-                do {
-                    var crypt = try NCMCrypt(path: fileURL.path)
-                    try crypt.dump(outputDir: outputDir)
-                    crypt.fixMetadata()
-                    count += 1
-                } catch {
-                    errors.append("\(fileURL.lastPathComponent): \(error.localizedDescription)")
+            var urls: [URL] = []
+            while let next = enumerator.nextObject() {
+                if let fileURL = next as? URL,
+                   fileURL.pathExtension.lowercased() == "ncm" {
+                    urls.append(fileURL)
                 }
             }
-            DispatchQueue.main.async { [weak self] in
+            let total = urls.count
+            let errors = await Self.runNCMDumps(urls: urls)
+            let okCount = total - errors.count
+            await MainActor.run { [weak self] in
                 self?.loadFiles()
                 self?.notifyFilesChanged()
                 if !errors.isEmpty {
-                    self?.showFileError("NCM dump failed (\(count) ok, \(errors.count) failed):\n\(errors.joined(separator: "\n"))")
+                    self?.showFileError("NCM dump failed (\(okCount) ok, \(errors.count) failed):\n\(errors.joined(separator: "\n"))")
                 }
             }
+        }
+    }
+
+    /// Run NCM dumps in parallel, bounded by the active CPU count. Each dump
+    /// is CPU-bound (RC4-like keystream + AES key unwrap) and trivially
+    /// parallelizable across files.
+    private nonisolated static func runNCMDumps(urls: [URL]) async -> [String] {
+        guard !urls.isEmpty else { return [] }
+        let concurrency = max(2, min(urls.count, ProcessInfo.processInfo.activeProcessorCount))
+        return await withTaskGroup(of: String?.self) { group in
+            var iter = urls.makeIterator()
+            // Prime the pool.
+            for _ in 0..<concurrency {
+                guard let url = iter.next() else { break }
+                group.addTask { Self.dumpOne(url) }
+            }
+            var errors: [String] = []
+            // As each task completes, enqueue the next.
+            for await result in group {
+                if let err = result { errors.append(err) }
+                if let url = iter.next() {
+                    group.addTask { Self.dumpOne(url) }
+                }
+            }
+            return errors
+        }
+    }
+
+    private nonisolated static func dumpOne(_ url: URL) -> String? {
+        do {
+            var crypt = try NCMCrypt(path: url.path)
+            try crypt.dump(outputDir: url.deletingLastPathComponent().path)
+            crypt.fixMetadata()
+            return nil
+        } catch {
+            return "\(url.lastPathComponent): \(error.localizedDescription)"
         }
     }
 
@@ -809,8 +953,17 @@ class FileExplorerViewModel: Identifiable {
     }
 
     private func notifyFilesChanged() {
-        NotificationCenter.default.post(name: .filesDidChange, object: self)
+        NotificationCenter.default.post(
+            name: .filesDidChange,
+            object: self,
+            userInfo: [Self.affectedDirKey: currentURL]
+        )
     }
+
+    /// Key used in `.filesDidChange` userInfo to scope reloads to tabs that
+    /// are actually viewing the affected directory. Subscribers without
+    /// this key (e.g. legacy posters) trigger a reload as before.
+    nonisolated static let affectedDirKey = "affectedDir"
 }
 
 final class UncheckedSendableBox<T>: @unchecked Sendable {

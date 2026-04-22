@@ -16,14 +16,17 @@ struct FileContentView: View {
         Group {
             switch viewModel.viewMode {
             case .list:
-                listView
+                // Scope columnRefresh to the views that actually depend on
+                // column settings; avoids nuking the entire view tree's
+                // identity (List recycling, scroll position) on a settings
+                // change that does not affect the column browser.
+                listView.id(columnRefresh)
             case .icons:
                 iconGridView
             case .columns:
                 columnView
             }
         }
-        .id(columnRefresh)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .alert("Error", isPresented: $viewModel.showError) {
             Button("OK") { viewModel.showError = false }
@@ -49,7 +52,8 @@ struct FileContentView: View {
     // MARK: - List View
 
     private var listView: some View {
-        VStack(spacing: 0) {
+        let visibleColumns = SettingsManager.shared.visibleColumnsOrdered
+        return VStack(spacing: 0) {
             // Column header
             listHeader
             Divider()
@@ -61,6 +65,7 @@ struct FileContentView: View {
                             file: file,
                             isSelected: isFileSelected(file),
                             isRenaming: viewModel.renamingFile == file,
+                            visibleColumns: visibleColumns,
                             renameText: $viewModel.renameText,
                             onCommitRename: { viewModel.commitRename() },
                             onCancelRename: { viewModel.cancelRename() }
@@ -107,10 +112,13 @@ struct FileContentView: View {
     }
 
     private var listHeader: some View {
-        HStack(spacing: 0) {
+        // Read once per header redraw rather than on every iteration of the
+        // ForEach below (and per row in `FileListRow`).
+        let columns = SettingsManager.shared.visibleColumnsOrdered
+        return HStack(spacing: 0) {
             sortableHeader("Name", sortKey: .name)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            ForEach(SettingsManager.shared.visibleColumnsOrdered) { col in
+            ForEach(columns) { col in
                 switch col {
                 case .size:
                     sortableHeader("Size", sortKey: .size)
@@ -388,11 +396,11 @@ struct FileContentView: View {
 
         for provider in providers {
             group.enter()
-            provider.loadItem(forTypeIdentifier: "public.file-url") { data, _ in
+            provider.loadDataRepresentation(forTypeIdentifier: "public.file-url") { data, _ in
                 defer { group.leave() }
-                guard let data = data as? Data,
-                      let urlString = String(data: data, encoding: .utf8),
-                      let sourceURL = URL(string: urlString) else { return }
+                guard let data,
+                      let sourceURL = URL(dataRepresentation: data, relativeTo: nil),
+                      sourceURL.isFileURL else { return }
                 collector.append(sourceURL)
             }
         }
@@ -415,8 +423,22 @@ struct FileContentView: View {
     }
 
     private func openTerminal(at url: URL) {
-        let escapedPath = url.path.replacingOccurrences(of: "'", with: "'\\''")
-        let script = "tell application \"Terminal\" to do script \"cd '\(escapedPath)'\""
+        // Reject paths with characters that could break out of an AppleScript
+        // string literal (quotes, backslash, control chars, line/paragraph
+        // separators). This mitigates AppleScript injection via folder names.
+        let path = url.path
+        let forbidden: Set<Character> = ["\"", "\\", "\r", "\n", "\u{2028}", "\u{2029}", "\0"]
+        if path.contains(where: { forbidden.contains($0) || $0.asciiValue.map { $0 < 0x20 } ?? false }) {
+            // Fall back to opening Terminal.app on the folder via NSWorkspace,
+            // which does not interpret the path as code.
+            let terminalURL = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+            let cfg = NSWorkspace.OpenConfiguration()
+            NSWorkspace.shared.open([url], withApplicationAt: terminalURL, configuration: cfg)
+            return
+        }
+        // Single-quote escape for the inner shell `cd` argument.
+        let shellEscaped = path.replacingOccurrences(of: "'", with: "'\\''")
+        let script = "tell application \"Terminal\" to do script \"cd '\(shellEscaped)'\""
         if let appleScript = NSAppleScript(source: script) {
             var error: NSDictionary?
             appleScript.executeAndReturnError(&error)
@@ -430,6 +452,7 @@ struct FileListRow: View {
     let file: FileItem
     let isSelected: Bool
     let isRenaming: Bool
+    let visibleColumns: [ColumnID]
     @Binding var renameText: String
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
@@ -464,7 +487,7 @@ struct FileListRow: View {
             // Size
             // Date
             // Kind
-            ForEach(SettingsManager.shared.visibleColumnsOrdered) { col in
+            ForEach(visibleColumns) { col in
                 switch col {
                 case .size:
                     Text(file.formattedSize)
@@ -665,15 +688,46 @@ struct ColumnBrowserView: View {
     }
 
     private func loadItems(at url: URL) -> [FileItem] {
+        // Cached: SwiftUI invalidates the column-browser body on hover/
+        // selection/etc., which previously re-enumerated every visible
+        // column directory synchronously on the main thread on each redraw.
+        // Keys include `showHiddenFiles` so toggling the option re-fetches.
+        let key = "\(url.standardizedFileURL.path)|\(viewModel.showHiddenFiles ? 1 : 0)" as NSString
+        if let cached = ColumnBrowserCache.shared.cache.object(forKey: key) {
+            return cached.items
+        }
         guard let contents = try? FileManager.default.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey],
             options: viewModel.showHiddenFiles ? [] : [.skipsHiddenFiles]
         ) else { return [] }
 
-        return contents.map { FileItem(url: $0) }.sorted { a, b in
+        let items = contents.map { FileItem(url: $0) }.sorted { a, b in
             if a.isDirectory != b.isDirectory { return a.isDirectory }
             return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        ColumnBrowserCache.shared.cache.setObject(ColumnBrowserCache.Entry(items: items), forKey: key)
+        return items
+    }
+}
+
+/// Process-wide cache for column-browser directory listings. Bounded so it
+/// can't grow without limit while users navigate. Invalidated wholesale on
+/// `.filesDidChange` so file ops in either pane are reflected.
+@MainActor
+final class ColumnBrowserCache {
+    static let shared = ColumnBrowserCache()
+    final class Entry { let items: [FileItem]; init(items: [FileItem]) { self.items = items } }
+    let cache: NSCache<NSString, Entry> = {
+        let c = NSCache<NSString, Entry>()
+        c.countLimit = 64
+        return c
+    }()
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: .filesDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.cache.removeAllObjects() }
         }
     }
 }

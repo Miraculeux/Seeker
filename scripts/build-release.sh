@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+IFS=$'\n\t'
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Seeker"
@@ -10,24 +11,54 @@ DMG_DIR="${BUILD_DIR}/dmg"
 DMG_OUTPUT="${PROJECT_DIR}/dist/${APP_NAME}-${VERSION}.dmg"
 ZIP_OUTPUT="${PROJECT_DIR}/dist/${APP_NAME}-${VERSION}.zip"
 
-echo "==> Building ${APP_NAME} v${VERSION} (arm64)..."
+# Linker flags: dead-strip unreachable symbols and unused dylibs to shrink
+# the release binary.
+LINKER_FLAGS=(-Xlinker -dead_strip -Xlinker -dead_strip_dylibs)
+
+echo "==> Building ${APP_NAME} v${VERSION} (universal: arm64 + x86_64)..."
 cd "$PROJECT_DIR"
-swift build -c release --arch arm64
+swift build -c release --arch arm64   "${LINKER_FLAGS[@]}"
+swift build -c release --arch x86_64  "${LINKER_FLAGS[@]}"
 
 echo "==> Creating app bundle..."
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-cp .build/arm64-apple-macosx/release/Seeker "$APP_BUNDLE/Contents/MacOS/Seeker"
+# Fuse per-arch binaries into a single universal Mach-O.
+lipo -create \
+    .build/arm64-apple-macosx/release/Seeker \
+    .build/x86_64-apple-macosx/release/Seeker \
+    -output "$APP_BUNDLE/Contents/MacOS/Seeker"
+# Strip local symbols (-x) and debug info (-S) from the shipped binary;
+# debug info already lives in the .dSYM elsewhere.
+strip -S -x "$APP_BUNDLE/Contents/MacOS/Seeker"
+
 cp Seeker/Sources/Info.plist "$APP_BUNDLE/Contents/Info.plist"
 cp Seeker/Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 cp -r .build/arm64-apple-macosx/release/Seeker_Seeker.bundle "$APP_BUNDLE/Contents/Resources/"
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
-echo "==> Ad-hoc code signing..."
-codesign --force --deep --sign "Apple Development: marvelzhu@gmail.com (M54Y4GPL75)" --entitlements Seeker/Seeker.entitlements "$APP_BUNDLE"
-codesign --verify --deep "$APP_BUNDLE"
+echo "==> Code signing (hardened runtime)..."
+SIGN_IDENTITY="${SIGN_IDENTITY:-Apple Development: marvelzhu@gmail.com (M54Y4GPL75)}"
+# Sign nested bundles first (no --deep: it's deprecated and skips inner
+# code-sign requirements). Enable hardened runtime + secure timestamp so the
+# binary can be notarised and runs with library validation.
+# Skip flat resource bundles (e.g. SwiftPM's *_Module.bundle) which contain
+# only assets and no Info.plist/MachO; codesign rejects them.
+find "$APP_BUNDLE/Contents" -type d \( -name "*.bundle" -o -name "*.framework" -o -name "*.dylib" \) -print0 \
+    | while IFS= read -r -d '' nested; do
+        if [[ ! -f "$nested/Contents/Info.plist" && ! -f "$nested/Info.plist" ]]; then
+            echo "    (skipping resources-only bundle: $(basename "$nested"))"
+            continue
+        fi
+        codesign --force --options runtime --timestamp \
+                 --sign "$SIGN_IDENTITY" "$nested"
+      done
+codesign --force --options runtime --timestamp \
+         --entitlements Seeker/Seeker.entitlements \
+         --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+codesign --verify --strict --verbose=2 "$APP_BUNDLE"
 
 echo "==> Creating DMG..."
 mkdir -p "$DMG_DIR" "$(dirname "$DMG_OUTPUT")"

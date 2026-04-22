@@ -63,11 +63,9 @@ struct SidebarView: View {
                     }
                 }
             }
-
-            // Full reload after a brief delay to catch any remaining filesystem changes
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                sidebarItems = SidebarDefaults.defaultItems()
-            }
+            // Single re-enumeration; the previous code did this twice (once
+            // immediately, once after a 0.5s `asyncAfter` sleep poll).
+            sidebarItems = SidebarDefaults.defaultItems()
         }
     }
 }

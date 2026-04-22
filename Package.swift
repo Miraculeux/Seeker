@@ -15,6 +15,13 @@ let package = Package(
                 .process("../Assets.xcassets"),
                 .copy("../Resources/AppIcon.icns")
             ],
+            swiftSettings: [
+                // Cross-module optimization lets the optimizer inline
+                // across module boundaries in release builds. Negligible
+                // effect for a single-module app today, but future-proofs
+                // when sources get split into libraries.
+                .unsafeFlags(["-cross-module-optimization"], .when(configuration: .release))
+            ],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",

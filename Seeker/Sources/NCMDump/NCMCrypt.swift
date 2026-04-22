@@ -36,6 +36,13 @@ public struct NCMCrypt {
 
     private static let pngHeader: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
 
+    // Per-field hard caps to defend against crafted NCM headers that
+    // declare absurd lengths and try to allocate gigabytes / crash.
+    private static let maxKeyLen: UInt32 = 4096          // wrapped RC4 key
+    private static let maxMetaLen: UInt32 = 1 << 20      // 1 MiB JSON metadata
+    private static let maxImageLen: UInt32 = 32 << 20    // 32 MiB album art
+    private static let maxCoverFrameLen: UInt32 = 32 << 20
+
     public let filepath: String
     public private(set) var dumpFilepath: String = ""
     public private(set) var format: AudioFormat = .mp3
@@ -43,6 +50,7 @@ public struct NCMCrypt {
     public private(set) var imageData: Data?
     private var keyBox: [UInt8] = Array(repeating: 0, count: 256)
     private var fileHandle: FileHandle
+    private let fileSize: UInt64
 
     public init(path: String) throws {
         self.filepath = path
@@ -52,6 +60,8 @@ public struct NCMCrypt {
             throw NCMCryptError.cannotOpenFile(path)
         }
         self.fileHandle = handle
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        self.fileSize = (attrs?[.size] as? NSNumber)?.uint64Value ?? 0
 
         // Validate NCM header: "CTNE" + "MADF"
         let header = try readBytes(count: 8)
@@ -66,7 +76,9 @@ public struct NCMCrypt {
 
         // Read key data
         let keyLen = try readUInt32()
-        guard keyLen > 0 else { throw NCMCryptError.brokenNCMFile }
+        guard keyLen > 0, keyLen <= Self.maxKeyLen else {
+            throw NCMCryptError.brokenNCMFile
+        }
 
         var keyData = try readBytes(count: Int(keyLen))
         for i in 0..<keyData.count {
@@ -74,12 +86,15 @@ public struct NCMCrypt {
         }
 
         let decryptedKey = AESHelper.ecbDecrypt(key: Self.coreKey, data: keyData)
-        // Skip first 17 bytes ("neteasecloudmusic")
-        let rc4Key = Array(decryptedKey.dropFirst(17))
+        // Skip first 17 bytes ("neteasecloudmusic"); reject if too short.
+        guard decryptedKey.count > 17 else { throw NCMCryptError.brokenNCMFile }
+        let rc4Key = decryptedKey.dropFirst(17)
+        guard !rc4Key.isEmpty else { throw NCMCryptError.brokenNCMFile }
         buildKeyBox(key: rc4Key)
 
         // Read metadata
         let metaLen = try readUInt32()
+        guard metaLen <= Self.maxMetaLen else { throw NCMCryptError.brokenNCMFile }
         if metaLen > 0 {
             var modifyData = try readBytes(count: Int(metaLen))
             for i in 0..<modifyData.count {
@@ -108,6 +123,11 @@ public struct NCMCrypt {
         // Read cover image
         let coverFrameLen = try readUInt32()
         let imageLen = try readUInt32()
+        guard coverFrameLen <= Self.maxCoverFrameLen,
+              imageLen <= Self.maxImageLen,
+              imageLen <= coverFrameLen else {
+            throw NCMCryptError.brokenNCMFile
+        }
 
         if imageLen > 0 {
             self.imageData = Data(try readBytes(count: Int(imageLen)))
@@ -115,7 +135,7 @@ public struct NCMCrypt {
             fputs("[Warn] '\(path)' missing album image!\n", stderr)
         }
 
-        // Skip remaining cover frame data
+        // Skip remaining cover frame data (imageLen <= coverFrameLen above)
         let remaining = Int(coverFrameLen) - Int(imageLen)
         if remaining > 0 {
             try skip(count: remaining)
@@ -124,55 +144,86 @@ public struct NCMCrypt {
 
     public mutating func dump(outputDir: String = "") throws {
         let sourceURL = URL(fileURLWithPath: filepath)
-        var outputURL: URL
+        var outputURL: URL = outputDir.isEmpty
+            ? sourceURL
+            : URL(fileURLWithPath: outputDir).appendingPathComponent(sourceURL.lastPathComponent)
 
-        if outputDir.isEmpty {
-            outputURL = sourceURL
-        } else {
-            outputURL = URL(fileURLWithPath: outputDir).appendingPathComponent(sourceURL.lastPathComponent)
-        }
+        // 256 KiB — large enough to amortize syscall + write overhead, small
+        // enough not to bloat working set when dumping many files in parallel.
+        // MUST be a multiple of 256 (the RC4-like keystream period used by
+        // `decryptInPlace`) so chunk-local indexing matches global stream
+        // semantics.
+        let bufferSize = 1 << 18
 
-        let bufferSize = 0x8000
-        var outputData = Data()
-        var formatDetected = false
+        // --- Pass 1: read & decrypt the first chunk to detect format. -------
+        let firstAvail = readableChunkSize(target: bufferSize)
+        guard firstAvail > 0 else { throw NCMCryptError.brokenNCMFile }
+        var firstChunk = fileHandle.readData(ofLength: firstAvail)
+        guard !firstChunk.isEmpty else { throw NCMCryptError.brokenNCMFile }
+        decryptInPlace(&firstChunk)
 
-        while true {
-            let chunk: [UInt8]
-            do {
-                chunk = try readBytes(count: bufferSize)
-            } catch {
-                break // EOF
-            }
-
-            var decrypted = chunk
-            for i in 0..<decrypted.count {
-                let j = (i + 1) & 0xFF
-                decrypted[i] ^= keyBox[(Int(keyBox[j]) + Int(keyBox[(Int(keyBox[j]) + j) & 0xFF])) & 0xFF]
-            }
-
-            if !formatDetected {
-                // Detect format from first bytes: ID3 = MP3, else FLAC
-                if decrypted.count >= 3 && decrypted[0] == 0x49 && decrypted[1] == 0x44 && decrypted[2] == 0x33 {
-                    format = .mp3
-                    outputURL = outputURL.deletingPathExtension().appendingPathExtension("mp3")
-                } else {
-                    format = .flac
-                    outputURL = outputURL.deletingPathExtension().appendingPathExtension("flac")
-                }
-                formatDetected = true
-            }
-
-            outputData.append(contentsOf: decrypted)
-        }
-
+        let isMP3 = firstChunk.count >= 3
+            && firstChunk[0] == 0x49 && firstChunk[1] == 0x44 && firstChunk[2] == 0x33
+        format = isMP3 ? .mp3 : .flac
+        outputURL = outputURL.deletingPathExtension()
+            .appendingPathExtension(isMP3 ? "mp3" : "flac")
         dumpFilepath = outputURL.path
-        try outputData.write(to: outputURL)
+
+        // --- Open output handle (truncate). ---------------------------------
+        let fm = FileManager.default
+        if fm.fileExists(atPath: outputURL.path) {
+            try fm.removeItem(at: outputURL)
+        }
+        fm.createFile(atPath: outputURL.path, contents: nil)
+        guard let writeHandle = try? FileHandle(forWritingTo: outputURL) else {
+            throw NCMCryptError.cannotOpenFile(outputURL.path)
+        }
+        defer { try? writeHandle.close() }
+
+        // --- For MP3: write the new ID3v2 tag now and skip the source's
+        //     existing leading ID3v2 inline (avoids the read-modify-write
+        //     rewrite that the original `fixMetadata` did). ------------------
+        var bytesToSkip = 0  // remaining bytes of source ID3v2 to discard
+        if isMP3 {
+            if let tagHeader = buildID3v2HeaderData() {
+                try writeHandle.write(contentsOf: tagHeader)
+            }
+            bytesToSkip = id3v2TotalSize(in: firstChunk) ?? 0
+        }
+
+        // Helper to write a (possibly truncated) chunk respecting `bytesToSkip`.
+        func writeChunkRespectingSkip(_ chunk: Data) throws {
+            if bytesToSkip == 0 {
+                try writeHandle.write(contentsOf: chunk)
+                return
+            }
+            if bytesToSkip >= chunk.count {
+                bytesToSkip -= chunk.count
+                return
+            }
+            let trimmed = chunk.subdata(in: bytesToSkip..<chunk.count)
+            bytesToSkip = 0
+            try writeHandle.write(contentsOf: trimmed)
+        }
+
+        try writeChunkRespectingSkip(firstChunk)
+
+        // --- Pass 2: stream-decrypt remaining chunks straight to disk. ------
+        while true {
+            let avail = readableChunkSize(target: bufferSize)
+            if avail == 0 { break }
+            var chunk = fileHandle.readData(ofLength: avail)
+            if chunk.isEmpty { break }
+            decryptInPlace(&chunk)
+            try writeChunkRespectingSkip(chunk)
+        }
     }
 
     public func fixMetadata() {
         // Without TagLib, we use a lightweight approach:
-        // For MP3: write ID3v2 tags
-        // For FLAC: write Vorbis comments
+        // For MP3: tag is already written inline by `dump()`, no work needed.
+        // For FLAC: read the (small) file, splice in metadata blocks, re-write.
+        guard format == .flac else { return }
         guard metadata != nil || imageData != nil else { return }
 
         guard FileManager.default.fileExists(atPath: dumpFilepath),
@@ -180,47 +231,97 @@ public struct NCMCrypt {
             return
         }
 
-        switch format {
-        case .mp3:
-            if let tagged = ID3Writer.writeTag(
-                to: existingData,
-                title: metadata?.name,
-                artist: metadata?.artist,
-                album: metadata?.album,
-                imageData: imageData,
-                imageMimeType: mimeType(for: imageData)
-            ) {
-                try? tagged.write(to: URL(fileURLWithPath: dumpFilepath))
-            }
-        case .flac:
-            if let tagged = FLACWriter.writeMetadata(
-                to: existingData,
-                title: metadata?.name,
-                artist: metadata?.artist,
-                album: metadata?.album,
-                imageData: imageData,
-                imageMimeType: mimeType(for: imageData)
-            ) {
-                try? tagged.write(to: URL(fileURLWithPath: dumpFilepath))
+        if let tagged = FLACWriter.writeMetadata(
+            to: existingData,
+            title: metadata?.name,
+            artist: metadata?.artist,
+            album: metadata?.album,
+            imageData: imageData,
+            imageMimeType: mimeType(for: imageData)
+        ) {
+            try? tagged.write(to: URL(fileURLWithPath: dumpFilepath))
+        }
+    }
+
+    // MARK: - Streaming helpers
+
+    /// Returns the next chunk size to read, capped at `target` and at the
+    /// remaining bytes in the source file.
+    private func readableChunkSize(target: Int) -> Int {
+        guard fileSize > 0 else { return target }
+        let offset = fileHandle.offsetInFile
+        if offset >= fileSize { return 0 }
+        return Int(min(UInt64(target), fileSize - offset))
+    }
+
+    /// Decrypt `chunk` in place. The keystream period is 256 and resets each
+    /// chunk; `dump` ensures non-final chunk sizes are multiples of 256 so
+    /// chunk-local indexing matches global stream semantics. Uses unsafe
+    /// pointer access to skip Swift array bounds checks in the hot loop.
+    private func decryptInPlace(_ chunk: inout Data) {
+        chunk.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+            let count = raw.count
+            keyBox.withUnsafeBufferPointer { kb in
+                guard let kbBase = kb.baseAddress else { return }
+                for i in 0..<count {
+                    let j = (i + 1) & 0xFF
+                    let a = Int(kbBase[j])
+                    let b = Int(kbBase[(a + j) & 0xFF])
+                    base[i] ^= kbBase[(a + b) & 0xFF]
+                }
             }
         }
     }
 
+    /// Build the ID3v2.3 header + frames for the current `metadata`/`imageData`,
+    /// without any audio payload. Returns nil if there is nothing to write.
+    private func buildID3v2HeaderData() -> Data? {
+        // Reuse ID3Writer by handing it an empty audio buffer; it will return
+        // tag + (empty audio) which is exactly the tag bytes we need.
+        guard metadata != nil || imageData != nil else { return nil }
+        let tagged = ID3Writer.writeTag(
+            to: Data(),
+            title: metadata?.name,
+            artist: metadata?.artist,
+            album: metadata?.album,
+            imageData: imageData,
+            imageMimeType: mimeType(for: imageData)
+        )
+        // `writeTag` returns the input audio when it has nothing to write
+        // (i.e. all fields nil/empty). Treat empty result as "no tag".
+        return (tagged?.isEmpty == false) ? tagged : nil
+    }
+
+    /// If `data` begins with a valid ID3v2 header, return the total tag size
+    /// (header + frames) so callers can skip past it. Returns nil otherwise.
+    private func id3v2TotalSize(in data: Data) -> Int? {
+        guard data.count >= 10,
+              data[0] == 0x49, data[1] == 0x44, data[2] == 0x33,
+              data[6] & 0x80 == 0, data[7] & 0x80 == 0,
+              data[8] & 0x80 == 0, data[9] & 0x80 == 0 else { return nil }
+        let size = (Int(data[6]) << 21) | (Int(data[7]) << 14)
+                 | (Int(data[8]) << 7)  |  Int(data[9])
+        return size + 10
+    }
+
     // MARK: - Private helpers
 
-    private mutating func buildKeyBox(key: [UInt8]) {
+    private mutating func buildKeyBox(key: ArraySlice<UInt8>) {
         for i in 0..<256 {
             keyBox[i] = UInt8(i)
         }
 
         var lastByte: UInt8 = 0
+        let keyCount = key.count
+        let keyStart = key.startIndex
         var keyOffset = 0
 
         for i in 0..<256 {
             let swap = keyBox[i]
-            let c = UInt8((Int(swap) + Int(lastByte) + Int(key[keyOffset])) & 0xFF)
+            let c = UInt8((Int(swap) + Int(lastByte) + Int(key[keyStart + keyOffset])) & 0xFF)
             keyOffset += 1
-            if keyOffset >= key.count { keyOffset = 0 }
+            if keyOffset >= keyCount { keyOffset = 0 }
             keyBox[i] = keyBox[Int(c)]
             keyBox[Int(c)] = swap
             lastByte = c
@@ -238,8 +339,16 @@ public struct NCMCrypt {
 
     @discardableResult
     private func readBytes(count: Int) throws -> [UInt8] {
+        guard count >= 0 else { throw NCMCryptError.brokenNCMFile }
+        // Defend against crafted lengths claiming more bytes than the file holds.
+        if fileSize > 0 {
+            let offset = fileHandle.offsetInFile
+            guard UInt64(count) <= fileSize - min(offset, fileSize) else {
+                throw NCMCryptError.brokenNCMFile
+            }
+        }
         let data = fileHandle.readData(ofLength: count)
-        guard data.count > 0 else { throw NCMCryptError.readError }
+        guard data.count == count else { throw NCMCryptError.readError }
         return Array(data)
     }
 
@@ -249,7 +358,12 @@ public struct NCMCrypt {
     }
 
     private func skip(count: Int) throws {
+        guard count >= 0 else { throw NCMCryptError.brokenNCMFile }
         let offset = fileHandle.offsetInFile
-        fileHandle.seek(toFileOffset: offset + UInt64(count))
+        let target = offset + UInt64(count)
+        if fileSize > 0, target > fileSize {
+            throw NCMCryptError.brokenNCMFile
+        }
+        fileHandle.seek(toFileOffset: target)
     }
 }
