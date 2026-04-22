@@ -214,12 +214,14 @@ struct FileContentView: View {
                     FileIconCell(
                         file: file,
                         iconSize: viewModel.iconSize,
+                        isLiveZooming: viewModel.isLiveZooming,
                         isSelected: isFileSelected(file),
                         isRenaming: viewModel.renamingFile == file,
                         renameText: $viewModel.renameText,
                         onCommitRename: { viewModel.commitRename() },
                         onCancelRename: { viewModel.cancelRename() }
                     )
+                    .equatable()
                     .simultaneousGesture(TapGesture(count: 1).onEnded {
                         if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
                             viewModel.openItem(file)
@@ -908,9 +910,10 @@ final class DiskThumbnailCache: @unchecked Sendable {
     }
 }
 
-struct FileIconCell: View {
+struct FileIconCell: View, Equatable {
     let file: FileItem
     let iconSize: CGFloat
+    let isLiveZooming: Bool
     let isSelected: Bool
     let isRenaming: Bool
     @Binding var renameText: String
@@ -919,6 +922,21 @@ struct FileIconCell: View {
     @State private var hovering = false
     @State private var thumbnail: NSImage?
     @FocusState private var isRenameFocused: Bool
+
+    /// SwiftUI uses this to short-circuit redraws when the visible inputs
+    /// haven't changed. Two cells are equivalent iff every parameter that
+    /// affects rendering matches; closures, `@State`, and `@Binding`
+    /// channels are intentionally excluded — their identity churns on
+    /// every parent body call but doesn't affect what we draw, and the
+    /// rename `TextField` owns its own text via the binding so we don't
+    /// need to compare it here.
+    nonisolated static func == (lhs: FileIconCell, rhs: FileIconCell) -> Bool {
+        lhs.file == rhs.file
+            && lhs.iconSize == rhs.iconSize
+            && lhs.isLiveZooming == rhs.isLiveZooming
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isRenaming == rhs.isRenaming
+    }
 
     /// Label font size scales with the icon — small icons get an 10pt
     /// label, large icons up to 13pt — so the cell stays balanced.
@@ -995,9 +1013,17 @@ struct FileIconCell: View {
     }
 
     /// Identity used by `.task(id:)` so re-renders for the same file at
-    /// the same zoom bucket don't restart the thumbnail load.
+    /// the same zoom bucket don't restart the thumbnail load. While a
+    /// pinch gesture is active we collapse the bucket portion of the id
+    /// so the task is *not* restarted on every intermediate bucket the
+    /// gesture passes through — we just keep showing the cached
+    /// fallback. The id flips back to the real bucket on commit, which
+    /// fires one final exact-bucket render at the resting size.
     private var thumbnailTaskID: String {
-        "\(file.id)\u{1}\(sizeBucket)"
+        if isLiveZooming {
+            return "\(file.id)\u{1}live"
+        }
+        return "\(file.id)\u{1}\(sizeBucket)"
     }
 
     @ViewBuilder
@@ -1041,6 +1067,12 @@ struct FileIconCell: View {
                 return
             }
         }
+
+        // During an active zoom gesture, don't fire QL/disk reads at
+        // every bucket the gesture passes through — the cached
+        // fallback above is good enough. The commit at gesture end
+        // flips the task id and re-runs us at the resting bucket.
+        if isLiveZooming { return }
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         let url = file.url

@@ -55,6 +55,13 @@ class FileExplorerViewModel: Identifiable {
             )
         }
     }
+    /// When true, a continuous icon-zoom gesture (pinch / slider drag) is
+    /// in progress. Cells consult this in their `.task(id:)` to avoid
+    /// firing QL/disk thumbnail lookups for every intermediate bucket
+    /// the gesture passes through; the final commit re-fires loads at
+    /// the resting bucket only.
+    var isLiveZooming: Bool = false
+
     /// When true, the `iconSize` setter skips persistence + broadcast.
     /// Used during continuous gestures so we don't churn UserDefaults
     /// and re-render other panes on every micro-update.
@@ -195,6 +202,7 @@ class FileExplorerViewModel: Identifiable {
     /// value stabilises (typically gesture end) so the change is saved
     /// and mirrored to the other pane.
     func setIconSizeLive(_ size: CGFloat) {
+        if !isLiveZooming { isLiveZooming = true }
         _iconSizeSuppressBroadcast = true
         iconSize = size
         _iconSizeSuppressBroadcast = false
@@ -218,6 +226,9 @@ class FileExplorerViewModel: Identifiable {
         } else {
             iconSize = clamped
         }
+        // Releasing the live-zoom flag triggers cells' .task(id:) to
+        // fire one final exact-bucket render at the resting size.
+        if isLiveZooming { isLiveZooming = false }
     }
 
     /// Back-compat alias that now persists. Existing call sites that
