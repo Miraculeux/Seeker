@@ -438,6 +438,26 @@ struct SeekerApp: App {
 
                 Divider()
 
+                Button("Zoom In") {
+                    appState.activeExplorer.zoomIconsIn()
+                }
+                .keyboardShortcut("+", modifiers: .command)
+                .disabled(appState.activeExplorer.viewMode != .icons)
+
+                Button("Zoom Out") {
+                    appState.activeExplorer.zoomIconsOut()
+                }
+                .keyboardShortcut("-", modifiers: .command)
+                .disabled(appState.activeExplorer.viewMode != .icons)
+
+                Button("Actual Size") {
+                    appState.activeExplorer.resetIconZoom()
+                }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(appState.activeExplorer.viewMode != .icons)
+
+                Divider()
+
                 Button(appState.activeExplorer.showHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files") {
                     appState.activeExplorer.showHiddenFiles.toggle()
                     appState.activeExplorer.loadFiles()

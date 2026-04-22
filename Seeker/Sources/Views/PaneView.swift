@@ -162,6 +162,31 @@ struct PaneView: View {
             .frame(width: 96)
             .controlSize(.small)
 
+            // Icon-zoom slider, only shown in icon view. Bound directly to
+            // `iconSize`; the property's didSet handles persistence and
+            // cross-pane sync, and clamping happens on assignment so the
+            // slider's range is just a UX hint, not the source of truth.
+            if pane.activeTab.viewMode == .icons {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundColor(.secondary.opacity(0.6))
+                    Slider(
+                        value: Binding(
+                            get: { Double(pane.activeTab.iconSize) },
+                            set: { pane.activeTab.setIconSize(CGFloat($0)) }
+                        ),
+                        in: Double(SettingsManager.iconSizeMin)...Double(SettingsManager.iconSizeMax)
+                    )
+                    .controlSize(.mini)
+                    .frame(width: 70)
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+                .help("Icon size (⌘+ / ⌘-)")
+            }
+
             // Refresh button
             NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
 

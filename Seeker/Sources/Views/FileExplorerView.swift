@@ -11,6 +11,9 @@ struct FileContentView: View {
     @State private var quickLookURL: URL?
     @State private var showQuickLook = false
     @State private var columnRefresh: Int = 0
+    /// Icon size at the start of the current pinch gesture, used so the
+    /// gesture's multiplicative magnification scales from a stable base.
+    @State private var pinchBaseSize: CGFloat?
 
     var body: some View {
         Group {
@@ -176,11 +179,18 @@ struct FileContentView: View {
     }
 
     private func updateIconGridColumnCount(width: CGFloat) {
-        let itemMin: CGFloat = 90
+        let itemMin: CGFloat = iconCellWidth
         let spacing: CGFloat = 8
         let padded = width - 24 // 12pt padding on each side
         let count = max(1, Int((padded + spacing) / (itemMin + spacing)))
         viewModel.iconGridColumnCount = count
+    }
+
+    /// Outer width of an icon-grid cell. Scales with the user-chosen icon
+    /// size; the extra 28pt absorbs label padding and the rename text
+    /// field so wide names don't reflow the grid.
+    private var iconCellWidth: CGFloat {
+        viewModel.iconSize + 42
     }
 
     private func isFileSelected(_ file: FileItem) -> Bool {
@@ -194,10 +204,14 @@ struct FileContentView: View {
 
     private var iconGridView: some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 90, maximum: 110), spacing: 8)], spacing: 8) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: iconCellWidth, maximum: iconCellWidth + 20), spacing: 8)],
+                spacing: 8
+            ) {
                 ForEach(viewModel.files) { file in
                     FileIconCell(
                         file: file,
+                        iconSize: viewModel.iconSize,
                         isSelected: isFileSelected(file),
                         isRenaming: viewModel.renamingFile == file,
                         renameText: $viewModel.renameText,
@@ -229,6 +243,9 @@ struct FileContentView: View {
                     .onChange(of: geo.size.width) { _, newWidth in
                         updateIconGridColumnCount(width: newWidth)
                     }
+                    .onChange(of: viewModel.iconSize) { _, _ in
+                        updateIconGridColumnCount(width: geo.size.width)
+                    }
                 }
             )
         }
@@ -237,6 +254,28 @@ struct FileContentView: View {
             handleDrop(providers: providers)
             return true
         }
+        // Pinch-to-zoom on the icon grid. The gesture state's `magnification`
+        // is multiplicative; we apply it to the icon size we had when the
+        // gesture began so the size tracks the fingers smoothly. Final
+        // value is snapped to the nearest discrete step on release for a
+        // stable resting size.
+        .gesture(
+            MagnifyGesture()
+                .onChanged { value in
+                    if pinchBaseSize == nil { pinchBaseSize = viewModel.iconSize }
+                    let base = pinchBaseSize ?? viewModel.iconSize
+                    viewModel.setIconSize(base * value.magnification)
+                }
+                .onEnded { _ in
+                    pinchBaseSize = nil
+                    let steps = FileExplorerViewModel.iconZoomSteps
+                    let current = viewModel.iconSize
+                    let snapped = steps.min(by: { abs($0 - current) < abs($1 - current) }) ?? current
+                    viewModel.setIconSize(snapped)
+                }
+        )
+        // Mouse-wheel zoom: hold ⌘ + scroll while pointer is over the grid.
+        .onContinuousHover { _ in /* keep view active for scroll events */ }
     }
 
     // MARK: - Column View
@@ -522,6 +561,7 @@ struct FileListRow: View {
 
 struct FileIconCell: View {
     let file: FileItem
+    let iconSize: CGFloat
     let isSelected: Bool
     let isRenaming: Bool
     @Binding var renameText: String
@@ -530,32 +570,46 @@ struct FileIconCell: View {
     @State private var hovering = false
     @FocusState private var isRenameFocused: Bool
 
+    /// Label font size scales with the icon — small icons get an 10pt
+    /// label, large icons up to 13pt — so the cell stays balanced.
+    private var labelFont: CGFloat {
+        // Map iconSize 32...128 -> font 10...13
+        let t = (iconSize - 32) / (128 - 32)
+        return 10 + max(0, min(1, t)) * 3
+    }
+
+    /// Cell width must accommodate the icon plus a little label padding.
+    private var cellWidth: CGFloat { iconSize + 42 }
+
+    /// Cell height grows with the icon and leaves two label lines.
+    private var cellHeight: CGFloat { iconSize + 42 }
+
     var body: some View {
         VStack(spacing: 6) {
             Image(nsImage: file.nsIcon)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 48, height: 48)
+                .frame(width: iconSize, height: iconSize)
                 .shadow(color: .black.opacity(hovering ? 0.15 : 0.05), radius: hovering ? 4 : 1, y: hovering ? 2 : 1)
                 .scaleEffect(hovering ? 1.05 : 1.0)
 
             if isRenaming {
                 TextField("", text: $renameText, onCommit: onCommitRename)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 10))
+                    .font(.system(size: labelFont))
                     .multilineTextAlignment(.center)
                     .focused($isRenameFocused)
                     .onExitCommand(perform: onCancelRename)
                     .onAppear { isRenameFocused = true }
             } else {
                 Text(file.displayName)
-                    .font(.system(size: 10, weight: isSelected ? .medium : .regular))
+                    .font(.system(size: labelFont, weight: isSelected ? .medium : .regular))
                     .lineLimit(2)
                     .multilineTextAlignment(.center)
                     .truncationMode(.middle)
             }
         }
-        .frame(width: 90, height: 90)
+        .frame(width: cellWidth, height: cellHeight)
         .padding(6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -567,6 +621,7 @@ struct FileIconCell: View {
         )
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.15), value: hovering)
+        .animation(.easeInOut(duration: 0.15), value: iconSize)
     }
 }
 

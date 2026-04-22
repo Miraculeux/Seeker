@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Carbon.HIToolbox
 
 enum ColumnID: String, CaseIterable, Identifiable {
@@ -187,6 +188,26 @@ final class SettingsManager {
         static let showFileExtensions = "showFileExtensions"
         static let leftPaneViewMode = "lastLeftPaneViewMode"
         static let rightPaneViewMode = "lastRightPaneViewMode"
+        static let iconSize = "iconSize"
+    }
+
+    /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
+    /// iconSizeMax] on read so a corrupted/legacy value can't escape the
+    /// supported range.
+    static let iconSizeMin: CGFloat = 32
+    static let iconSizeMax: CGFloat = 128
+    static let iconSizeDefault: CGFloat = 48
+
+    var iconSize: CGFloat {
+        get {
+            let raw = defaults.object(forKey: Keys.iconSize) as? Double
+            let value = CGFloat(raw ?? Double(Self.iconSizeDefault))
+            return min(max(value, Self.iconSizeMin), Self.iconSizeMax)
+        }
+        set {
+            let clamped = min(max(newValue, Self.iconSizeMin), Self.iconSizeMax)
+            defaults.set(Double(clamped), forKey: Keys.iconSize)
+        }
     }
 
     var rememberLastLocation: Bool {

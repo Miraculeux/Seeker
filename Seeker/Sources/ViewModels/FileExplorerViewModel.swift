@@ -6,6 +6,7 @@ extension Notification.Name {
     static let explorerDidNavigate = Notification.Name("explorerDidNavigate")
     static let columnSettingsChanged = Notification.Name("columnSettingsChanged")
     static let filesDidChange = Notification.Name("filesDidChange")
+    static let iconSizeDidChange = Notification.Name("iconSizeDidChange")
 }
 
 @MainActor @Observable
@@ -32,6 +33,22 @@ class FileExplorerViewModel: Identifiable {
     var selectionAnchor: FileItem?
     var selectedFileIDs: Set<FileItem.ID> = []
     var iconGridColumnCount: Int = 1
+
+    /// Icon-grid icon edge length, mirrored into `SettingsManager` so the
+    /// value persists across launches and propagates to the other pane via
+    /// `.iconSizeDidChange`.
+    var iconSize: CGFloat = SettingsManager.shared.iconSize {
+        didSet {
+            guard iconSize != oldValue else { return }
+            let clamped = min(max(iconSize, SettingsManager.iconSizeMin), SettingsManager.iconSizeMax)
+            if clamped != iconSize { iconSize = clamped; return }
+            SettingsManager.shared.iconSize = clamped
+            NotificationCenter.default.post(
+                name: .iconSizeDidChange, object: self,
+                userInfo: ["size": clamped]
+            )
+        }
+    }
 
     var selectedFile: FileItem? {
         if let anchor = selectionAnchor, selectedFileIDs.contains(anchor.id) {
@@ -92,6 +109,7 @@ class FileExplorerViewModel: Identifiable {
     }
 
     private let _observer = UncheckedSendableBox<Any?>(nil)
+    private let _zoomObserver = UncheckedSendableBox<Any?>(nil)
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.currentURL = url
@@ -115,12 +133,57 @@ class FileExplorerViewModel: Identifiable {
                 self.loadFiles()
             }
         }
+        // Mirror icon-zoom changes from the other pane so both pane
+        // grids stay in lockstep.
+        _zoomObserver.value = NotificationCenter.default.addObserver(
+            forName: .iconSizeDidChange, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, notification.object as AnyObject? !== self else { return }
+            let size = notification.userInfo?["size"] as? CGFloat
+            MainActor.assumeIsolated {
+                if let s = size, s != self.iconSize {
+                    // Assign without re-broadcasting (didSet skips equal values).
+                    self.iconSize = s
+                }
+            }
+        }
     }
 
     deinit {
         if let observer = _observer.value {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = _zoomObserver.value {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    // MARK: - Icon Zoom
+
+    /// Discrete zoom levels (in points). Step-based so ⌘+/⌘− land on the
+    /// same values regardless of which key the user pressed first, and so
+    /// pinch gestures snap to predictable sizes.
+    static let iconZoomSteps: [CGFloat] = [32, 40, 48, 56, 64, 80, 96, 112, 128]
+
+    func zoomIconsIn() {
+        let next = Self.iconZoomSteps.first(where: { $0 > iconSize }) ?? Self.iconZoomSteps.last!
+        iconSize = next
+    }
+
+    func zoomIconsOut() {
+        let prev = Self.iconZoomSteps.last(where: { $0 < iconSize }) ?? Self.iconZoomSteps.first!
+        iconSize = prev
+    }
+
+    func resetIconZoom() {
+        iconSize = SettingsManager.iconSizeDefault
+    }
+
+    /// Sets the icon size from a continuous source (e.g. pinch gesture)
+    /// without snapping. Caller is responsible for clamping is handled by
+    /// the property's didSet.
+    func setIconSize(_ size: CGFloat) {
+        iconSize = size
     }
 
     // MARK: - Navigation
