@@ -1,5 +1,6 @@
 import SwiftUI
 import QuickLookUI
+import QuickLookThumbnailing
 import UniformTypeIdentifiers
 
 // MARK: - File Content View (supports list, icon, column modes)
@@ -559,6 +560,78 @@ struct FileListRow: View {
 
 // MARK: - Icon Grid Cell
 
+/// Process-wide cache for QuickLook thumbnails used by `FileIconCell`.
+///
+/// Thumbnails are keyed by `(path, sizeBucket)` so different zoom levels
+/// don't collide and small zoom changes reuse the previous render. The
+/// cache is bounded by `countLimit` rather than total bytes; with
+/// `NSCache` we get automatic eviction under memory pressure.
+///
+/// Thread-safe by `NSCache` contract; marked `nonisolated(unsafe)` so
+/// it can be reached from any actor.
+enum ThumbnailCache {
+    nonisolated(unsafe) private static let cache: NSCache<NSString, NSImage> = {
+        let c = NSCache<NSString, NSImage>()
+        c.countLimit = 512
+        return c
+    }()
+
+    /// File-extension allowlist: types QuickLook can usually thumbnail
+    /// quickly. Restricting up front avoids paying for QL requests that
+    /// just return a generic icon (which the cell already shows).
+    static let thumbnailableExtensions: Set<String> = [
+        // raster
+        "jpg", "jpeg", "png", "gif", "tiff", "tif", "bmp", "heic", "heif", "webp", "ico",
+        // raw
+        "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf", "srw",
+        // vector / docs
+        "pdf", "svg", "ps", "eps",
+        // video (QL extracts a poster frame)
+        "mov", "mp4", "m4v", "avi", "mkv", "webm",
+        // app-rendered
+        "psd", "sketch"
+    ]
+
+    static func canThumbnail(_ url: URL) -> Bool {
+        thumbnailableExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    private static func key(for url: URL, sizeBucket: Int) -> NSString {
+        "\(url.path)\u{1}\(sizeBucket)" as NSString
+    }
+
+    static func cached(for url: URL, sizeBucket: Int) -> NSImage? {
+        cache.object(forKey: key(for: url, sizeBucket: sizeBucket))
+    }
+
+    /// Generates a thumbnail off the main actor and stores it in the
+    /// cache. Returns `nil` on failure or cancellation. Callers should
+    /// treat `nil` as "fall back to the generic Finder icon".
+    static func thumbnail(for url: URL, sizeBucket: Int, scale: CGFloat) async -> NSImage? {
+        let k = key(for: url, sizeBucket: sizeBucket)
+        if let hit = cache.object(forKey: k) { return hit }
+
+        let dim = CGFloat(sizeBucket)
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: CGSize(width: dim, height: dim),
+            scale: scale,
+            representationTypes: .thumbnail
+        )
+
+        return await withCheckedContinuation { (cont: CheckedContinuation<NSImage?, Never>) in
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in
+                guard let rep else { cont.resume(returning: nil); return }
+                let image = rep.nsImage
+                // Recompute the key inside the @Sendable callback to avoid
+                // capturing a non-Sendable NSString across the boundary.
+                cache.setObject(image, forKey: key(for: url, sizeBucket: sizeBucket))
+                cont.resume(returning: image)
+            }
+        }
+    }
+}
+
 struct FileIconCell: View {
     let file: FileItem
     let iconSize: CGFloat
@@ -568,6 +641,7 @@ struct FileIconCell: View {
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
     @State private var hovering = false
+    @State private var thumbnail: NSImage?
     @FocusState private var isRenameFocused: Bool
 
     /// Label font size scales with the icon — small icons get an 10pt
@@ -584,14 +658,26 @@ struct FileIconCell: View {
     /// Cell height grows with the icon and leaves two label lines.
     private var cellHeight: CGFloat { iconSize + 42 }
 
+    /// Quantises the requested icon size to a discrete bucket so small
+    /// pinch movements don't trigger a flood of new QL renders.
+    private var sizeBucket: Int {
+        // Round up to the next zoom step so we never display an
+        // upscaled (blurry) thumbnail.
+        let steps = FileExplorerViewModel.iconZoomSteps
+        for s in steps where CGFloat(Int(s)) >= iconSize { return Int(s) }
+        return Int(steps.last ?? 128)
+    }
+
+    /// True when the thumbnail should occupy the full icon slot (no
+    /// shadow/scale tricks that look weird on photos).
+    private var hasThumbnail: Bool { thumbnail != nil }
+
     var body: some View {
         VStack(spacing: 6) {
-            Image(nsImage: file.nsIcon)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
+            iconArtwork
                 .frame(width: iconSize, height: iconSize)
-                .shadow(color: .black.opacity(hovering ? 0.15 : 0.05), radius: hovering ? 4 : 1, y: hovering ? 2 : 1)
-                .scaleEffect(hovering ? 1.05 : 1.0)
+                .shadow(color: .black.opacity(hovering ? 0.18 : 0.06), radius: hovering ? 4 : 1, y: hovering ? 2 : 1)
+                .scaleEffect(hovering ? 1.04 : 1.0)
 
             if isRenaming {
                 TextField("", text: $renameText, onCommit: onCommitRename)
@@ -622,6 +708,60 @@ struct FileIconCell: View {
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.15), value: hovering)
         .animation(.easeInOut(duration: 0.15), value: iconSize)
+        // Drives async thumbnail loading. Re-runs whenever the file id or
+        // the size bucket changes; SwiftUI cancels the previous task
+        // automatically so we never block the main actor.
+        .task(id: thumbnailTaskID) { await loadThumbnailIfNeeded() }
+    }
+
+    /// Identity used by `.task(id:)` so re-renders for the same file at
+    /// the same zoom bucket don't restart the thumbnail load.
+    private var thumbnailTaskID: String {
+        "\(file.id)\u{1}\(sizeBucket)"
+    }
+
+    @ViewBuilder
+    private var iconArtwork: some View {
+        if let thumb = thumbnail {
+            // Photo-style framing: white card + thin border, mimicking
+            // Finder's icon-view image preview.
+            Image(nsImage: thumb)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: iconSize, maxHeight: iconSize)
+                .background(Color.white)
+                .overlay(
+                    Rectangle()
+                        .strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5)
+                )
+        } else {
+            Image(nsImage: file.nsIcon)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+        }
+    }
+
+    private func loadThumbnailIfNeeded() async {
+        // Skip directories, packages, and anything we know QL won't
+        // produce a useful preview for.
+        guard !file.isDirectory, !file.isPackage,
+              ThumbnailCache.canThumbnail(file.url) else {
+            if thumbnail != nil { thumbnail = nil }
+            return
+        }
+
+        // Synchronous cache hit avoids a render cycle.
+        if let hit = ThumbnailCache.cached(for: file.url, sizeBucket: sizeBucket) {
+            if thumbnail !== hit { thumbnail = hit }
+            return
+        }
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let url = file.url
+        let bucket = sizeBucket
+        let image = await ThumbnailCache.thumbnail(for: url, sizeBucket: bucket, scale: scale)
+        guard !Task.isCancelled else { return }
+        thumbnail = image
     }
 }
 
