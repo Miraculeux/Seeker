@@ -28,6 +28,9 @@ struct SettingsView: View {
 struct GeneralSettingsTab: View {
     @State private var rememberLastLocation: Bool = SettingsManager.shared.rememberLastLocation
     @State private var showFileExtensions: Bool = SettingsManager.shared.showFileExtensions
+    @State private var thumbnailCacheBytes: Int64?
+    @State private var isClearingCache: Bool = false
+    @State private var cacheSizeRefreshTask: Task<Void, Never>?
 
     var body: some View {
         Form {
@@ -50,8 +53,64 @@ struct GeneralSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Caches") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Thumbnail Cache")
+                        Text(thumbnailCacheSizeLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Reveal in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([DiskThumbnailCache.shared.directoryURL])
+                    }
+                    .controlSize(.small)
+                    Button(isClearingCache ? "Clearing\u{2026}" : "Clear Cache") {
+                        clearThumbnailCache()
+                    }
+                    .controlSize(.small)
+                    .disabled(isClearingCache)
+                }
+                Text("Image, PDF and video previews shown in icon view are cached on disk so they don't have to be regenerated on every launch. Clearing this is safe; previews will be re-rendered on demand.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
+        .task {
+            await refreshThumbnailCacheSize()
+        }
+        .onDisappear {
+            cacheSizeRefreshTask?.cancel()
+        }
+    }
+
+    private var thumbnailCacheSizeLabel: String {
+        if let bytes = thumbnailCacheBytes {
+            return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        }
+        return "Calculating\u{2026}"
+    }
+
+    private func refreshThumbnailCacheSize() async {
+        let bytes = await DiskThumbnailCache.shared.currentSizeBytes()
+        await MainActor.run { thumbnailCacheBytes = bytes }
+    }
+
+    private func clearThumbnailCache() {
+        guard !isClearingCache else { return }
+        isClearingCache = true
+        cacheSizeRefreshTask?.cancel()
+        cacheSizeRefreshTask = Task {
+            await DiskThumbnailCache.shared.clearAndWait()
+            await MainActor.run {
+                ThumbnailCache.clearMemory()
+            }
+            await refreshThumbnailCacheSize()
+            await MainActor.run { isClearingCache = false }
+        }
     }
 }
 

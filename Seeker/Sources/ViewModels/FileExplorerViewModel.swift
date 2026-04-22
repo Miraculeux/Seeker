@@ -37,11 +37,17 @@ class FileExplorerViewModel: Identifiable {
     /// Icon-grid icon edge length, mirrored into `SettingsManager` so the
     /// value persists across launches and propagates to the other pane via
     /// `.iconSizeDidChange`.
+    ///
+    /// During continuous gestures (pinch, slider drag) callers should use
+    /// `setIconSizeLive(_:)` so we don't hit `UserDefaults` and broadcast
+    /// to other panes on every tick — then call `commitIconSize(_:)`
+    /// once the value stabilises.
     var iconSize: CGFloat = SettingsManager.shared.iconSize {
         didSet {
             guard iconSize != oldValue else { return }
             let clamped = min(max(iconSize, SettingsManager.iconSizeMin), SettingsManager.iconSizeMax)
             if clamped != iconSize { iconSize = clamped; return }
+            guard !_iconSizeSuppressBroadcast else { return }
             SettingsManager.shared.iconSize = clamped
             NotificationCenter.default.post(
                 name: .iconSizeDidChange, object: self,
@@ -49,6 +55,10 @@ class FileExplorerViewModel: Identifiable {
             )
         }
     }
+    /// When true, the `iconSize` setter skips persistence + broadcast.
+    /// Used during continuous gestures so we don't churn UserDefaults
+    /// and re-render other panes on every micro-update.
+    private var _iconSizeSuppressBroadcast: Bool = false
 
     var selectedFile: FileItem? {
         if let anchor = selectionAnchor, selectedFileIDs.contains(anchor.id) {
@@ -163,27 +173,57 @@ class FileExplorerViewModel: Identifiable {
     /// Discrete zoom levels (in points). Step-based so ⌘+/⌘− land on the
     /// same values regardless of which key the user pressed first, and so
     /// pinch gestures snap to predictable sizes. Top end matches Finder.
-    static let iconZoomSteps: [CGFloat] = [16, 24, 32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 448, 512]
+    nonisolated static let iconZoomSteps: [CGFloat] = [16, 24, 32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 448, 512]
 
     func zoomIconsIn() {
         let next = Self.iconZoomSteps.first(where: { $0 > iconSize }) ?? Self.iconZoomSteps.last!
-        iconSize = next
+        commitIconSize(next)
     }
 
     func zoomIconsOut() {
         let prev = Self.iconZoomSteps.last(where: { $0 < iconSize }) ?? Self.iconZoomSteps.first!
-        iconSize = prev
+        commitIconSize(prev)
     }
 
     func resetIconZoom() {
-        iconSize = SettingsManager.iconSizeDefault
+        commitIconSize(SettingsManager.iconSizeDefault)
     }
 
-    /// Sets the icon size from a continuous source (e.g. pinch gesture)
-    /// without snapping. Caller is responsible for clamping is handled by
-    /// the property's didSet.
-    func setIconSize(_ size: CGFloat) {
+    /// Sets the icon size from a continuous source (pinch, slider drag)
+    /// without persisting or broadcasting. Cheap enough to call on every
+    /// gesture tick. Caller must invoke `commitIconSize(_:)` when the
+    /// value stabilises (typically gesture end) so the change is saved
+    /// and mirrored to the other pane.
+    func setIconSizeLive(_ size: CGFloat) {
+        _iconSizeSuppressBroadcast = true
         iconSize = size
+        _iconSizeSuppressBroadcast = false
+    }
+
+    /// Persists `size` and broadcasts to other panes. Use after a
+    /// continuous gesture finishes, or for any one-shot change
+    /// (keyboard shortcut, menu item).
+    func commitIconSize(_ size: CGFloat) {
+        // Force the didSet broadcast even if the live setter already
+        // moved iconSize to this value during the gesture.
+        let clamped = min(max(size, SettingsManager.iconSizeMin), SettingsManager.iconSizeMax)
+        if iconSize == clamped {
+            // Re-emit so the other pane and UserDefaults pick it up
+            // even though our local property didn't change value.
+            SettingsManager.shared.iconSize = clamped
+            NotificationCenter.default.post(
+                name: .iconSizeDidChange, object: self,
+                userInfo: ["size": clamped]
+            )
+        } else {
+            iconSize = clamped
+        }
+    }
+
+    /// Back-compat alias that now persists. Existing call sites that
+    /// just want a one-shot change keep working.
+    func setIconSize(_ size: CGFloat) {
+        commitIconSize(size)
     }
 
     // MARK: - Navigation

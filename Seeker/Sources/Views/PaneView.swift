@@ -162,10 +162,11 @@ struct PaneView: View {
             .frame(width: 96)
             .controlSize(.small)
 
-            // Icon-zoom slider, only shown in icon view. Bound directly to
-            // `iconSize`; the property's didSet handles persistence and
-            // cross-pane sync, and clamping happens on assignment so the
-            // slider's range is just a UX hint, not the source of truth.
+            // Icon-zoom slider, only shown in icon view. Live updates use
+            // `setIconSizeLive` so we don't write `UserDefaults` and post a
+            // cross-pane notification on every micro-step. The commit
+            // happens once the user releases the slider via
+            // `Slider(onEditingChanged:)`.
             if pane.activeTab.viewMode == .icons {
                 HStack(spacing: 4) {
                     Image(systemName: "square.grid.3x3")
@@ -174,9 +175,14 @@ struct PaneView: View {
                     Slider(
                         value: Binding(
                             get: { Double(pane.activeTab.iconSize) },
-                            set: { pane.activeTab.setIconSize(CGFloat($0)) }
+                            set: { pane.activeTab.setIconSizeLive(CGFloat($0)) }
                         ),
-                        in: Double(SettingsManager.iconSizeMin)...Double(SettingsManager.iconSizeMax)
+                        in: Double(SettingsManager.iconSizeMin)...Double(SettingsManager.iconSizeMax),
+                        onEditingChanged: { editing in
+                            if !editing {
+                                pane.activeTab.commitIconSize(pane.activeTab.iconSize)
+                            }
+                        }
                     )
                     .controlSize(.mini)
                     .frame(width: 70)
