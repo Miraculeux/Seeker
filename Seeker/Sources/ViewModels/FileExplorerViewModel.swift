@@ -162,8 +162,8 @@ class FileExplorerViewModel: Identifiable {
 
     /// Discrete zoom levels (in points). Step-based so ⌘+/⌘− land on the
     /// same values regardless of which key the user pressed first, and so
-    /// pinch gestures snap to predictable sizes.
-    static let iconZoomSteps: [CGFloat] = [32, 40, 48, 56, 64, 80, 96, 112, 128]
+    /// pinch gestures snap to predictable sizes. Top end matches Finder.
+    static let iconZoomSteps: [CGFloat] = [16, 24, 32, 48, 64, 96, 128, 160, 192, 256, 320, 384, 448, 512]
 
     func zoomIconsIn() {
         let next = Self.iconZoomSteps.first(where: { $0 > iconSize }) ?? Self.iconZoomSteps.last!

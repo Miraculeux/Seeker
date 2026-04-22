@@ -193,10 +193,10 @@ final class SettingsManager {
 
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
     /// iconSizeMax] on read so a corrupted/legacy value can't escape the
-    /// supported range.
-    static let iconSizeMin: CGFloat = 32
-    static let iconSizeMax: CGFloat = 128
-    static let iconSizeDefault: CGFloat = 48
+    /// supported range. Upper bound matches Finder's icon-view slider.
+    static let iconSizeMin: CGFloat = 16
+    static let iconSizeMax: CGFloat = 512
+    static let iconSizeDefault: CGFloat = 64
 
     var iconSize: CGFloat {
         get {
