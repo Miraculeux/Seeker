@@ -139,18 +139,39 @@ struct SidebarRow: View {
     }
 
     private func ejectVolume(at url: URL) {
+        let volumeName = url.lastPathComponent
         Task.detached {
             do {
                 try NSWorkspace.shared.unmountAndEjectDevice(at: url)
             } catch {
                 await MainActor.run {
                     let alert = NSAlert()
-                    alert.messageText = "Eject Failed"
-                    alert.informativeText = error.localizedDescription
+                    alert.messageText = "Couldn’t Eject “\(volumeName)”"
+                    alert.informativeText = friendlyEjectErrorMessage(for: error, volumeName: volumeName)
                     alert.alertStyle = .warning
                     alert.runModal()
                 }
             }
+        }
+    }
+
+    /// Translates the cryptic `OSStatus` errors returned by
+    /// `unmountAndEjectDevice` into actionable, user-facing messages.
+    private func friendlyEjectErrorMessage(for error: Error, volumeName: String) -> String {
+        let nsError = error as NSError
+        switch nsError.code {
+        case -47: // fBsyErr — file/volume is busy
+            return "“\(volumeName)” is in use. Quit any apps using files on the disk (including Terminal windows or Finder previews), then try again."
+        case -49: // opWrErr — file open with write permission
+            return "A file on “\(volumeName)” is still open for writing. Save and close any documents stored on the disk, then try again."
+        case -50: // paramErr
+            return "The disk couldn’t be ejected because the request was invalid. Try again, or eject from Finder."
+        case -35: // nsvErr — no such volume
+            return "“\(volumeName)” is no longer available. It may have already been ejected."
+        case -61: // wrPermErr
+            return "Seeker doesn’t have permission to eject “\(volumeName)”. Try ejecting it from Finder."
+        default:
+            return error.localizedDescription
         }
     }
 
