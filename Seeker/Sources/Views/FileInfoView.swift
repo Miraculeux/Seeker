@@ -2,10 +2,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 import ImageIO
 import AVFoundation
+import QuickLookThumbnailing
 
 struct FileInfoView: View {
     @Environment(AppState.self) var appState
     @State private var mediaInfo: MediaInfo?
+    @State private var previewImage: NSImage?
     @State private var multiSelectionTotalSize: Int64?
     @State private var multiSelectionSizeTask: Task<Void, Never>?
     @State private var folderSize: Int64?
@@ -168,10 +170,23 @@ struct FileInfoView: View {
             VStack(spacing: 16) {
                 // Icon + Name
                 VStack(spacing: 8) {
-                    Image(nsImage: file.nsIcon)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 64, height: 64)
+                    if let preview = previewImage {
+                        Image(nsImage: preview)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: 196, maxHeight: 196)
+                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                            )
+                            .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 1)
+                    } else {
+                        Image(nsImage: file.nsIcon)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 64, height: 64)
+                    }
 
                     Text(file.displayName)
                         .font(.system(size: 12, weight: .semibold))
@@ -253,8 +268,12 @@ struct FileInfoView: View {
             }
         }
         .task(id: selectedFile?.id) {
+            previewImage = nil
             if let file = selectedFile {
-                mediaInfo = await mediaMetadata(for: file)
+                async let preview = loadPreview(for: file)
+                async let media = mediaMetadata(for: file)
+                previewImage = await preview
+                mediaInfo = await media
             } else {
                 mediaInfo = nil
             }
@@ -604,6 +623,40 @@ struct FileInfoView: View {
             }
         }
         .padding(.horizontal, 12)
+    }
+
+    // MARK: - Preview Thumbnail
+
+    private static let previewableImageExts: Set<String> = [
+        "jpg", "jpeg", "png", "tiff", "tif", "heic", "heif", "gif",
+        "bmp", "webp", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2"
+    ]
+
+    private static let previewableMediaExts: Set<String> = [
+        "mp4", "mov", "m4v", "avi", "mkv", "wmv", "flv", "webm", "ts", "mpg", "mpeg",
+        "mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ogg", "wma", "opus", "alac"
+    ]
+
+    private func loadPreview(for file: FileItem) async -> NSImage? {
+        guard !file.isDirectory else { return nil }
+        let ext = file.url.pathExtension.lowercased()
+        guard Self.previewableImageExts.contains(ext)
+                || Self.previewableMediaExts.contains(ext) else { return nil }
+
+        let scale = await MainActor.run { NSScreen.main?.backingScaleFactor ?? 2 }
+        let size = CGSize(width: 196, height: 196)
+        let request = QLThumbnailGenerator.Request(
+            fileAt: file.url,
+            size: size,
+            scale: scale,
+            representationTypes: .thumbnail
+        )
+
+        return await withCheckedContinuation { continuation in
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in
+                continuation.resume(returning: rep?.nsImage)
+            }
+        }
     }
 
     // MARK: - Media Metadata

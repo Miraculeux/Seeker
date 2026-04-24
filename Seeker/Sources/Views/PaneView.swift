@@ -168,10 +168,13 @@ struct PaneView: View {
             // happens once the user releases the slider via
             // `Slider(onEditingChanged:)`.
             if pane.activeTab.viewMode == .icons {
-                HStack(spacing: 4) {
-                    Image(systemName: "square.grid.3x3")
-                        .font(.system(size: 8, weight: .medium))
-                        .foregroundColor(.secondary.opacity(0.6))
+                HStack(spacing: 2) {
+                    NavButton(
+                        icon: "minus.magnifyingglass",
+                        action: { pane.activeTab.zoomIconsOut() },
+                        disabled: pane.activeTab.iconSize <= SettingsManager.iconSizeMin
+                    )
+                    .help("Zoom out (⌘-)")
                     Slider(
                         value: Binding(
                             get: { Double(pane.activeTab.iconSize) },
@@ -186,11 +189,13 @@ struct PaneView: View {
                     )
                     .controlSize(.mini)
                     .frame(width: 70)
-                    Image(systemName: "square.grid.2x2")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary.opacity(0.6))
+                    NavButton(
+                        icon: "plus.magnifyingglass",
+                        action: { pane.activeTab.zoomIconsIn() },
+                        disabled: pane.activeTab.iconSize >= SettingsManager.iconSizeMax
+                    )
+                    .help("Zoom in (⌘+)")
                 }
-                .help("Icon size (⌘+ / ⌘-)")
             }
 
             // Refresh button
