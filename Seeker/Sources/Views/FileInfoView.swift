@@ -170,23 +170,32 @@ struct FileInfoView: View {
             VStack(spacing: 16) {
                 // Icon + Name
                 VStack(spacing: 8) {
-                    if let preview = previewImage {
-                        Image(nsImage: preview)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: 196, maxHeight: 196)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
-                            )
-                            .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 1)
-                    } else {
-                        Image(nsImage: file.nsIcon)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 64, height: 64)
+                    // Reserve a stable area so swapping between items with /
+                    // without a thumbnail doesn't reflow the panel and cause
+                    // the visible "flash" while navigating with arrow keys.
+                    ZStack {
+                        if let preview = previewImage {
+                            Image(nsImage: preview)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxWidth: 196, maxHeight: 196)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+                                )
+                                .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 1)
+                                .transition(.opacity)
+                        } else {
+                            Image(nsImage: file.nsIcon)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 96, height: 96)
+                                .transition(.opacity)
+                        }
                     }
+                    .frame(width: 196, height: 196)
+                    .animation(.easeInOut(duration: 0.18), value: previewImage)
 
                     Text(file.displayName)
                         .font(.system(size: 12, weight: .semibold))
@@ -268,15 +277,40 @@ struct FileInfoView: View {
             }
         }
         .task(id: selectedFile?.id) {
-            previewImage = nil
-            if let file = selectedFile {
-                async let preview = loadPreview(for: file)
-                async let media = mediaMetadata(for: file)
-                previewImage = await preview
-                mediaInfo = await media
-            } else {
+            guard let file = selectedFile else {
+                previewImage = nil
                 mediaInfo = nil
+                return
             }
+
+            // Debounce rapid arrow-key navigation: if the user moves to
+            // another item within ~120ms, the .task(id:) is cancelled here
+            // and we never kick off the (relatively expensive) QuickLook +
+            // AVAsset loads for the in-between selection. This eliminates
+            // the panel flicker while holding Up/Down across many files.
+            do {
+                try await Task.sleep(nanoseconds: 120_000_000)
+            } catch {
+                return
+            }
+            if Task.isCancelled { return }
+
+            async let preview = loadPreview(for: file)
+            async let media = mediaMetadata(for: file)
+            let newPreview = await preview
+            let newMedia = await media
+
+            // Selection may have changed while we were loading; bail out
+            // and let the next .task invocation populate the panel so we
+            // don't briefly show stale data for the wrong file.
+            if Task.isCancelled { return }
+            guard selectedFile?.id == file.id else { return }
+
+            // Only swap the preview once the new one is ready. Keeping the
+            // previous image visible until then avoids the icon-fallback
+            // flash that happened when we eagerly set previewImage = nil.
+            previewImage = newPreview
+            mediaInfo = newMedia
         }
         .onChange(of: selectedFile?.id) { _, _ in
             startFolderSizeIfNeeded()
