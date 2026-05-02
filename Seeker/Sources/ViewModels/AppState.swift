@@ -16,6 +16,47 @@ class AppState {
     }
     var showGoToFolder: Bool = false
 
+    /// Non-nil when the Metadata Editor sheet is open. Holds the URLs of
+    /// the image(s) being edited.
+    var metadataEditorTargets: [URL]?
+
+    /// Opens the editor for the active pane's effective image selection.
+    /// No-op when no editable images are selected.
+    func openMetadataEditor() {
+        let urls = activeExplorer.effectiveSelection
+            .filter(\.isEditableImage)
+            .map(\.url)
+        guard !urls.isEmpty else { NSSound.beep(); return }
+        metadataEditorTargets = urls
+    }
+
+    /// Strips GPS + body serial number + user comment from the current
+    /// effective image selection, in place. Reloads the active pane.
+    func stripPrivacyMetadata() {
+        let urls = activeExplorer.effectiveSelection
+            .filter(\.isEditableImage)
+            .map(\.url)
+        guard !urls.isEmpty else { NSSound.beep(); return }
+
+        let alert = NSAlert()
+        alert.messageText = urls.count == 1
+            ? "Remove location and personal info from this image?"
+            : "Remove location and personal info from \(urls.count) images?"
+        alert.informativeText = "GPS coordinates, the camera body serial number, and any user comment will be deleted from the file. This cannot be undone."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Strip")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let active = activeExplorer
+        Task.detached(priority: .userInitiated) {
+            for url in urls {
+                try? ExifEditor.stripPrivacyFields(at: url)
+            }
+            await MainActor.run { active.loadFiles() }
+        }
+    }
+
     // Panes - each has tabs
     var leftPane = PaneState()
     var rightPane = PaneState()

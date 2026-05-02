@@ -244,6 +244,16 @@ struct FileItem: Identifiable, Hashable {
         url.pathExtension.lowercased() == "ncm"
     }
 
+    /// Image extensions whose metadata `ImageIO` can read and (for most)
+    /// rewrite. Used to gate Metadata Editor entry points.
+    static let editableImageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "tiff", "tif", "heic", "heif", "gif"
+    ]
+
+    var isEditableImage: Bool {
+        !isDirectory && FileItem.editableImageExtensions.contains(url.pathExtension.lowercased())
+    }
+
     /// Shallow check: does this folder contain any .ncm files?
     /// Cached per directory URL because this is read from inside SwiftUI
     /// context-menu builders — without caching, right-clicking a folder

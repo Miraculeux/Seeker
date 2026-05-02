@@ -58,6 +58,18 @@ struct ContentView: View {
             GoToFolderSheet()
                 .environment(appState)
         }
+        .sheet(isPresented: Binding(
+            get: { appState.metadataEditorTargets != nil },
+            set: { if !$0 { appState.metadataEditorTargets = nil } }
+        )) {
+            if let targets = appState.metadataEditorTargets {
+                MetadataEditorSheet(targets: targets) {
+                    appState.metadataEditorTargets = nil
+                    appState.activeExplorer.loadFiles()
+                }
+                .environment(appState)
+            }
+        }
     }
 
 // MARK: - Modern Toolbar
@@ -121,6 +133,15 @@ struct ContentView: View {
                         appleScript.executeAndReturnError(&error)
                     }
                 }
+
+                ToolbarBtn(
+                    icon: "info.circle",
+                    tip: "Edit Metadata (\u{2318}I)"
+                ) {
+                    appState.openMetadataEditor()
+                }
+                .disabled(!appState.activeExplorer.effectiveSelection.contains(where: \.isEditableImage))
+                .keyboardShortcut("i", modifiers: .command)
 
                 ShareToolbarBtn(appState: appState)
 

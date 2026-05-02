@@ -655,6 +655,38 @@ struct FileInfoView: View {
                 if let lon = meta.longitude { infoRow("Lon", lon) }
                 if let alt = meta.altitude { infoRow("Alt", alt) }
             }
+
+            if let file = selectedFile, file.isEditableImage {
+                Divider()
+                HStack(spacing: 6) {
+                    Button {
+                        appState.metadataEditorTargets = [file.url]
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "pencil")
+                            Text("Edit\u{2026}")
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.small)
+                    .help("Edit writable EXIF/IPTC fields")
+
+                    Button {
+                        appState.activeExplorer.selectedFileIDs = [file.id]
+                        appState.stripPrivacyMetadata()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "location.slash")
+                            Text("Strip")
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.small)
+                    .help("Remove GPS, serial number, user comment")
+                }
+            }
         }
         .padding(.horizontal, 12)
     }
