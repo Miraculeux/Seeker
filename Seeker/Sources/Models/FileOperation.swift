@@ -337,13 +337,21 @@ class FileOperationManager {
         return destURL
     }
 
+    /// Single in-flight cleanup task. Coalesces successive cleanup
+    /// requests so we don't fan out N sleeping Tasks for N completed ops.
+    private var pendingCleanupTask: Task<Void, Never>?
+
     private func cleanupFinished() {
-        // Remove finished operations after a delay; schedule error dismissal
-        // for any failed operation (previously triggered from inside the
-        // SwiftUI `body`, which could fire repeatedly on every redraw).
-        Task {
-            try? await Task.sleep(for: .seconds(3))
-            operations.removeAll { $0.isFinished && $0.error == nil }
+        // Schedule a single delayed sweep that removes all finished
+        // success-ops (errored ops are removed by their own per-op
+        // dismissal task below, since they get a longer visible delay).
+        if pendingCleanupTask == nil {
+            pendingCleanupTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self else { return }
+                self.operations.removeAll { $0.isFinished && $0.error == nil }
+                self.pendingCleanupTask = nil
+            }
         }
         for op in operations where op.error != nil && !op.dismissalScheduled {
             op.dismissalScheduled = true

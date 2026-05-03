@@ -8,6 +8,8 @@ struct FileInfoView: View {
     @Environment(AppState.self) var appState
     @State private var mediaInfo: MediaInfo?
     @State private var previewImage: NSImage?
+    @State private var imageMeta: ImageMetadata?
+    @State private var permissions: Permissions?
     @State private var multiSelectionTotalSize: Int64?
     @State private var multiSelectionSizeTask: Task<Void, Never>?
     @State private var folderSize: Int64?
@@ -257,8 +259,10 @@ struct FileInfoView: View {
                 // Permissions
                 permissionsSection(file)
 
-                // EXIF for images
-                if let exifInfo = imageMetadata(for: file) {
+                // EXIF for images. Computed asynchronously in the .task
+                // below — reading CGImageSource synchronously per body
+                // re-render stalled the panel on RAW/HEIC files.
+                if let exifInfo = imageMeta {
                     Divider()
                         .padding(.horizontal, 12)
 
@@ -280,8 +284,20 @@ struct FileInfoView: View {
             guard let file = selectedFile else {
                 previewImage = nil
                 mediaInfo = nil
+                imageMeta = nil
+                permissions = nil
                 return
             }
+
+            // Permissions are cheap (3 access(2) syscalls) but were
+            // previously executed inline from `body` — i.e. on every
+            // selection change, hover, focus and observable mutation.
+            // Refresh them here so they're computed once per selection.
+            permissions = await Task.detached(priority: .userInitiated) {
+                Self.computePermissions(at: file.url)
+            }.value
+            if Task.isCancelled { return }
+            guard selectedFile?.id == file.id else { return }
 
             // Debounce rapid arrow-key navigation: if the user moves to
             // another item within ~120ms, the .task(id:) is cancelled here
@@ -297,8 +313,14 @@ struct FileInfoView: View {
 
             async let preview = loadPreview(for: file)
             async let media = mediaMetadata(for: file)
+            // Image EXIF is read off-main: `CGImageSourceCreateWithURL`
+            // touches the disk and on RAW/HEIC can take 50–500ms.
+            async let imeta: ImageMetadata? = Task.detached(priority: .utility) {
+                Self.imageMetadata(at: file.url)
+            }.value
             let newPreview = await preview
             let newMedia = await media
+            let newImageMeta = await imeta
 
             // Selection may have changed while we were loading; bail out
             // and let the next .task invocation populate the panel so we
@@ -311,6 +333,7 @@ struct FileInfoView: View {
             // flash that happened when we eagerly set previewImage = nil.
             previewImage = newPreview
             mediaInfo = newMedia
+            imageMeta = newImageMeta
         }
         .onChange(of: selectedFile?.id) { _, _ in
             startFolderSizeIfNeeded()
@@ -430,12 +453,26 @@ struct FileInfoView: View {
 
     // MARK: - Permissions
 
-    private func permissionsSection(_ file: FileItem) -> some View {
+    private struct Permissions: Equatable {
+        var readable: Bool
+        var writable: Bool
+        var executable: Bool
+    }
+
+    private nonisolated static func computePermissions(at url: URL) -> Permissions {
         let fm = FileManager.default
-        let path = file.url.path
-        let readable = fm.isReadableFile(atPath: path)
-        let writable = fm.isWritableFile(atPath: path)
-        let executable = fm.isExecutableFile(atPath: path)
+        let path = url.path
+        return Permissions(
+            readable: fm.isReadableFile(atPath: path),
+            writable: fm.isWritableFile(atPath: path),
+            executable: fm.isExecutableFile(atPath: path)
+        )
+    }
+
+    private func permissionsSection(_ file: FileItem) -> some View {
+        // Use cached values populated by the async .task; default to false
+        // until the first compute completes (typically within a frame).
+        let p = permissions ?? Permissions(readable: false, writable: false, executable: false)
 
         return VStack(spacing: 6) {
             HStack {
@@ -446,9 +483,9 @@ struct FileInfoView: View {
             }
 
             HStack(spacing: 8) {
-                permBadge("R", active: readable)
-                permBadge("W", active: writable)
-                permBadge("X", active: executable)
+                permBadge("R", active: p.readable)
+                permBadge("W", active: p.writable)
+                permBadge("X", active: p.executable)
                 Spacer()
             }
         }
@@ -505,13 +542,19 @@ struct FileInfoView: View {
         var altitude: String?
     }
 
-    private func imageMetadata(for file: FileItem) -> ImageMetadata? {
-        guard !file.isDirectory else { return nil }
-        let ext = file.url.pathExtension.lowercased()
-        let imageExts = ["jpg", "jpeg", "png", "tiff", "tif", "heic", "heif", "gif", "bmp", "webp", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2"]
-        guard imageExts.contains(ext) else { return nil }
+    private nonisolated static let imageMetadataExts: Set<String> = [
+        "jpg", "jpeg", "png", "tiff", "tif", "heic", "heif", "gif", "bmp",
+        "webp", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2"
+    ]
 
-        guard let source = CGImageSourceCreateWithURL(file.url as CFURL, nil) else { return nil }
+    /// Synchronously reads image metadata via `CGImageSource`. Must be
+    /// called off the main actor \u2014 on RAW/HEIC files the property
+    /// decode performs real disk I/O and can take 50\u2013500ms.
+    private nonisolated static func imageMetadata(at url: URL) -> ImageMetadata? {
+        let ext = url.pathExtension.lowercased()
+        guard imageMetadataExts.contains(ext) else { return nil }
+
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
 
         var meta = ImageMetadata()

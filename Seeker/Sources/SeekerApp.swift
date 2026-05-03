@@ -64,9 +64,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     nonisolated func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated {
-            appState?.saveCurrentLocations()
-        }
+        // Intentionally empty: location persistence is handled by the
+        // SwiftUI `willTerminateNotification` publisher in `SeekerApp.body`,
+        // which runs on the MainActor naturally. Saving here as well
+        // produced a duplicate UserDefaults write on every quit.
     }
 
     func installSpaceMonitor(appState: AppState) {

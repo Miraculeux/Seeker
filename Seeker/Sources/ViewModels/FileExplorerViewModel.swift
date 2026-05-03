@@ -13,8 +13,16 @@ extension Notification.Name {
 class FileExplorerViewModel: Identifiable {
     let id = UUID()
     var currentURL: URL {
-        didSet { _cachedPathComponents = nil }
+        didSet {
+            _cachedPathComponents = nil
+            _standardizedCurrentURL = currentURL.standardizedFileURL
+        }
     }
+    /// Cache of `currentURL.standardizedFileURL`. The cross-tab change
+    /// notifier compares this against the affected directory once per
+    /// fan-out; recomputing the standardisation each time was visible
+    /// when many tabs were open.
+    @ObservationIgnored private var _standardizedCurrentURL: URL
     /// Sorted, unfiltered listing as loaded from disk. Source of truth for
     /// the visible `files` list — filter changes do not touch the disk.
     private var allFiles: [FileItem] = []
@@ -27,11 +35,25 @@ class FileExplorerViewModel: Identifiable {
             idx.reserveCapacity(files.count)
             for (i, f) in files.enumerated() { idx[f.id] = i }
             fileIndex = idx
+            _cachedSelectedFiles = nil
+            _cachedSelectedFilesToken = nil
         }
     }
     private var fileIndex: [FileItem.ID: Int] = [:]
     var selectionAnchor: FileItem?
-    var selectedFileIDs: Set<FileItem.ID> = []
+    var selectedFileIDs: Set<FileItem.ID> = [] {
+        didSet {
+            if selectedFileIDs != oldValue {
+                _cachedSelectedFiles = nil
+                _cachedSelectedFilesToken = nil
+            }
+        }
+    }
+    /// Memoized result of `selectedFiles`. Many callers (info pane,
+    /// effectiveSelection, toolbar predicates) read this several times per
+    /// render; rebuilding the Set every time was O(n) on the selection.
+    @ObservationIgnored private var _cachedSelectedFiles: Set<FileItem>?
+    @ObservationIgnored private var _cachedSelectedFilesToken: Int?
     var iconGridColumnCount: Int = 1
 
     /// Icon-grid icon edge length, mirrored into `SettingsManager` so the
@@ -44,9 +66,18 @@ class FileExplorerViewModel: Identifiable {
     /// once the value stabilises.
     var iconSize: CGFloat = SettingsManager.shared.iconSize {
         didSet {
-            guard iconSize != oldValue else { return }
+            // Clamp without re-entering didSet: compute the clamped value
+            // and bail if it differs from the assigned value (the recursive
+            // re-assign below will fire didSet again with the clean value).
             let clamped = min(max(iconSize, SettingsManager.iconSizeMin), SettingsManager.iconSizeMax)
-            if clamped != iconSize { iconSize = clamped; return }
+            if clamped != iconSize {
+                iconSize = clamped
+                return
+            }
+            // Suppress the persist + cross-pane broadcast when nothing
+            // actually changed (e.g. commit at the same value the slider
+            // already settled at).
+            guard clamped != oldValue else { return }
             guard !_iconSizeSuppressBroadcast else { return }
             SettingsManager.shared.iconSize = clamped
             NotificationCenter.default.post(
@@ -77,11 +108,21 @@ class FileExplorerViewModel: Identifiable {
     }
 
     var selectedFiles: Set<FileItem> {
+        // Combine selection-id set hash with the files-array identity
+        // (count is sufficient because `files`'s didSet already clears the
+        // cache on any reassignment) so we rebuild only when something
+        // actually changed.
+        let token = selectedFileIDs.hashValue &+ files.count
+        if let cached = _cachedSelectedFiles, _cachedSelectedFilesToken == token {
+            return cached
+        }
         var result = Set<FileItem>()
         result.reserveCapacity(selectedFileIDs.count)
         for id in selectedFileIDs {
             if let i = fileIndex[id] { result.insert(files[i]) }
         }
+        _cachedSelectedFiles = result
+        _cachedSelectedFilesToken = token
         return result
     }
     var pathHistory: [URL] = []
@@ -130,6 +171,7 @@ class FileExplorerViewModel: Identifiable {
 
     init(url: URL = FileManager.default.homeDirectoryForCurrentUser) {
         self.currentURL = url
+        self._standardizedCurrentURL = url.standardizedFileURL
         navigateTo(url)
         _observer.value = NotificationCenter.default.addObserver(
             forName: .filesDidChange, object: nil, queue: .main
@@ -143,7 +185,7 @@ class FileExplorerViewModel: Identifiable {
                 // it's not the one this tab is viewing. Cuts cross-tab
                 // fan-out from O(tabs) to O(tabs viewing same dir).
                 if let dir = affectedDir {
-                    let here = self.currentURL.standardizedFileURL
+                    let here = self._standardizedCurrentURL
                     let changed = dir.standardizedFileURL
                     if here != changed { return }
                 }
@@ -359,7 +401,20 @@ class FileExplorerViewModel: Identifiable {
     /// Off-actor Trash enumeration via Finder AppleScript. Validates each
     /// returned path is a real file URL pointing at a still-existing item
     /// before constructing a `FileItem`. Returns an empty array on failure.
+    ///
+    /// Caches the last result keyed by `~/.Trash`'s `contentModificationDate`.
+    /// `loadFiles()` is invoked on every cross-tab `.filesDidChange`
+    /// notification, including ops on directories that have nothing to do
+    /// with Trash; without this cache each one would spawn a Finder
+    /// AppleScript round-trip (50\u2013500ms typical, can be seconds).
     private nonisolated static func loadTrashViaFinder() -> [FileItem] {
+        let trashURL = FileManager.default
+            .homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        let mtime = (try? trashURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let cached = TrashCache.shared.get(mtime: mtime) {
+            return cached
+        }
+
         let script = """
             tell application "Finder"
                 set trashItems to items of trash
@@ -380,7 +435,10 @@ class FileExplorerViewModel: Identifiable {
 
         let fm = FileManager.default
         let count = result.numberOfItems
-        guard count > 0 else { return [] }
+        guard count > 0 else {
+            TrashCache.shared.set([], mtime: mtime)
+            return []
+        }
 
         let keys = FileItem.prefetchKeys
         let keySet = Set(keys)
@@ -395,6 +453,7 @@ class FileExplorerViewModel: Identifiable {
             let rv = (try? url.resourceValues(forKeys: keySet)) ?? URLResourceValues()
             items.append(FileItem(url: url, resourceValues: rv))
         }
+        TrashCache.shared.set(items, mtime: mtime)
         return items
     }
 
@@ -820,6 +879,17 @@ class FileExplorerViewModel: Identifiable {
         return []
     }
 
+    /// O(1) for the selection-empty case, otherwise scans the cached
+    /// `selectedFiles` set. Toolbar predicates read this every body
+    /// invocation so it intentionally avoids the `Array(selectedFiles)`
+    /// allocation that `effectiveSelection` does.
+    var hasEditableImageSelection: Bool {
+        if !selectedFileIDs.isEmpty {
+            return selectedFiles.contains(where: \.isEditableImage)
+        }
+        return selectedFile?.isEditableImage ?? false
+    }
+
     var canPaste: Bool {
         !Self.clipboard.isEmpty ||
         NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL] != nil
@@ -1067,6 +1137,10 @@ class FileExplorerViewModel: Identifiable {
     }
 
     private func notifyFilesChanged() {
+        // The affected directory's contents just changed; drop any cached
+        // shallow scans so context-menu predicates (e.g. containsNCMFiles)
+        // re-fetch on next access. Bounded by `NSCache` either way.
+        FileItemCache.containsNCMByPath.removeObject(forKey: currentURL.path as NSString)
         NotificationCenter.default.post(
             name: .filesDidChange,
             object: self,
@@ -1083,4 +1157,33 @@ class FileExplorerViewModel: Identifiable {
 final class UncheckedSendableBox<T>: @unchecked Sendable {
     var value: T
     init(_ value: T) { self.value = value }
+}
+
+/// Process-wide cache of the Trash listing, keyed by the directory's
+/// `contentModificationDate`. Lock-protected so the nonisolated AppleScript
+/// fallback can read/write it from any actor context.
+final class TrashCache: @unchecked Sendable {
+    static let shared = TrashCache()
+    private let lock = NSLock()
+    private var items: [FileItem] = []
+    private var cachedMTime: Date?
+    private var fetchedAt: Date = .distantPast
+    /// Even if the directory mtime hasn't moved, refresh after this long.
+    /// Guards against rare cases where Finder recategorises items without
+    /// touching the directory's mtime (e.g. icon position writes).
+    private let maxAge: TimeInterval = 30
+
+    func get(mtime: Date?) -> [FileItem]? {
+        lock.lock(); defer { lock.unlock() }
+        guard cachedMTime == mtime else { return nil }
+        guard Date().timeIntervalSince(fetchedAt) < maxAge else { return nil }
+        return items
+    }
+
+    func set(_ items: [FileItem], mtime: Date?) {
+        lock.lock(); defer { lock.unlock() }
+        self.items = items
+        self.cachedMTime = mtime
+        self.fetchedAt = Date()
+    }
 }

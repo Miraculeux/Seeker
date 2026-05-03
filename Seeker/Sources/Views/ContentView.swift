@@ -140,7 +140,7 @@ struct ContentView: View {
                 ) {
                     appState.openMetadataEditor()
                 }
-                .disabled(!appState.activeExplorer.effectiveSelection.contains(where: \.isEditableImage))
+                .disabled(!appState.activeExplorer.hasEditableImageSelection)
                 .keyboardShortcut("i", modifiers: .command)
 
                 ShareToolbarBtn(appState: appState)

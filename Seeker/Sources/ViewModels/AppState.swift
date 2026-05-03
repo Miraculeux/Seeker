@@ -64,9 +64,12 @@ class AppState {
     // Which pane is active
     var activePane: PaneSide = .left
 
-    // Pane screen frames for click detection
-    var leftPaneFrame: CGRect = .zero
-    var rightPaneFrame: CGRect = .zero
+    // Pane screen frames for click detection.
+    // Read only from the global mouse-down monitor in AppDelegate; never
+    // observed from any view body. Marked @ObservationIgnored so the
+    // continuous writes during HSplitView drags don't invalidate views.
+    @ObservationIgnored var leftPaneFrame: CGRect = .zero
+    @ObservationIgnored var rightPaneFrame: CGRect = .zero
 
     enum PaneSide {
         case left, right

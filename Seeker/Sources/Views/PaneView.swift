@@ -60,11 +60,24 @@ struct PaneView: View {
 
     private func updatePaneFrame(_ geo: GeometryProxy) {
         let frame = geo.frame(in: .global)
+        // Frames are @ObservationIgnored on AppState, but writing the
+        // same value twice is still wasteful. The mouse-down monitor
+        // tolerates eventual consistency, so a small epsilon is fine.
+        let current = side == .left ? appState.leftPaneFrame : appState.rightPaneFrame
+        guard !framesAreClose(current, frame) else { return }
         if side == .left {
             appState.leftPaneFrame = frame
         } else {
             appState.rightPaneFrame = frame
         }
+    }
+
+    private func framesAreClose(_ a: CGRect, _ b: CGRect) -> Bool {
+        let eps: CGFloat = 0.5
+        return abs(a.origin.x - b.origin.x) < eps
+            && abs(a.origin.y - b.origin.y) < eps
+            && abs(a.size.width - b.size.width) < eps
+            && abs(a.size.height - b.size.height) < eps
     }
 
     // MARK: - Tab Bar
@@ -250,24 +263,51 @@ struct PaneView: View {
     // MARK: - Status Bar
 
     private var paneStatusBar: some View {
+        // Extract a value-typed snapshot so the leaf view can short-circuit
+        // its diff on equality. Previously this section's HStack tree was
+        // re-evaluated on every observable mutation in the active tab \u2014
+        // including selection-only changes that don't affect this strip.
+        let sel = pane.activeTab.selectedFile
+        return PaneStatusBar(
+            isActive: isActive,
+            itemCount: pane.activeTab.files.count,
+            selectionName: sel?.name,
+            selectionSize: (sel?.isDirectory == false) ? sel?.formattedSize : nil,
+            freeSpace: FreeSpaceCache.shared.formatted(for: pane.activeTab.currentURL)
+        )
+        .equatable()
+    }
+}
+
+/// Leaf view for the bottom status strip. Conforms to `Equatable` so
+/// SwiftUI skips re-rendering the strip when nothing it actually depends
+/// on has changed.
+private struct PaneStatusBar: View, Equatable {
+    let isActive: Bool
+    let itemCount: Int
+    let selectionName: String?
+    let selectionSize: String?
+    let freeSpace: String?
+
+    var body: some View {
         HStack(spacing: 6) {
             HStack(spacing: 4) {
                 Circle()
                     .fill(isActive ? Color.accentColor : Color.secondary.opacity(0.3))
                     .frame(width: 5, height: 5)
-                Text("\(pane.activeTab.files.count) items")
+                Text("\(itemCount) items")
                     .font(.system(size: 10, weight: .medium, design: .rounded))
                     .foregroundColor(.secondary)
             }
 
-            if let sel = pane.activeTab.selectedFile {
-                Text("·").foregroundColor(.secondary.opacity(0.3))
-                Text(sel.name)
+            if let name = selectionName {
+                Text("\u{B7}").foregroundColor(.secondary.opacity(0.3))
+                Text(name)
                     .font(.system(size: 10, design: .rounded))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-                if !sel.isDirectory {
-                    Text(sel.formattedSize)
+                if let size = selectionSize {
+                    Text(size)
                         .font(.system(size: 10, design: .rounded))
                         .foregroundColor(.secondary.opacity(0.6))
                 }
@@ -275,7 +315,7 @@ struct PaneView: View {
 
             Spacer()
 
-            if let space = freeSpace() {
+            if let space = freeSpace {
                 Text(space)
                     .font(.system(size: 10, design: .rounded))
                     .foregroundColor(.secondary.opacity(0.5))
@@ -284,10 +324,6 @@ struct PaneView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(Color.primary.opacity(0.02))
-    }
-
-    private func freeSpace() -> String? {
-        return FreeSpaceCache.shared.formatted(for: pane.activeTab.currentURL)
     }
 }
 
@@ -307,6 +343,10 @@ final class FreeSpaceCache {
         var fetchedAt: Date
     }
     private var byVolume: [URL: Entry] = [:]
+    /// Maps an arbitrary `currentURL` to its containing volume URL.
+    /// Avoids re-running the `volumeURLKey` resource lookup (a syscall)
+    /// on every cache hit \u2014 status bar reads this per body redraw.
+    private var volumeURLByPath: [URL: URL] = [:]
     private let ttl: TimeInterval = 5.0
 
     private init() {
@@ -315,13 +355,28 @@ final class FreeSpaceCache {
                      NSWorkspace.didUnmountNotification,
                      NSWorkspace.didRenameVolumeNotification] {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.byVolume.removeAll() }
+                Task { @MainActor in
+                    self?.byVolume.removeAll()
+                    self?.volumeURLByPath.removeAll()
+                }
             }
         }
     }
 
     func formatted(for url: URL) -> String? {
-        let volumeURL = (try? url.resourceValues(forKeys: [.volumeURLKey]))?.volume ?? url
+        let volumeURL: URL
+        if let cached = volumeURLByPath[url] {
+            volumeURL = cached
+        } else {
+            volumeURL = (try? url.resourceValues(forKeys: [.volumeURLKey]))?.volume ?? url
+            volumeURLByPath[url] = volumeURL
+            // Bound the path\u2192volume map; entries are tiny but unbounded
+            // growth across long sessions is wasteful.
+            if volumeURLByPath.count > 256 {
+                volumeURLByPath.removeAll(keepingCapacity: true)
+                volumeURLByPath[url] = volumeURL
+            }
+        }
         if let entry = byVolume[volumeURL],
            Date().timeIntervalSince(entry.fetchedAt) < ttl {
             return entry.formatted

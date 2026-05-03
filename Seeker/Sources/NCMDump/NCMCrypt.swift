@@ -222,24 +222,27 @@ public struct NCMCrypt {
     public func fixMetadata() {
         // Without TagLib, we use a lightweight approach:
         // For MP3: tag is already written inline by `dump()`, no work needed.
-        // For FLAC: read the (small) file, splice in metadata blocks, re-write.
+        // For FLAC: rewrite the file in place via a streaming temp copy
+        // so we never load the full audio payload into memory (a 50MB
+        // FLAC previously caused ~150MB peak resident growth here, and
+        // the parallel batch path multiplied that by `activeProcessorCount`).
         guard format == .flac else { return }
         guard metadata != nil || imageData != nil else { return }
 
-        guard FileManager.default.fileExists(atPath: dumpFilepath),
-              let existingData = try? Data(contentsOf: URL(fileURLWithPath: dumpFilepath)) else {
-            return
-        }
+        let url = URL(fileURLWithPath: dumpFilepath)
+        guard FileManager.default.fileExists(atPath: dumpFilepath) else { return }
 
-        if let tagged = FLACWriter.writeMetadata(
-            to: existingData,
-            title: metadata?.name,
-            artist: metadata?.artist,
-            album: metadata?.album,
-            imageData: imageData,
-            imageMimeType: mimeType(for: imageData)
-        ) {
-            try? tagged.write(to: URL(fileURLWithPath: dumpFilepath))
+        do {
+            try FLACWriter.rewriteFile(
+                at: url,
+                title: metadata?.name,
+                artist: metadata?.artist,
+                album: metadata?.album,
+                imageData: imageData,
+                imageMimeType: mimeType(for: imageData)
+            )
+        } catch {
+            print("[Seeker] FLAC metadata rewrite failed for \(url.lastPathComponent): \(error)")
         }
     }
 

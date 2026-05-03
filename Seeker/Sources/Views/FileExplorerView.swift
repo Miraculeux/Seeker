@@ -13,6 +13,9 @@ struct FileContentView: View {
     @State private var quickLookURL: URL?
     @State private var showQuickLook = false
     @State private var columnRefresh: Int = 0
+    /// Last file id auto-scrolled to in list mode; used to suppress
+    /// redundant `scrollTo` calls when the focused selection hasn't moved.
+    @State private var lastScrolledID: FileItem.ID?
     /// Icon size at the start of the current pinch gesture, used so the
     /// gesture's multiplicative magnification scales from a stable base.
     @State private var pinchBaseSize: CGFloat?
@@ -75,6 +78,7 @@ struct FileContentView: View {
                             onCommitRename: { viewModel.commitRename() },
                             onCancelRename: { viewModel.cancelRename() }
                         )
+                        .equatable()
                         .id(file.id)
                         .listRowBackground(
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
@@ -99,7 +103,12 @@ struct FileContentView: View {
                 .listStyle(.inset(alternatesRowBackgrounds: true))
                 .contextMenu { directoryContextMenu }
                 .onChange(of: viewModel.selectedFileIDs) { _, _ in
-                    if let file = viewModel.selectedFile {
+                    // Only scroll when the focused selection actually moves
+                    // to a different item. Re-issuing scrollTo for the same
+                    // id (e.g. cmd-click toggling within the visible window)
+                    // caused observable jitter.
+                    if let file = viewModel.selectedFile, file.id != lastScrolledID {
+                        lastScrolledID = file.id
                         proxy.scrollTo(file.id)
                     }
                 }
@@ -521,7 +530,7 @@ struct FileContentView: View {
 
 // MARK: - List Row
 
-struct FileListRow: View {
+struct FileListRow: View, @MainActor Equatable {
     let file: FileItem
     let isSelected: Bool
     let isRenaming: Bool
@@ -531,6 +540,18 @@ struct FileListRow: View {
     let onCancelRename: () -> Void
     @State private var hovering = false
     @FocusState private var isRenameFocused: Bool
+
+    static func == (lhs: FileListRow, rhs: FileListRow) -> Bool {
+        // Closures + binding compare by reference identity, which isn't
+        // useful here; the inputs that actually drive the row's appearance
+        // are file/selection/rename/columns. renameText is intentionally
+        // excluded — when the row is in rename mode the TextField owns
+        // editing state via @Binding and the parent updates separately.
+        lhs.file == rhs.file
+            && lhs.isSelected == rhs.isSelected
+            && lhs.isRenaming == rhs.isRenaming
+            && lhs.visibleColumns == rhs.visibleColumns
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1104,13 +1125,24 @@ struct ColumnBrowserView: View {
     let side: AppState.PaneSide
     @State private var columnPath: [URL] = []
     @State private var columnSelections: [URL: FileItem] = [:]
+    /// Last-known selection across all columns, kept so the file preview
+    /// column can be rendered without recomputing `columnSelections[...]`
+    /// from `body` each time.
+    @State private var previewFile: FileItem?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: true) {
             HStack(spacing: 0) {
                 ForEach(Array(effectiveColumns.enumerated()), id: \.offset) { index, url in
                     VStack(spacing: 0) {
-                        columnFileList(for: url, columnIndex: index)
+                        ColumnFileList(
+                            directoryURL: url,
+                            columnIndex: index,
+                            showHiddenFiles: viewModel.showHiddenFiles,
+                            selection: columnSelections[url],
+                            onSelect: { handleSelection($0, at: url, columnIndex: index) },
+                            onOpen: { viewModel.openItem($0) }
+                        )
                     }
                     .frame(width: 220)
 
@@ -1120,8 +1152,7 @@ struct ColumnBrowserView: View {
                 }
 
                 // Preview column for selected file
-                if let lastSel = columnSelections[effectiveColumns.last ?? viewModel.currentURL],
-                   !lastSel.isDirectory {
+                if let lastSel = previewFile, !lastSel.isDirectory {
                     Divider()
                     filePreviewColumn(lastSel)
                         .frame(width: 220)
@@ -1139,53 +1170,26 @@ struct ColumnBrowserView: View {
     private func rebuildColumns() {
         columnPath = []
         columnSelections = [:]
+        previewFile = nil
     }
 
-    private func columnFileList(for directoryURL: URL, columnIndex: Int) -> some View {
-        let items = loadItems(at: directoryURL)
-        return List(selection: Binding<FileItem?>(
-            get: { columnSelections[directoryURL] },
-            set: { item in
-                columnSelections[directoryURL] = item
-                // Trim columns after this one
-                if columnIndex == 0 {
-                    columnPath = []
-                } else {
-                    columnPath = Array(columnPath.prefix(columnIndex))
-                }
-                // If directory, add as next column
-                if let item = item, item.isDirectory {
-                    columnPath.append(item.url)
-                }
-                viewModel.selectionAnchor = item
-                viewModel.selectedFileIDs = item.map { Set([$0.id]) } ?? []
-            }
-        )) {
-            ForEach(items) { file in
-                HStack(spacing: 4) {
-                    Image(nsImage: file.nsIcon)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 14, height: 14)
-                    Text(file.displayName)
-                        .font(.system(size: 11))
-                        .lineLimit(1)
-                    Spacer()
-                    if file.isDirectory {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8))
-                            .foregroundColor(.secondary.opacity(0.5))
-                    }
-                }
-                .tag(file)
-                .onTapGesture {
-                    if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
-                        viewModel.openItem(file)
-                    }
-                }
-            }
+    private func handleSelection(_ item: FileItem?, at directoryURL: URL, columnIndex: Int) {
+        columnSelections[directoryURL] = item
+        // Trim columns after this one
+        if columnIndex == 0 {
+            columnPath = []
+        } else {
+            columnPath = Array(columnPath.prefix(columnIndex))
         }
-        .listStyle(.plain)
+        // If directory, add as next column
+        if let item, item.isDirectory {
+            columnPath.append(item.url)
+            previewFile = nil
+        } else {
+            previewFile = item
+        }
+        viewModel.selectionAnchor = item
+        viewModel.selectedFileIDs = item.map { Set([$0.id]) } ?? []
     }
 
     private func filePreviewColumn(_ file: FileItem) -> some View {
@@ -1213,28 +1217,98 @@ struct ColumnBrowserView: View {
         .padding()
         .background(Color.primary.opacity(0.02))
     }
+}
 
-    private func loadItems(at url: URL) -> [FileItem] {
-        // Cached: SwiftUI invalidates the column-browser body on hover/
-        // selection/etc., which previously re-enumerated every visible
-        // column directory synchronously on the main thread on each redraw.
-        // Keys include `showHiddenFiles` so toggling the option re-fetches.
-        let key = "\(url.standardizedFileURL.path)|\(viewModel.showHiddenFiles ? 1 : 0)" as NSString
-        if let cached = ColumnBrowserCache.shared.cache.object(forKey: key) {
-            return cached.items
-        }
-        guard let contents = try? FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey],
-            options: viewModel.showHiddenFiles ? [] : [.skipsHiddenFiles]
-        ) else { return [] }
+/// Single column in the column browser. Owns its loaded items as `@State`
+/// and loads them off the main thread on appear / when inputs change.
+/// Previously the parent's `body` ran a synchronous `contentsOfDirectory`
+/// + per-file `lstat` per redraw on the cold-cache path, which stalled
+/// the UI on directories with many entries.
+private struct ColumnFileList: View {
+    let directoryURL: URL
+    let columnIndex: Int
+    let showHiddenFiles: Bool
+    let selection: FileItem?
+    let onSelect: (FileItem?) -> Void
+    let onOpen: (FileItem) -> Void
 
-        let items = contents.map { FileItem(url: $0) }.sorted { a, b in
-            if a.isDirectory != b.isDirectory { return a.isDirectory }
-            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+    @State private var items: [FileItem] = []
+    @State private var loaded = false
+
+    var body: some View {
+        let binding = Binding<FileItem?>(get: { selection }, set: { onSelect($0) })
+        return List(selection: binding) {
+            ForEach(items) { file in
+                HStack(spacing: 4) {
+                    Image(nsImage: file.nsIcon)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 14, height: 14)
+                    Text(file.displayName)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                    Spacer()
+                    if file.isDirectory {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8))
+                            .foregroundColor(.secondary.opacity(0.5))
+                    }
+                }
+                .tag(file)
+                .onTapGesture {
+                    if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
+                        onOpen(file)
+                    }
+                }
+            }
         }
-        ColumnBrowserCache.shared.cache.setObject(ColumnBrowserCache.Entry(items: items), forKey: key)
-        return items
+        .listStyle(.plain)
+        .overlay {
+            if !loaded && items.isEmpty {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .task(id: cacheKey) {
+            // Warm-cache path resolves synchronously in the same tick;
+            // cold path hops to a detached Task so directory enumeration
+            // never blocks the main actor.
+            if let cached = ColumnBrowserCache.shared.cached(forKey: cacheKey) {
+                items = cached
+                loaded = true
+                return
+            }
+            let url = directoryURL
+            let hidden = showHiddenFiles
+            let loadedItems = await Task.detached(priority: .userInitiated) {
+                ColumnBrowserCache.enumerate(at: url, showHidden: hidden)
+            }.value
+            if Task.isCancelled { return }
+            ColumnBrowserCache.shared.store(loadedItems, forKey: cacheKey)
+            items = loadedItems
+            loaded = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .filesDidChange)) { _ in
+            // Cache is wiped wholesale by ColumnBrowserCache's listener;
+            // re-trigger our own load so the visible column reflects the
+            // change without waiting for a navigation.
+            loaded = false
+            Task {
+                let url = directoryURL
+                let hidden = showHiddenFiles
+                let key = cacheKey
+                let fresh = await Task.detached(priority: .userInitiated) {
+                    ColumnBrowserCache.enumerate(at: url, showHidden: hidden)
+                }.value
+                ColumnBrowserCache.shared.store(fresh, forKey: key)
+                items = fresh
+                loaded = true
+            }
+        }
+    }
+
+    private var cacheKey: NSString {
+        "\(directoryURL.standardizedFileURL.path)|\(showHiddenFiles ? 1 : 0)" as NSString
     }
 }
 
@@ -1256,6 +1330,39 @@ final class ColumnBrowserCache {
         ) { [weak self] _ in
             Task { @MainActor in self?.cache.removeAllObjects() }
         }
+    }
+
+    func cached(forKey key: NSString) -> [FileItem]? {
+        cache.object(forKey: key)?.items
+    }
+
+    func store(_ items: [FileItem], forKey key: NSString) {
+        cache.setObject(Entry(items: items), forKey: key)
+    }
+
+    /// Off-main directory enumeration using the bulk-resource-keys fast
+    /// path. Avoids the per-file `lstat` + Launch Services round-trips
+    /// that `FileItem(url:)` does, matching `FileExplorerViewModel`'s
+    /// regular `loadFiles()` performance characteristics.
+    nonisolated static func enumerate(at url: URL, showHidden: Bool) -> [FileItem] {
+        let keys = FileItem.prefetchKeys
+        let keySet = Set(keys)
+        let opts: FileManager.DirectoryEnumerationOptions = showHidden ? [] : [.skipsHiddenFiles]
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: keys, options: opts
+        ) else { return [] }
+
+        var result: [FileItem] = []
+        result.reserveCapacity(contents.count)
+        for u in contents {
+            let rv = (try? u.resourceValues(forKeys: keySet)) ?? URLResourceValues()
+            result.append(FileItem(url: u, resourceValues: rv))
+        }
+        result.sort { a, b in
+            if a.isDirectory != b.isDirectory { return a.isDirectory }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+        return result
     }
 }
 
