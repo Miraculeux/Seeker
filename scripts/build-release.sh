@@ -15,21 +15,16 @@ ZIP_OUTPUT="${PROJECT_DIR}/dist/${APP_NAME}-${VERSION}.zip"
 # the release binary.
 LINKER_FLAGS=(-Xlinker -dead_strip -Xlinker -dead_strip_dylibs)
 
-echo "==> Building ${APP_NAME} v${VERSION} (universal: arm64 + x86_64)..."
+echo "==> Building ${APP_NAME} v${VERSION} (arm64)..."
 cd "$PROJECT_DIR"
 swift build -c release --arch arm64   "${LINKER_FLAGS[@]}"
-swift build -c release --arch x86_64  "${LINKER_FLAGS[@]}"
 
 echo "==> Creating app bundle..."
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-# Fuse per-arch binaries into a single universal Mach-O.
-lipo -create \
-    .build/arm64-apple-macosx/release/Seeker \
-    .build/x86_64-apple-macosx/release/Seeker \
-    -output "$APP_BUNDLE/Contents/MacOS/Seeker"
+cp .build/arm64-apple-macosx/release/Seeker "$APP_BUNDLE/Contents/MacOS/Seeker"
 # Strip local symbols (-x) and debug info (-S) from the shipped binary;
 # debug info already lives in the .dSYM elsewhere.
 strip -S -x "$APP_BUNDLE/Contents/MacOS/Seeker"

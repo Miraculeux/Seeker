@@ -1,0 +1,4 @@
+module CXXHash {
+    umbrella header "CXXHash.h"
+    export *
+}

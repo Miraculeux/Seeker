@@ -20,6 +20,19 @@ class AppState {
     /// the image(s) being edited.
     var metadataEditorTargets: [URL]?
 
+    /// Non-nil when the Find Duplicates sheet is open. Holds the root
+    /// directory under which the duplicate scan should run.
+    var duplicateFinderRoot: URL?
+
+    /// Opens the duplicate finder rooted at the active pane's current
+    /// directory. If the user has selected one or more directories, the
+    /// scan is rooted at the first selected directory instead.
+    func openDuplicateFinder() {
+        let active = activeExplorer
+        let selected = active.effectiveSelection.first { $0.isDirectory }
+        duplicateFinderRoot = selected?.url ?? active.currentURL
+    }
+
     /// Opens the editor for the active pane's effective image selection.
     /// No-op when no editable images are selected.
     func openMetadataEditor() {

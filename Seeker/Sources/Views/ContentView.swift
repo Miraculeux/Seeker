@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppState.self) var appState
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,6 +69,16 @@ struct ContentView: View {
                     appState.activeExplorer.loadFiles()
                 }
                 .environment(appState)
+            }
+        }
+        .onChange(of: appState.duplicateFinderRoot) { _, newValue in
+            // The duplicate finder lives in its own window so the main
+            // window stays interactive while the user reviews matches.
+            // Reset the trigger after dispatching so the same folder can
+            // be re-opened later.
+            if let url = newValue {
+                openWindow(id: "duplicate-finder", value: url)
+                appState.duplicateFinderRoot = nil
             }
         }
     }
@@ -144,6 +155,14 @@ struct ContentView: View {
                 .keyboardShortcut("i", modifiers: .command)
 
                 ShareToolbarBtn(appState: appState)
+
+                ToolbarBtn(
+                    icon: "doc.on.doc",
+                    tip: "Find Duplicates (\u{2318}\u{21E7}D)"
+                ) {
+                    appState.openDuplicateFinder()
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
 
                 ToolbarSep()
 

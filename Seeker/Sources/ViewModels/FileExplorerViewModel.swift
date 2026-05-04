@@ -336,7 +336,42 @@ class FileExplorerViewModel: Identifiable {
                 let sorted = self.sortItems(items)
                 self.allFiles = sorted
                 self.files = self.applyFilter(to: sorted)
+                self.applyPendingSelection()
             }
+        }
+    }
+
+    /// URL that should be selected once the next `loadFiles()` completes.
+    /// Used by `revealAndSelect(_:)` so callers from outside the explorer
+    /// (e.g. the duplicate-finder sheet) can highlight a specific file
+    /// after navigating to its parent directory.
+    @ObservationIgnored private var pendingSelectionURL: URL?
+
+    private func applyPendingSelection() {
+        guard let target = pendingSelectionURL else { return }
+        let standardized = target.standardizedFileURL
+        if let match = files.first(where: {
+            $0.url.standardizedFileURL == standardized
+        }) {
+            pendingSelectionURL = nil
+            selectedFileIDs = [match.id]
+            selectionAnchor = match
+        }
+        // If no match yet (listing not loaded, or hidden by filter),
+        // leave the pending URL set so a later loadFiles() can catch it.
+    }
+
+    /// Navigate to `url`'s parent directory and select `url` once the
+    /// listing has loaded. If already in the parent, selects immediately.
+    func revealAndSelect(_ url: URL) {
+        let parent = url.deletingLastPathComponent()
+        pendingSelectionURL = url
+        if currentURL.standardizedFileURL == parent.standardizedFileURL {
+            // Already there \u2014 either files are loaded (apply now) or a
+            // load is in flight (handler will apply on completion).
+            applyPendingSelection()
+        } else {
+            navigateTo(parent)
         }
     }
 

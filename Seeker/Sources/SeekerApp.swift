@@ -407,6 +407,17 @@ struct SeekerApp: App {
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1200, height: 700)
+
+        // Standalone duplicate-finder window. Non-modal so the user can
+        // click "Open in new tab" on a row, switch to the main window,
+        // inspect the file, and come back to keep triaging.
+        WindowGroup("Find Duplicates", id: "duplicate-finder", for: URL.self) { $rootURL in
+            if let url = rootURL {
+                DuplicateFinderView(rootURL: url)
+                    .environment(appState)
+            }
+        }
+        .windowResizability(.contentSize)
         .commands {
             // MARK: - View Menu
             CommandGroup(after: .sidebar) {
