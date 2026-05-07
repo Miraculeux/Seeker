@@ -8,6 +8,7 @@ struct SidebarItem: Identifiable, Hashable {
     let section: SidebarSection
     var isEjectable: Bool = false
     var isTrash: Bool = false
+    var isUserFavorite: Bool = false
 }
 
 enum SidebarSection: String, CaseIterable {
@@ -16,6 +17,7 @@ enum SidebarSection: String, CaseIterable {
 }
 
 struct SidebarDefaults {
+    @MainActor
     static func defaultItems() -> [SidebarItem] {
         var items: [SidebarItem] = []
 
@@ -36,6 +38,24 @@ struct SidebarDefaults {
                 url = homeURL.appendingPathComponent(path)
             }
             items.append(SidebarItem(id: "fav_\(name)", name: name, icon: icon, url: url, section: .favorites))
+        }
+
+        // User-added favorites
+        for path in SettingsManager.shared.userFavoritePaths {
+            let url = URL(fileURLWithPath: path)
+            // Skip stale entries that no longer resolve to a directory.
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+                  isDir.boolValue else { continue }
+            let name = FileManager.default.displayName(atPath: url.path)
+            items.append(SidebarItem(
+                id: "userfav_\(path)",
+                name: name,
+                icon: "folder.fill",
+                url: url,
+                section: .favorites,
+                isUserFavorite: true
+            ))
         }
 
         // Locations - root disk

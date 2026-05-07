@@ -189,6 +189,7 @@ final class SettingsManager {
         static let leftPaneViewMode = "lastLeftPaneViewMode"
         static let rightPaneViewMode = "lastRightPaneViewMode"
         static let iconSize = "iconSize"
+        static let userFavorites = "userFavoritePaths"
     }
 
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
@@ -346,6 +347,47 @@ final class SettingsManager {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    // MARK: - User Favorites
+
+    /// User-added sidebar favorite folder paths, in display order.
+    var userFavoritePaths: [String] {
+        get { defaults.stringArray(forKey: Keys.userFavorites) ?? [] }
+        set {
+            defaults.set(newValue, forKey: Keys.userFavorites)
+            NotificationCenter.default.post(name: .favoritesChanged, object: nil)
+        }
+    }
+
+    func isUserFavorite(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        return userFavoritePaths.contains(path)
+    }
+
+    /// Adds a folder to user favorites. No-op if already present or if
+    /// the URL doesn't point to an existing directory.
+    @discardableResult
+    func addFavorite(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              isDir.boolValue else { return false }
+        let path = url.standardizedFileURL.path
+        var current = userFavoritePaths
+        guard !current.contains(path) else { return false }
+        current.append(path)
+        userFavoritePaths = current
+        return true
+    }
+
+    @discardableResult
+    func removeFavorite(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        var current = userFavoritePaths
+        guard let idx = current.firstIndex(of: path) else { return false }
+        current.remove(at: idx)
+        userFavoritePaths = current
+        return true
+    }
+
     // MARK: - Keyboard Shortcuts
 
     private var shortcutCache: [ShortcutAction: KeyShortcut] = [:]
@@ -385,6 +427,7 @@ final class SettingsManager {
 
 extension Notification.Name {
     static let shortcutsChanged = Notification.Name("shortcutsChanged")
+    static let favoritesChanged = Notification.Name("favoritesChanged")
 }
 
 // MARK: - SwiftUI KeyboardShortcut conversion

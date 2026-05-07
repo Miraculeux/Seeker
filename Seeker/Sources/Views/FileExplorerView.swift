@@ -434,6 +434,16 @@ struct FileContentView: View {
                     appState.inactivePaneState.activeTab.navigateTo(file.url)
                 }
             }
+            Divider()
+            if SettingsManager.shared.isUserFavorite(file.url) {
+                Button("Remove from Favorites") {
+                    SettingsManager.shared.removeFavorite(file.url)
+                }
+            } else {
+                Button("Add to Favorites") {
+                    SettingsManager.shared.addFavorite(file.url)
+                }
+            }
         }
     }
 
@@ -450,6 +460,16 @@ struct FileContentView: View {
         }
         Button("Open Terminal Here") {
             openTerminal(at: viewModel.currentURL)
+        }
+        Divider()
+        if SettingsManager.shared.isUserFavorite(viewModel.currentURL) {
+            Button("Remove from Favorites") {
+                SettingsManager.shared.removeFavorite(viewModel.currentURL)
+            }
+        } else {
+            Button("Add to Favorites") {
+                SettingsManager.shared.addFavorite(viewModel.currentURL)
+            }
         }
         Divider()
         Toggle("Show Hidden Files", isOn: Binding(

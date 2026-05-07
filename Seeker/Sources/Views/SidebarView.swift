@@ -13,16 +13,35 @@ struct SidebarView: View {
                         let sectionItems = sidebarItems.filter { $0.section == section }
                         if !sectionItems.isEmpty {
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(section.rawValue.uppercased())
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                                    .foregroundColor(.secondary.opacity(0.5))
-                                    .tracking(0.5)
-                                    .padding(.horizontal, 14)
-                                    .padding(.bottom, 4)
+                                HStack(spacing: 4) {
+                                    Text(section.rawValue.uppercased())
+                                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                                        .foregroundColor(.secondary.opacity(0.5))
+                                        .tracking(0.5)
+                                    Spacer()
+                                    if section == .favorites {
+                                        Button {
+                                            promptAddFavorite()
+                                        } label: {
+                                            Image(systemName: "plus")
+                                                .font(.system(size: 9, weight: .bold))
+                                                .foregroundColor(.secondary.opacity(0.6))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .help("Add Folder to Favorites…")
+                                    }
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.bottom, 4)
 
                                 ForEach(sectionItems) { item in
                                     SidebarRow(item: item)
                                         .padding(.horizontal, 6)
+                                }
+                            }
+                            .if(section == .favorites) { view in
+                                view.onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                                    handleFavoritesDrop(providers: providers)
                                 }
                             }
                         }
@@ -42,6 +61,9 @@ struct SidebarView: View {
                     tab.loadFiles()
                 }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .favoritesChanged)) { _ in
+            sidebarItems = SidebarDefaults.defaultItems()
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { notification in
             // Immediately remove the ejected volume to avoid race with filesystem
@@ -67,6 +89,46 @@ struct SidebarView: View {
             // immediately, once after a 0.5s `asyncAfter` sleep poll).
             sidebarItems = SidebarDefaults.defaultItems()
         }
+    }
+
+    // MARK: - Favorites helpers
+
+    private func promptAddFavorite() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add to Favorites"
+        panel.message = "Choose folders to add to your favorites"
+        if panel.runModal() == .OK {
+            for url in panel.urls {
+                SettingsManager.shared.addFavorite(url)
+            }
+        }
+    }
+
+    private func handleFavoritesDrop(providers: [NSItemProvider]) -> Bool {
+        guard !providers.isEmpty else { return false }
+        for provider in providers {
+            provider.loadDataRepresentation(forTypeIdentifier: "public.file-url") { data, _ in
+                guard let data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil),
+                      url.isFileURL else { return }
+                DispatchQueue.main.async {
+                    SettingsManager.shared.addFavorite(url)
+                }
+            }
+        }
+        return true
+    }
+}
+
+// Lightweight conditional view modifier so the favorites section can opt
+// into a drop target without forcing it on every section.
+private extension View {
+    @ViewBuilder
+    func `if`<Transform: View>(_ condition: Bool, transform: (Self) -> Transform) -> some View {
+        if condition { transform(self) } else { self }
     }
 }
 
@@ -136,6 +198,21 @@ struct SidebarRow: View {
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: hovering)
         .animation(.easeInOut(duration: 0.1), value: isActive)
+        .contextMenu {
+            Button("Open in New Tab") {
+                let pane = appState.activePane == .left ? appState.leftPane : appState.rightPane
+                pane.addTab(url: item.url)
+            }
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([item.url])
+            }
+            if item.isUserFavorite {
+                Divider()
+                Button("Remove from Favorites") {
+                    SettingsManager.shared.removeFavorite(item.url)
+                }
+            }
+        }
     }
 
     private func ejectVolume(at url: URL) {

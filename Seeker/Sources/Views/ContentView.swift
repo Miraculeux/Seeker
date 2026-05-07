@@ -136,6 +136,8 @@ struct ContentView: View {
                     appState.activeExplorer.trashSelected()
                 }
 
+                FavoriteToolbarBtn(appState: appState)
+
                 ToolbarBtn(icon: "terminal", tip: "Open Terminal") {
                     let escapedPath = appState.activeExplorer.currentURL.path.replacingOccurrences(of: "'", with: "'\\''")
                     let script = "tell application \"Terminal\" to do script \"cd '\(escapedPath)'\""
@@ -265,6 +267,53 @@ struct ShareToolbarBtn: View {
         .onHover { hovering = $0 }
         .help("Share")
         .animation(.easeInOut(duration: 0.1), value: hovering)
+    }
+}
+
+// MARK: - Favorite Toolbar Button
+
+/// Toggles whether the active pane's current folder is in the user
+/// favorites list. The icon flips between an outlined and a filled star
+/// to reflect membership, and updates live when favorites change from
+/// elsewhere (e.g. the sidebar's add/remove menus).
+struct FavoriteToolbarBtn: View {
+    var appState: AppState
+    @State private var isFavorite: Bool = false
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            let url = appState.activeExplorer.currentURL
+            if SettingsManager.shared.isUserFavorite(url) {
+                SettingsManager.shared.removeFavorite(url)
+            } else {
+                SettingsManager.shared.addFavorite(url)
+            }
+            refreshState()
+        } label: {
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(isFavorite ? .yellow : (hovering ? .primary : .secondary))
+                .frame(width: 28, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
+                )
+        }
+        .buttonStyle(.borderless)
+        .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.1), value: hovering)
+        .animation(.easeInOut(duration: 0.1), value: isFavorite)
+        .onAppear { refreshState() }
+        .onChange(of: appState.activeExplorer.currentURL) { _, _ in refreshState() }
+        .onReceive(NotificationCenter.default.publisher(for: .favoritesChanged)) { _ in
+            refreshState()
+        }
+    }
+
+    private func refreshState() {
+        isFavorite = SettingsManager.shared.isUserFavorite(appState.activeExplorer.currentURL)
     }
 }
 
