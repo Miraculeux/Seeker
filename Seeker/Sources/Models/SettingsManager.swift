@@ -131,11 +131,11 @@ enum ShortcutCategory: String, CaseIterable {
     case tabs = "Tabs"
 }
 
-struct KeyShortcut: Codable, Equatable {
+struct KeyShortcut: Codable, Hashable {
     var key: String
     var modifiers: Set<KeyModifier>
 
-    enum KeyModifier: String, Codable, CaseIterable {
+    enum KeyModifier: String, Codable, CaseIterable, Hashable {
         case command
         case shift
         case option
@@ -349,10 +349,26 @@ final class SettingsManager {
 
     // MARK: - User Favorites
 
+    /// Cached `Set<String>` of `userFavoritePaths` for O(1) membership
+    /// tests. SwiftUI's favorite-toggle button reads `isUserFavorite`
+    /// on every redraw and on every `currentURL` change, so keeping
+    /// this in memory avoids repeated `UserDefaults.stringArray` reads
+    /// + linear `Array.contains`.
+    private var _favoritePathsCache: [String]?
+    private var _favoritePathsSetCache: Set<String>?
+
     /// User-added sidebar favorite folder paths, in display order.
     var userFavoritePaths: [String] {
-        get { defaults.stringArray(forKey: Keys.userFavorites) ?? [] }
+        get {
+            if let cached = _favoritePathsCache { return cached }
+            let value = defaults.stringArray(forKey: Keys.userFavorites) ?? []
+            _favoritePathsCache = value
+            _favoritePathsSetCache = Set(value)
+            return value
+        }
         set {
+            _favoritePathsCache = newValue
+            _favoritePathsSetCache = Set(newValue)
             defaults.set(newValue, forKey: Keys.userFavorites)
             NotificationCenter.default.post(name: .favoritesChanged, object: nil)
         }
@@ -360,7 +376,10 @@ final class SettingsManager {
 
     func isUserFavorite(_ url: URL) -> Bool {
         let path = url.standardizedFileURL.path
-        return userFavoritePaths.contains(path)
+        if _favoritePathsSetCache == nil {
+            _ = userFavoritePaths   // populates the caches
+        }
+        return _favoritePathsSetCache?.contains(path) ?? false
     }
 
     /// Adds a folder to user favorites. No-op if already present or if
@@ -391,6 +410,14 @@ final class SettingsManager {
     // MARK: - Keyboard Shortcuts
 
     private var shortcutCache: [ShortcutAction: KeyShortcut] = [:]
+    /// Reverse map for matching an inbound `KeyShortcut` (built from an
+    /// `NSEvent`) back to its `ShortcutAction`. Built lazily and
+    /// invalidated whenever a shortcut is added, removed, or reset.
+    /// Without this, `AppDelegate.matchConfiguredShortcut` walked
+    /// `ShortcutAction.allCases` per keystroke, allocating a
+    /// `Set<KeyModifier>` and decoding from `UserDefaults` for each
+    /// uncached entry.
+    private var shortcutReverseIndex: [KeyShortcut: ShortcutAction]?
 
     func shortcut(for action: ShortcutAction) -> KeyShortcut {
         if let cached = shortcutCache[action] { return cached }
@@ -399,11 +426,28 @@ final class SettingsManager {
             shortcutCache[action] = decoded
             return decoded
         }
-        return action.defaultShortcut
+        let fallback = action.defaultShortcut
+        shortcutCache[action] = fallback
+        return fallback
+    }
+
+    /// O(1) match for an inbound key event's resolved `KeyShortcut`.
+    /// Returns the `ShortcutAction` bound to it, or `nil` if none.
+    func action(matching shortcut: KeyShortcut) -> ShortcutAction? {
+        if shortcutReverseIndex == nil {
+            var map: [KeyShortcut: ShortcutAction] = [:]
+            map.reserveCapacity(ShortcutAction.allCases.count)
+            for action in ShortcutAction.allCases {
+                map[self.shortcut(for: action)] = action
+            }
+            shortcutReverseIndex = map
+        }
+        return shortcutReverseIndex?[shortcut]
     }
 
     func setShortcut(_ shortcut: KeyShortcut, for action: ShortcutAction) {
         shortcutCache[action] = shortcut
+        shortcutReverseIndex = nil
         if let data = try? JSONEncoder().encode(shortcut) {
             defaults.set(data, forKey: "shortcut_\(action.rawValue)")
         }
@@ -412,12 +456,14 @@ final class SettingsManager {
 
     func resetShortcut(for action: ShortcutAction) {
         shortcutCache.removeValue(forKey: action)
+        shortcutReverseIndex = nil
         defaults.removeObject(forKey: "shortcut_\(action.rawValue)")
         NotificationCenter.default.post(name: .shortcutsChanged, object: nil)
     }
 
     func resetAllShortcuts() {
         shortcutCache.removeAll()
+        shortcutReverseIndex = nil
         for action in ShortcutAction.allCases {
             defaults.removeObject(forKey: "shortcut_\(action.rawValue)")
         }

@@ -279,14 +279,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if flags.contains(.option) { eventMods.insert(.option) }
         if flags.contains(.control) { eventMods.insert(.control) }
         let eventShortcut = KeyShortcut(key: eventKey, modifiers: eventMods)
-
-        for action in ShortcutAction.allCases {
-            let configured = SettingsManager.shared.shortcut(for: action)
-            if configured == eventShortcut {
-                return action
-            }
-        }
-        return nil
+        // O(1) lookup via SettingsManager's reverse index. The previous
+        // implementation walked every ShortcutAction per keystroke and
+        // re-decoded each entry from UserDefaults on cold paths.
+        return SettingsManager.shared.action(matching: eventShortcut)
     }
 
     private static func keyString(from event: NSEvent) -> String {

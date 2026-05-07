@@ -874,9 +874,13 @@ class FileExplorerViewModel: Identifiable {
 
     func handleFileClick(_ file: FileItem, command: Bool, shift: Bool) {
         if shift, let anchor = selectionAnchor ?? selectedFile {
-            // Shift-click: range select from anchor to clicked file
-            guard let anchorIndex = files.firstIndex(of: anchor),
-                  let clickIndex = files.firstIndex(of: file) else {
+            // Shift-click: range select from anchor to clicked file.
+            // O(1) via the maintained `fileIndex` map; the previous
+            // `firstIndex(of:)` calls were O(n) and combined with
+            // FileItem's old synthesized hashing this dominated
+            // shift-click latency on large directories.
+            guard let anchorIndex = fileIndex[anchor.id],
+                  let clickIndex = fileIndex[file.id] else {
                 selectionAnchor = file
                 selectedFileIDs = [file.id]
                 return
@@ -891,7 +895,15 @@ class FileExplorerViewModel: Identifiable {
             }
             if selectedFileIDs.contains(file.id) {
                 selectedFileIDs.remove(file.id)
-                selectionAnchor = files.first { selectedFileIDs.contains($0.id) }
+                // Pick any remaining selected item as the new anchor.
+                // Walk the selection set (typically small) instead of
+                // scanning `files` (potentially huge).
+                if let nextID = selectedFileIDs.first,
+                   let i = fileIndex[nextID] {
+                    selectionAnchor = files[i]
+                } else {
+                    selectionAnchor = nil
+                }
             } else {
                 selectedFileIDs.insert(file.id)
                 selectionAnchor = file

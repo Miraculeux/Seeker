@@ -151,7 +151,7 @@ struct SidebarRow: View {
                         Image(systemName: "trash.fill")
                             .foregroundColor(.secondary)
                     } else {
-                        Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
+                        Image(nsImage: SidebarRow.icon(for: item.url))
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                     }
@@ -230,6 +230,23 @@ struct SidebarRow: View {
                 }
             }
         }
+    }
+
+    /// Path-cached file icon for sidebar rows. SwiftUI re-evaluates the
+    /// row body on every observable mutation in `appState` (active
+    /// selection, hover, etc.); without caching, each row called into
+    /// `NSWorkspace.icon(forFile:)` (a Launch Services round-trip) per
+    /// redraw. `FileItemCache.iconByPath` is shared with the file list,
+    /// so common locations (Documents, Downloads, …) hit the same
+    /// entries already populated by the explorer.
+    static func icon(for url: URL) -> NSImage {
+        let key = url.path as NSString
+        if let cached = FileItemCache.iconByPath.object(forKey: key) {
+            return cached
+        }
+        let img = NSWorkspace.shared.icon(forFile: url.path)
+        FileItemCache.iconByPath.setObject(img, forKey: key)
+        return img
     }
 
     /// Translates the cryptic `OSStatus` errors returned by

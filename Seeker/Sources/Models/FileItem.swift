@@ -85,6 +85,20 @@ struct FileItem: Identifiable, Hashable {
     let isHidden: Bool
     let isPackage: Bool
 
+    /// Hash and compare on `id` only. The synthesized conformance hashes
+    /// every stored property (URL, two `Date?`s, bools, etc.), which
+    /// shows up under `Set<FileItem>` operations driven by selection
+    /// changes (`selectedFiles`, multi-selection size, "Select All").
+    /// `id` is `url.absoluteString` and is unique per item, so this is
+    /// strictly cheaper without losing any uniqueness guarantees.
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
+    static func == (lhs: FileItem, rhs: FileItem) -> Bool {
+        lhs.id == rhs.id
+    }
+
     /// Directories under ~ that trigger TCC prompts when accessed
     private static let tccProtectedNames: Set<String> = ["Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures"]
 
