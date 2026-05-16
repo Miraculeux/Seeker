@@ -94,6 +94,7 @@ struct FileContentView: View {
                                 appState.activePane = side
                             }
                         })
+                        .overlay(RightClickCatcher { ensureContextSelection(file) })
                         .contextMenu { fileContextMenu(for: file) }
                         .onDrag {
                             fileDragProvider(for: file.url)
@@ -241,6 +242,7 @@ struct FileContentView: View {
                             appState.activePane = side
                         }
                     })
+                    .overlay(RightClickCatcher { ensureContextSelection(file) })
                     .contextMenu { fileContextMenu(for: file) }
                     .onDrag {
                         fileDragProvider(for: file.url)
@@ -316,6 +318,28 @@ struct FileContentView: View {
     }
 
     // MARK: - Context Menus
+
+    /// Ensure the right-clicked file participates in the selection that
+    /// the context-menu actions operate on. SwiftUI's `.contextMenu` on
+    /// macOS does not auto-select the clicked row, so without this the
+    /// menu items (Copy / Cut / Rename / Trash / …) would silently act
+    /// on whatever was previously selected. If the clicked file is
+    /// already part of a multi-selection we leave the selection alone
+    /// so menu actions can apply to the whole group.
+    ///
+    /// Invoked from the AppKit right-click detector (`RightClickCatcher`)
+    /// attached to each row, so it runs only on actual right-mouse-down
+    /// events — never during ordinary view updates.
+    fileprivate func ensureContextSelection(_ file: FileItem) {
+        if viewModel.selectedFileIDs.contains(file.id) { return }
+        if viewModel.selectedFileIDs.isEmpty, viewModel.selectedFile == file {
+            appState.activePane = side
+            return
+        }
+        viewModel.selectionAnchor = file
+        viewModel.selectedFileIDs = [file.id]
+        appState.activePane = side
+    }
 
     @ViewBuilder
     private func fileContextMenu(for file: FileItem) -> some View {
@@ -1135,6 +1159,74 @@ struct FileIconCell: View, Equatable {
         // Only swap if QL actually returned something better; otherwise
         // keep the fallback we already showed.
         if let image { thumbnail = image }
+    }
+}
+
+// MARK: - Right-click Selection Helper
+
+/// Transparent AppKit overlay that fires `onRightClick` when the user
+/// right-clicks (or control + left-clicks) the file row it backs.
+///
+/// SwiftUI's `.contextMenu` on macOS displays the menu but does **not**
+/// update selection on right-click, so menu actions like Copy / Trash
+/// were operating on whatever was previously selected. We can't put the
+/// "ensure selection" logic inside the `.contextMenu { ... }` builder
+/// because SwiftUI evaluates that builder during ordinary view updates
+/// (causing selection to bounce around at startup). Instead this view
+/// observes the actual right-mouse event via AppKit and forwards it.
+///
+/// The custom `hitTest(_:)` returns the underlying view only for
+/// right-mouse / control-click events so all other input (taps,
+/// drags, scrolls) passes straight through to SwiftUI unchanged.
+struct RightClickCatcher: NSViewRepresentable {
+    let onRightClick: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let v = RightClickNSView()
+        v.onRightClick = onRightClick
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? RightClickNSView)?.onRightClick = onRightClick
+    }
+}
+
+private final class RightClickNSView: NSView {
+    var onRightClick: (() -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Only intercept events that will trigger a context menu so we
+        // don't disturb left-click / drag / scroll handling above us.
+        guard let event = NSApp.currentEvent else { return nil }
+        switch event.type {
+        case .rightMouseDown, .rightMouseUp, .rightMouseDragged:
+            return super.hitTest(point) == nil ? nil : self
+        case .leftMouseDown, .leftMouseUp:
+            // Ctrl-click on macOS is treated as a secondary click.
+            if event.modifierFlags.contains(.control) {
+                return super.hitTest(point) == nil ? nil : self
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?()
+        // Forward up the responder chain so SwiftUI's `.contextMenu`
+        // (attached to the row above us) still shows.
+        super.rightMouseDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // Reached only when modifier-based hitTest above admitted us
+        // (control + left-click). Treat as a secondary click.
+        if event.modifierFlags.contains(.control) {
+            onRightClick?()
+        }
+        super.mouseDown(with: event)
     }
 }
 

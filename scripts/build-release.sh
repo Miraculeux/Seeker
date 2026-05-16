@@ -9,7 +9,6 @@ BUILD_DIR="/tmp/${APP_NAME}-build"
 APP_BUNDLE="${BUILD_DIR}/${APP_NAME}.app"
 DMG_DIR="${BUILD_DIR}/dmg"
 DMG_OUTPUT="${PROJECT_DIR}/dist/${APP_NAME}-${VERSION}.dmg"
-ZIP_OUTPUT="${PROJECT_DIR}/dist/${APP_NAME}-${VERSION}.zip"
 
 # Linker flags: dead-strip unreachable symbols and unused dylibs to shrink
 # the release binary.
@@ -61,17 +60,12 @@ cp -r "$APP_BUNDLE" "$DMG_DIR/"
 ln -s /Applications "$DMG_DIR/Applications"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_OUTPUT"
 
-echo "==> Creating ZIP..."
-cd "$BUILD_DIR"
-zip -ry "$ZIP_OUTPUT" "${APP_NAME}.app"
-
 echo "==> Cleaning up..."
 rm -rf "$BUILD_DIR"
 
 echo ""
 echo "Build complete!"
 echo "  DMG: $DMG_OUTPUT"
-echo "  ZIP: $ZIP_OUTPUT"
 echo ""
 echo "File sizes:"
-ls -lh "$DMG_OUTPUT" "$ZIP_OUTPUT"
+ls -lh "$DMG_OUTPUT"
