@@ -730,6 +730,22 @@ struct FileInfoView: View {
                     .help("Remove GPS, serial number, user comment")
                 }
             }
+
+            if let file = selectedFile, file.isEditableMedia {
+                Divider()
+                Button {
+                    appState.mediaMetadataEditorTargets = [file.url]
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "music.note.list")
+                        Text("Edit Tags\u{2026}")
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                }
+                .controlSize(.small)
+                .help("Edit audio/video tag metadata")
+            }
         }
         .padding(.horizontal, 12)
     }

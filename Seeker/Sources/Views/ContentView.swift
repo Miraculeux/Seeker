@@ -71,6 +71,18 @@ struct ContentView: View {
                 .environment(appState)
             }
         }
+        .sheet(isPresented: Binding(
+            get: { appState.mediaMetadataEditorTargets != nil },
+            set: { if !$0 { appState.mediaMetadataEditorTargets = nil } }
+        )) {
+            if let targets = appState.mediaMetadataEditorTargets {
+                MediaMetadataEditorSheet(targets: targets) {
+                    appState.mediaMetadataEditorTargets = nil
+                    appState.activeExplorer.loadFiles()
+                }
+                .environment(appState)
+            }
+        }
         .onChange(of: appState.duplicateFinderRoot) { _, newValue in
             // The duplicate finder lives in its own window so the main
             // window stays interactive while the user reviews matches.
@@ -153,7 +165,7 @@ struct ContentView: View {
                 ) {
                     appState.openMetadataEditor()
                 }
-                .disabled(!appState.activeExplorer.hasEditableImageSelection)
+                .disabled(!appState.activeExplorer.hasEditableMetadataSelection)
                 .keyboardShortcut("i", modifiers: .command)
 
                 ShareToolbarBtn(appState: appState)

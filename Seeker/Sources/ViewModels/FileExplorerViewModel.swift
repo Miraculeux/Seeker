@@ -994,6 +994,15 @@ class FileExplorerViewModel: Identifiable {
         return selectedFile?.isEditableImage ?? false
     }
 
+    /// True if any item in the effective selection is either an editable
+    /// image or an audio/video file with a writable tag format.
+    var hasEditableMetadataSelection: Bool {
+        if !selectedFileIDs.isEmpty {
+            return selectedFiles.contains(where: \.isEditableMetadata)
+        }
+        return selectedFile?.isEditableMetadata ?? false
+    }
+
     var canPaste: Bool {
         !Self.clipboard.isEmpty ||
         NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL] != nil

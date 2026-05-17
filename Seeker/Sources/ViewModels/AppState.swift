@@ -20,6 +20,10 @@ class AppState {
     /// the image(s) being edited.
     var metadataEditorTargets: [URL]?
 
+    /// Non-nil when the audio/video tag editor sheet is open. Holds the
+    /// URLs of the media file(s) being edited.
+    var mediaMetadataEditorTargets: [URL]?
+
     /// Non-nil when the Find Duplicates sheet is open. Holds the root
     /// directory under which the duplicate scan should run.
     var duplicateFinderRoot: URL?
@@ -33,14 +37,24 @@ class AppState {
         duplicateFinderRoot = selected?.url ?? active.currentURL
     }
 
-    /// Opens the editor for the active pane's effective image selection.
-    /// No-op when no editable images are selected.
+    /// Opens the appropriate Metadata Editor for the active pane's effective
+    /// selection: image EXIF editor for images, audio/video tag editor for
+    /// media files. If the selection contains both, images win (matches the
+    /// prior behavior where this command was image-only). No-op when nothing
+    /// editable is selected.
     func openMetadataEditor() {
-        let urls = activeExplorer.effectiveSelection
-            .filter(\.isEditableImage)
-            .map(\.url)
-        guard !urls.isEmpty else { NSSound.beep(); return }
-        metadataEditorTargets = urls
+        let selection = activeExplorer.effectiveSelection
+        let imageURLs = selection.filter(\.isEditableImage).map(\.url)
+        if !imageURLs.isEmpty {
+            metadataEditorTargets = imageURLs
+            return
+        }
+        let mediaURLs = selection.filter(\.isEditableMedia).map(\.url)
+        if !mediaURLs.isEmpty {
+            mediaMetadataEditorTargets = mediaURLs
+            return
+        }
+        NSSound.beep()
     }
 
     /// Strips GPS + body serial number + user comment from the current

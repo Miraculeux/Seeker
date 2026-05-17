@@ -268,6 +268,15 @@ struct FileItem: Identifiable, Hashable {
         !isDirectory && FileItem.editableImageExtensions.contains(url.pathExtension.lowercased())
     }
 
+    /// True if Seeker has a native parser/writer for this file's audio or
+    /// video tag metadata (see `MediaMetadataService`).
+    var isEditableMedia: Bool {
+        !isDirectory && MediaMetadataService.isSupported(url)
+    }
+
+    /// True for either an editable image or an editable audio/video file.
+    var isEditableMetadata: Bool { isEditableImage || isEditableMedia }
+
     /// Shallow check: does this folder contain any .ncm files?
     /// Cached per directory URL because this is read from inside SwiftUI
     /// context-menu builders — without caching, right-clicking a folder

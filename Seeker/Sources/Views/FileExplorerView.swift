@@ -447,14 +447,16 @@ struct FileContentView: View {
             Button("Dump Music (\(ncmFiles.count))") { viewModel.dumpNCMFiles(ncmFiles) }
         }
 
-        if viewModel.effectiveSelection.contains(where: \.isEditableImage) {
+        if viewModel.effectiveSelection.contains(where: \.isEditableMetadata) {
             Divider()
             Menu("Metadata") {
                 Button("Edit\u{2026}") { appState.openMetadataEditor() }
                     .keyboardShortcut("i", modifiers: .command)
-                Divider()
-                Button("Strip GPS & Personal Info\u{2026}") {
-                    appState.stripPrivacyMetadata()
+                if viewModel.effectiveSelection.contains(where: \.isEditableImage) {
+                    Divider()
+                    Button("Strip GPS & Personal Info\u{2026}") {
+                        appState.stripPrivacyMetadata()
+                    }
                 }
             }
         }
