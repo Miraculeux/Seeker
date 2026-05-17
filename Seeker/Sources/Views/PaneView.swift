@@ -118,6 +118,7 @@ struct PaneView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
             .buttonStyle(.borderless)
+            .help("New Tab (⌘T)")
             .padding(.trailing, 8)
         }
         .frame(height: 34)
@@ -131,13 +132,17 @@ struct PaneView: View {
             // Navigation pills
             HStack(spacing: 2) {
                 NavButton(icon: "chevron.left", action: pane.activeTab.goBack, disabled: !pane.activeTab.canGoBack)
+                    .help("Back")
                 NavButton(icon: "chevron.right", action: pane.activeTab.goForward, disabled: !pane.activeTab.canGoForward)
+                    .help("Forward")
                 NavButton(icon: "chevron.up", action: pane.activeTab.goUp, disabled: !pane.activeTab.canGoUp)
+                    .help("Enclosing Folder")
                 if appState.showDualPane {
                     NavButton(icon: "arrow.left.arrow.right", action: {
                         let otherPane = side == .left ? appState.rightPane : appState.leftPane
                         pane.activeTab.navigateTo(otherPane.activeTab.currentURL)
                     }, disabled: false)
+                    .help("Go to Other Pane's Location")
                 }
             }
             .padding(2)
@@ -174,6 +179,7 @@ struct PaneView: View {
             .pickerStyle(.segmented)
             .frame(width: 96)
             .controlSize(.small)
+            .help("View as List / Icons / Columns")
 
             // Icon-zoom slider, only shown in icon view. Live updates use
             // `setIconSizeLive` so we don't write `UserDefaults` and post a
@@ -213,6 +219,7 @@ struct PaneView: View {
 
             // Refresh button
             NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
+                .help("Refresh")
 
             // Auto Preview: slideshow current selection (2+) or all
             // previewable items in the current folder.
@@ -242,6 +249,7 @@ struct PaneView: View {
                 pane.activeTab.showHiddenFiles.toggle()
                 pane.activeTab.loadFiles()
             }, disabled: false)
+            .help(pane.activeTab.showHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files")
 
             // Filter field
             HStack(spacing: 4) {
@@ -263,6 +271,7 @@ struct PaneView: View {
                             .foregroundColor(.secondary.opacity(0.5))
                     }
                     .buttonStyle(.borderless)
+                    .help("Clear Filter")
                 }
             }
             .padding(.horizontal, 7)

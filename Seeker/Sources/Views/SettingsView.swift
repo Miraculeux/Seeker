@@ -59,20 +59,35 @@ struct GeneralSettingsTab: View {
                 HStack {
                     Text("Auto Preview interval")
                     Spacer()
+                    TextField(
+                        "",
+                        value: $autoPreviewInterval,
+                        format: .number.precision(.fractionLength(0...3))
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .frame(width: 70)
+                    Text("s")
+                        .foregroundStyle(.secondary)
                     Stepper(
+                        "",
                         value: $autoPreviewInterval,
                         in: SettingsManager.autoPreviewIntervalMin...SettingsManager.autoPreviewIntervalMax,
                         step: 0.25
-                    ) {
-                        Text(String(format: "%.2f s", autoPreviewInterval))
-                            .monospacedDigit()
-                            .frame(minWidth: 60, alignment: .trailing)
-                    }
-                    .onChange(of: autoPreviewInterval) { _, newValue in
-                        SettingsManager.shared.autoPreviewInterval = newValue
-                    }
+                    )
+                    .labelsHidden()
                 }
-                Text("Seconds between slides when Auto Preview is running through a folder or a multi-selection of files.")
+                .onChange(of: autoPreviewInterval) { _, newValue in
+                    // Clamp to a sane minimum to avoid 0 / negative timers,
+                    // but allow any positive value the user wants to type.
+                    let clamped = max(SettingsManager.autoPreviewIntervalMin, newValue)
+                    if clamped != newValue {
+                        autoPreviewInterval = clamped
+                    }
+                    SettingsManager.shared.autoPreviewInterval = clamped
+                }
+                Text("Seconds between slides when Auto Preview is running through a folder or a multi-selection of files. Type any value (minimum \(String(format: "%.2f", SettingsManager.autoPreviewIntervalMin))s).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

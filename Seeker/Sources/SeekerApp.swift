@@ -393,6 +393,15 @@ struct SeekerApp: App {
     @State private var appState = AppState()
     @State private var shortcutVersion = 0
 
+    init() {
+        // Show .help(...) tooltips after 500ms instead of macOS default (~2s).
+        // Must be set before AppKit reads it during launch.
+        UserDefaults.standard.register(defaults: [
+            "NSInitialToolTipDelay": 500
+        ])
+        UserDefaults.standard.set(500, forKey: "NSInitialToolTipDelay")
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
