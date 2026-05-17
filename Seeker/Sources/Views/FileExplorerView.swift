@@ -1525,6 +1525,7 @@ class QuickLookPanelController: NSObject, @unchecked Sendable, NSWindowDelegate 
     }
 
     private func show(url: URL) {
+        let isFirstShow = (panel == nil)
         if panel == nil {
             let p = NSPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
@@ -1555,7 +1556,17 @@ class QuickLookPanelController: NSObject, @unchecked Sendable, NSWindowDelegate 
         previewView?.previewItem = url as QLPreviewItem
         panel?.title = url.lastPathComponent
 
-        if let mainWindow = NSApp.mainWindow ?? NSApp.keyWindow {
+        // On first show, size the panel to fill the screen containing the
+        // main window (leaving room for the menu bar / Dock). On subsequent
+        // shows, preserve whatever size the user left it at and recenter
+        // over the main window.
+        if isFirstShow, let panel = panel {
+            let referenceWindow = NSApp.mainWindow ?? NSApp.keyWindow
+            let screen = referenceWindow?.screen ?? NSScreen.main
+            if let visibleFrame = screen?.visibleFrame {
+                panel.setFrame(visibleFrame, display: false)
+            }
+        } else if let mainWindow = NSApp.mainWindow ?? NSApp.keyWindow {
             let mainFrame = mainWindow.frame
             let panelSize = panel?.frame.size ?? NSSize(width: 600, height: 500)
             let x = mainFrame.midX - panelSize.width / 2

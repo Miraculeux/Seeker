@@ -110,6 +110,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         delegate.quickLookPanel.togglePreview(for: url)
                     }
                     return nil // consume space so List doesn't scroll/deselect
+                } else if event.keyCode == 53 {
+                    // Escape → close Quick Look preview if visible
+                    if let delegate = AppDelegate.shared,
+                       delegate.quickLookPanel.isVisible {
+                        delegate.quickLookPanel.close()
+                        return nil
+                    }
                 } else if event.keyCode == 8, event.modifierFlags.contains(.command) {
                     // Cmd+C → Copy selected files
                     if let delegate = AppDelegate.shared {

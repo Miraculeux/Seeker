@@ -779,6 +779,27 @@ class FileExplorerViewModel: Identifiable {
     func trashSelected() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
+
+        // Determine which file should be selected after deletion: prefer the
+        // next surviving sibling (after the last trashed item), otherwise the
+        // previous surviving sibling (before the first trashed item).
+        let trashedIDs = Set(items.map(\.id))
+        let nextNeighborURL: URL? = {
+            guard let lastIdx = files.lastIndex(where: { trashedIDs.contains($0.id) }) else {
+                return nil
+            }
+            if let next = files[(lastIdx + 1)...].first(where: { !trashedIDs.contains($0.id) }) {
+                return next.url
+            }
+            guard let firstIdx = files.firstIndex(where: { trashedIDs.contains($0.id) }) else {
+                return nil
+            }
+            if let prev = files[..<firstIdx].last(where: { !trashedIDs.contains($0.id) }) {
+                return prev.url
+            }
+            return nil
+        }()
+
         var originalURLs: [URL] = []
         var trashURLs: [URL] = []
         for item in items {
@@ -799,6 +820,9 @@ class FileExplorerViewModel: Identifiable {
         }
         selectionAnchor = nil
         selectedFileIDs = []
+        if let neighbor = nextNeighborURL {
+            pendingSelectionURL = neighbor
+        }
         loadFiles()
         notifyFilesChanged()
     }
