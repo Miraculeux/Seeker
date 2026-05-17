@@ -28,6 +28,7 @@ struct SettingsView: View {
 struct GeneralSettingsTab: View {
     @State private var rememberLastLocation: Bool = SettingsManager.shared.rememberLastLocation
     @State private var showFileExtensions: Bool = SettingsManager.shared.showFileExtensions
+    @State private var autoPreviewInterval: Double = SettingsManager.shared.autoPreviewInterval
     @State private var thumbnailCacheBytes: Int64?
     @State private var isClearingCache: Bool = false
     @State private var cacheSizeRefreshTask: Task<Void, Never>?
@@ -50,6 +51,28 @@ struct GeneralSettingsTab: View {
                         SettingsManager.shared.showFileExtensions = newValue
                     }
                 Text("When disabled, file extensions are hidden (e.g. 'photo' instead of 'photo.jpg').")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Quick Look") {
+                HStack {
+                    Text("Auto Preview interval")
+                    Spacer()
+                    Stepper(
+                        value: $autoPreviewInterval,
+                        in: SettingsManager.autoPreviewIntervalMin...SettingsManager.autoPreviewIntervalMax,
+                        step: 0.25
+                    ) {
+                        Text(String(format: "%.2f s", autoPreviewInterval))
+                            .monospacedDigit()
+                            .frame(minWidth: 60, alignment: .trailing)
+                    }
+                    .onChange(of: autoPreviewInterval) { _, newValue in
+                        SettingsManager.shared.autoPreviewInterval = newValue
+                    }
+                }
+                Text("Seconds between slides when Auto Preview is running through a folder or a multi-selection of files.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

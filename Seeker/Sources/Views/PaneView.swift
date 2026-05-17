@@ -214,6 +214,29 @@ struct PaneView: View {
             // Refresh button
             NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
 
+            // Auto Preview: slideshow current selection (2+) or all
+            // previewable items in the current folder.
+            let autoPreviewItems = autoPreviewToolbarURLs()
+            NavButton(
+                icon: "play.rectangle.on.rectangle",
+                action: {
+                    guard let panel = AppDelegate.shared?.quickLookPanel else { return }
+                    if panel.isAutoPreviewing {
+                        panel.stopAutoPreview()
+                        panel.close()
+                    } else {
+                        panel.startAutoPreview(
+                            urls: autoPreviewItems,
+                            interval: SettingsManager.shared.autoPreviewInterval
+                        )
+                    }
+                },
+                disabled: autoPreviewItems.count < 2
+            )
+            .help(autoPreviewItems.count < 2
+                  ? "Auto Preview (needs 2+ previewable items)"
+                  : "Auto Preview (\(autoPreviewItems.count) items)")
+
             // Show hidden files
             NavButton(icon: pane.activeTab.showHiddenFiles ? "eye" : "eye.slash", action: {
                 pane.activeTab.showHiddenFiles.toggle()
@@ -258,6 +281,25 @@ struct PaneView: View {
     private var fileArea: some View {
         FileContentView(viewModel: pane.activeTab, side: side)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Ordered URLs to feed into the Auto Preview slideshow when the
+    /// toolbar button is tapped. Uses the active tab's display order.
+    /// - 2+ selected items → those (excluding non-package folders).
+    /// - Otherwise → every previewable item in the current listing.
+    private func autoPreviewToolbarURLs() -> [URL] {
+        let tab = pane.activeTab
+        let selected = tab.selectedFileIDs
+        let source: [FileItem]
+        if selected.count >= 2 {
+            source = tab.files.filter { selected.contains($0.id) }
+        } else {
+            source = tab.files
+        }
+        return source.compactMap { item in
+            guard !item.isDirectory || item.isPackage else { return nil }
+            return item.url
+        }
     }
 
     // MARK: - Status Bar

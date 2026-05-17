@@ -190,6 +190,7 @@ final class SettingsManager {
         static let rightPaneViewMode = "lastRightPaneViewMode"
         static let iconSize = "iconSize"
         static let userFavorites = "userFavoritePaths"
+        static let autoPreviewInterval = "autoPreviewInterval"
     }
 
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
@@ -208,6 +209,26 @@ final class SettingsManager {
         set {
             let clamped = min(max(newValue, Self.iconSizeMin), Self.iconSizeMax)
             defaults.set(Double(clamped), forKey: Keys.iconSize)
+        }
+    }
+
+    // MARK: - Auto Preview
+
+    /// Default interval (in seconds) between automatic Quick Look slide
+    /// advances. Matches a comfortable "slideshow" cadence; user-overridable.
+    static let autoPreviewIntervalDefault: TimeInterval = 1.7
+    static let autoPreviewIntervalMin: TimeInterval = 0.25
+    static let autoPreviewIntervalMax: TimeInterval = 60
+
+    var autoPreviewInterval: TimeInterval {
+        get {
+            let raw = defaults.object(forKey: Keys.autoPreviewInterval) as? Double
+            let value = raw ?? Self.autoPreviewIntervalDefault
+            return min(max(value, Self.autoPreviewIntervalMin), Self.autoPreviewIntervalMax)
+        }
+        set {
+            let clamped = min(max(newValue, Self.autoPreviewIntervalMin), Self.autoPreviewIntervalMax)
+            defaults.set(clamped, forKey: Keys.autoPreviewInterval)
         }
     }
 

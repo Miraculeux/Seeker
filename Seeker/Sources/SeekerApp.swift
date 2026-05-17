@@ -104,10 +104,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 if event.keyCode == 49, !event.isARepeat {
-                    // Space → Quick Look
-                    if let delegate = AppDelegate.shared,
-                       let url = delegate.appState?.activeExplorer.selectedFile?.url {
-                        delegate.quickLookPanel.togglePreview(for: url)
+                    // Space → Quick Look (or pause/resume if a slideshow
+                    // is currently running in the Quick Look panel).
+                    if let delegate = AppDelegate.shared {
+                        if delegate.quickLookPanel.isAutoPreviewing {
+                            delegate.quickLookPanel.toggleAutoPreviewPaused()
+                            return nil
+                        }
+                        if let url = delegate.appState?.activeExplorer.selectedFile?.url {
+                            delegate.quickLookPanel.togglePreview(for: url)
+                        }
                     }
                     return nil // consume space so List doesn't scroll/deselect
                 } else if event.keyCode == 53 {

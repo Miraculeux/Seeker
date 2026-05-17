@@ -346,16 +346,38 @@ class FileExplorerViewModel: Identifiable {
     /// (e.g. the duplicate-finder sheet) can highlight a specific file
     /// after navigating to its parent directory.
     @ObservationIgnored private var pendingSelectionURL: URL?
+    /// When set, the next successful `applyPendingSelection()` also opens
+    /// the inline rename editor on the resolved item. Used by
+    /// `createNewFolder` / `createNewFile` so the rename TextField focuses
+    /// on the row only after `loadFiles()` has reloaded the listing.
+    @ObservationIgnored private var pendingRenameOnSelect: Bool = false
 
     private func applyPendingSelection() {
         guard let target = pendingSelectionURL else { return }
-        let standardized = target.standardizedFileURL
+        let standardizedPath = target.standardizedFileURL.path
         if let match = files.first(where: {
-            $0.url.standardizedFileURL == standardized
+            // Compare on `path` rather than the full URL: directory URLs
+            // returned by `contentsOfDirectory` carry a trailing slash
+            // while ones built via `appendingPathComponent(name)` do not,
+            // and `standardizedFileURL` preserves that distinction.
+            $0.url.standardizedFileURL.path == standardizedPath
         }) {
             pendingSelectionURL = nil
             selectedFileIDs = [match.id]
             selectionAnchor = match
+            if pendingRenameOnSelect {
+                pendingRenameOnSelect = false
+                // Defer the rename one runloop so SwiftUI mounts the
+                // newly-appeared row (with selection) before we flip it
+                // into editing mode. Setting renamingFile in the same
+                // tick as `files` left the TextField unfocused because
+                // its `.onAppear` ran before the focus binding was wired
+                // into the responder chain.
+                let item = match
+                DispatchQueue.main.async { [weak self] in
+                    self?.beginRename(item)
+                }
+            }
         }
         // If no match yet (listing not loaded, or hidden by filter),
         // leave the pending URL set so a later loadFiles() can catch it.
@@ -515,6 +537,18 @@ class FileExplorerViewModel: Identifiable {
         }
     }
 
+    /// Enumerate `folder` synchronously using the same hidden-file and
+    /// resource-key conventions as the main listing, then apply this view
+    /// model's current sort. Used by context-menu actions (e.g. Auto
+    /// Preview) so out-of-listing folders are ordered consistently with
+    /// the visible pane.
+    func sortedChildren(of folder: URL) -> [FileItem] {
+        let options: FileManager.DirectoryEnumerationOptions =
+            showHiddenFiles ? [] : [.skipsHiddenFiles]
+        let items = Self.enumerate(url: folder.standardizedFileURL, options: options) ?? []
+        return sortItems(items)
+    }
+
     func goBack() {
         guard historyIndex > 0 else { return }
         historyIndex -= 1
@@ -595,13 +629,14 @@ class FileExplorerViewModel: Identifiable {
         do {
             try fm.createDirectory(at: newURL, withIntermediateDirectories: false)
             undoStack.append(.create(url: newURL))
+            // Select and open the rename editor once the async loadFiles()
+            // returns and the new folder is actually in `files`. Setting
+            // selection/renamingFile synchronously here races the reload
+            // and leaves the row without focus.
+            pendingSelectionURL = newURL
+            pendingRenameOnSelect = true
             loadFiles()
             notifyFilesChanged()
-            // Select the new folder and start renaming
-            let newItem = FileItem(url: newURL)
-            selectionAnchor = newItem
-            selectedFileIDs = [newItem.id]
-            beginRename(newItem)
         } catch {
             showFileError("Could not create folder: \(error.localizedDescription)")
         }
@@ -623,12 +658,10 @@ class FileExplorerViewModel: Identifiable {
         do {
             try Data().write(to: newURL)
             undoStack.append(.create(url: newURL))
+            pendingSelectionURL = newURL
+            pendingRenameOnSelect = true
             loadFiles()
             notifyFilesChanged()
-            let newItem = FileItem(url: newURL)
-            selectionAnchor = newItem
-            selectedFileIDs = [newItem.id]
-            beginRename(newItem)
         } catch {
             showFileError("Could not create file: \(error.localizedDescription)")
         }
@@ -745,7 +778,7 @@ class FileExplorerViewModel: Identifiable {
             Self.clipboardIsCut = false
             FileOperationManager.shared.startMove(sources: urls, to: dest) { [weak self] op in
                 self?.loadFiles()
-                self?.notifyFilesChanged()
+                self?.notifyDirectoriesChanged(sourceURLs: urls)
                 if !op.completedDestinations.isEmpty {
                     let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
                     self?.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
@@ -833,7 +866,7 @@ class FileExplorerViewModel: Identifiable {
         let sources = items.map(\.url)
         FileOperationManager.shared.startMove(sources: sources, to: destination) { [weak self] op in
             self?.loadFiles()
-            self?.notifyFilesChanged()
+            self?.notifyDirectoriesChanged(sourceURLs: sources)
             if !op.completedDestinations.isEmpty {
                 let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
                 self?.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
@@ -1217,6 +1250,27 @@ class FileExplorerViewModel: Identifiable {
             object: self,
             userInfo: [Self.affectedDirKey: currentURL]
         )
+    }
+
+    /// Broadcast a `.filesDidChange` for each unique parent directory of
+    /// `urls` plus `currentURL`. Used by operations whose source and
+    /// destination directories differ (e.g. cross-pane Move / Cut+Paste)
+    /// so the *source* pane refreshes too — `.filesDidChange` listeners
+    /// are scoped per affected dir and would otherwise ignore a
+    /// notification posted only against the destination.
+    private func notifyDirectoriesChanged(sourceURLs: [URL]) {
+        var dirs: Set<URL> = [currentURL.standardizedFileURL]
+        for url in sourceURLs {
+            dirs.insert(url.deletingLastPathComponent().standardizedFileURL)
+        }
+        for dir in dirs {
+            FileItemCache.containsNCMByPath.removeObject(forKey: dir.path as NSString)
+            NotificationCenter.default.post(
+                name: .filesDidChange,
+                object: self,
+                userInfo: [Self.affectedDirKey: dir]
+            )
+        }
     }
 
     /// Key used in `.filesDidChange` userInfo to scope reloads to tabs that
