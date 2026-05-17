@@ -731,7 +731,7 @@ struct FileInfoView: View {
                 }
             }
 
-            if let file = selectedFile, file.isEditableMedia {
+            if let file = selectedFile, file.isReadableMedia {
                 Divider()
                 Button {
                     appState.mediaMetadataEditorTargets = [file.url]
@@ -744,7 +744,9 @@ struct FileInfoView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .controlSize(.small)
-                .help("Edit audio/video tag metadata")
+                .help(file.isEditableMedia
+                      ? "Edit audio/video tag metadata"
+                      : "View tags (read-only for .\(file.url.pathExtension))")
             }
         }
         .padding(.horizontal, 12)
@@ -810,10 +812,19 @@ struct FileInfoView: View {
         guard !file.isDirectory else { return nil }
         let ext = file.url.pathExtension.lowercased()
         let mediaExts = [
-            "mp4", "mov", "m4v", "avi", "mkv", "wmv", "flv", "webm", "ts", "mpg", "mpeg",
-            "mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ogg", "wma", "opus", "alac"
+            "mp4", "mov", "m4v", "avi", "mkv", "mka", "webm", "wmv", "flv", "ts", "mpg", "mpeg",
+            "mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ogg", "wma", "opus", "alac",
+            "dsf", "dff"
         ]
         guard mediaExts.contains(ext) else { return nil }
+
+        // DSF/DFF can't be opened by AVFoundation — go through the native
+        // parsers (TechnicalInfoService) so we get sample rate, channels,
+        // and DSD rate. Same for FLAC, but FLAC also has AVAsset support
+        // so we fall back to AV for the duration/tag pass below.
+        if ext == "dsf" || ext == "dff" {
+            return nativeMediaInfo(for: file.url, ext: ext)
+        }
 
         let asset = AVURLAsset(url: file.url)
         var meta = MediaInfo()
@@ -954,6 +965,74 @@ struct FileInfoView: View {
         case "opus": return "Opus"
         default: return raw
         }
+    }
+
+    /// Build a `MediaInfo` from the native parser for formats AVFoundation
+    /// can't open (DSF, DFF). Uses `TechnicalInfoService` so we report the
+    /// correct DSD rate, channel count, and bit depth.
+    private func nativeMediaInfo(for url: URL, ext: String) -> MediaInfo? {
+        let fileSize = (try? FileManager.default
+            .attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
+        let tech: MediaTechnicalInfo
+        switch ext {
+        case "dsf":
+            guard let file = try? DSFFile.read(url) else { return nil }
+            tech = TechnicalInfoService.finalize(
+                TechnicalInfoService.from(dsf: file, fileSize: fileSize))
+        case "dff":
+            guard let file = try? DFFFile.read(url) else { return nil }
+            tech = TechnicalInfoService.finalize(
+                TechnicalInfoService.from(dff: file, fileSize: fileSize))
+        default:
+            return nil
+        }
+
+        var meta = MediaInfo()
+        if let s = tech.durationSeconds, s > 0 {
+            let total = Int(s)
+            let h = total / 3600, m = (total % 3600) / 60, sec = total % 60
+            meta.duration = h > 0
+                ? String(format: "%d:%02d:%02d", h, m, sec)
+                : String(format: "%d:%02d", m, sec)
+        }
+        meta.audioCodec = tech.codec
+        if let rate = tech.sampleRate, rate > 0 {
+            // DSD rates (2.8M, 5.6M, 11.2M) read nicer as DSDxxx labels.
+            if tech.isDSD {
+                let dsdMultiple = Int((rate / 44_100).rounded())
+                if dsdMultiple > 0 {
+                    meta.sampleRate = "DSD\(dsdMultiple) (\(String(format: "%.1f", rate / 1_000_000)) MHz)"
+                } else {
+                    meta.sampleRate = String(format: "%.1f MHz", rate / 1_000_000)
+                }
+            } else {
+                meta.sampleRate = String(format: "%.1f kHz", rate / 1000)
+            }
+        }
+        if let ch = tech.channels, ch > 0 {
+            switch ch {
+            case 1: meta.channels = "Mono"
+            case 2: meta.channels = "Stereo"
+            case 6: meta.channels = "5.1"
+            case 8: meta.channels = "7.1"
+            default: meta.channels = "\(ch) ch"
+            }
+        }
+        if let br = tech.bitrate, br > 0 {
+            let mbps = br / 1_000_000
+            meta.audioBitrate = mbps >= 1
+                ? String(format: "%.1f Mbps", mbps)
+                : String(format: "%.0f kbps", br / 1000)
+        }
+        // Pull tags via the same service so DSF/DFF show TITLE/ARTIST/etc.
+        if let tags = try? MediaMetadataService.read(url) {
+            meta.title  = tags.first("TITLE")
+            meta.artist = tags.first("ARTIST")
+            meta.album  = tags.first("ALBUM")
+            meta.genre  = tags.first("GENRE")
+            meta.year   = tags.first("DATE") ?? tags.first("YEAR")
+        }
+        return meta
     }
 
     private func mediaSection(_ meta: MediaInfo) -> some View {

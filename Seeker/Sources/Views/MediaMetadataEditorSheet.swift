@@ -31,6 +31,11 @@ struct MediaMetadataEditorSheet: View {
     private var isBatch: Bool { targets.count > 1 }
     private var firstTarget: URL? { targets.first }
 
+    /// True when every selected target is in a read-only format (no writer).
+    private var isReadOnly: Bool {
+        !targets.isEmpty && targets.allSatisfy(MediaMetadataService.isReadOnly)
+    }
+
     private static let batchKeys = [
         "TITLE", "ARTIST", "ALBUMARTIST", "ALBUM", "DATE",
         "GENRE", "TRACKNUMBER", "DISCNUMBER", "COMPOSER", "COMMENT"
@@ -42,6 +47,7 @@ struct MediaMetadataEditorSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    if isReadOnly { readOnlyNotice }
                     if isBatch {
                         batchNotice
                         batchForm
@@ -93,12 +99,14 @@ struct MediaMetadataEditorSheet: View {
             }
             Spacer()
             Button("Revert") { load() }
-                .disabled(saving)
-            Button("Cancel") { close() }
+                .disabled(saving || isReadOnly)
+            Button(isReadOnly ? "Close" : "Cancel") { close() }
                 .keyboardShortcut(.cancelAction)
-            Button(isBatch ? "Apply to \(targets.count)" : "Save") { save() }
-                .keyboardShortcut(.defaultAction)
-                .disabled(saving)
+            if !isReadOnly {
+                Button(isBatch ? "Apply to \(targets.count)" : "Save") { save() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(saving)
+            }
         }
         .padding(12)
     }
@@ -113,6 +121,19 @@ struct MediaMetadataEditorSheet: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.08)))
+    }
+
+    private var readOnlyNotice: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock")
+                .foregroundColor(.secondary)
+            Text("Read-only — Seeker can display tags for this format but cannot write them.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.08)))
     }
 
     // MARK: - Single-file editor
@@ -181,6 +202,7 @@ struct MediaMetadataEditorSheet: View {
                 }
                 .controlSize(.small)
                 .help("Add new tag row")
+                .disabled(isReadOnly)
             }
             ForEach($meta.tags) { $tag in
                 HStack(spacing: 6) {
@@ -188,9 +210,11 @@ struct MediaMetadataEditorSheet: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 150)
                         .font(.system(.body, design: .monospaced))
+                        .disabled(isReadOnly)
                     TextField("value", text: $tag.value, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1...4)
+                        .disabled(isReadOnly)
                     Button {
                         meta.tags.removeAll { $0.id == tag.id }
                     } label: {
@@ -199,10 +223,11 @@ struct MediaMetadataEditorSheet: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Remove tag")
+                    .disabled(isReadOnly)
                 }
             }
             if meta.tags.isEmpty {
-                Text("No tags. Click + to add one.")
+                Text(isReadOnly ? "No tags found." : "No tags. Click + to add one.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .padding(.vertical, 8)

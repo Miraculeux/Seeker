@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import AVFoundation
 
 /// Routes media metadata read/write to the right dependency-free parser.
 /// Covers audio + video containers; image EXIF stays in `ExifEditor`.
@@ -16,8 +17,28 @@ enum MediaMetadataService {
         "dsf", "dff",
     ]
 
+    /// File extensions we can only *read* (via AVFoundation). Tag writing
+    /// is not implemented for these — the editor opens in read-only mode.
+    static let readOnlyExtensions: Set<String> = [
+        "wav", "aac", "ogg", "opus", "wma", "ts", "mpg", "mpeg",
+        "wmv", "flv",
+    ]
+
+    /// True if Seeker can edit (read + write) this file's tags.
     static func isSupported(_ url: URL) -> Bool {
         writableExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    /// True if Seeker can at least *read* this file's tags. A superset of
+    /// `isSupported`.
+    static func isReadable(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return writableExtensions.contains(ext) || readOnlyExtensions.contains(ext)
+    }
+
+    /// True when the format is in the read-only set (no native writer).
+    static func isReadOnly(_ url: URL) -> Bool {
+        readOnlyExtensions.contains(url.pathExtension.lowercased())
     }
 
     static func read(_ url: URL) throws -> MediaMetadata {
@@ -61,6 +82,9 @@ enum MediaMetadataService {
         case "dff":
             return mediaMetadata(fromID3Decoded: try DFFFile.read(url).decoded())
         default:
+            if readOnlyExtensions.contains(url.pathExtension.lowercased()) {
+                return readAVAsset(url)
+            }
             throw NSError(domain: "MediaMetadataService", code: 1,
                 userInfo: [NSLocalizedDescriptionKey:
                     "Unsupported format: .\(url.pathExtension)"])
@@ -83,6 +107,11 @@ enum MediaMetadataService {
         case "dsf": try writeDSF(md, to: url)
         case "dff": try writeDFF(md, to: url)
         default:
+            if readOnlyExtensions.contains(url.pathExtension.lowercased()) {
+                throw NSError(domain: "MediaMetadataService", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Tags for .\(url.pathExtension) are read-only in Seeker."])
+            }
             throw NSError(domain: "MediaMetadataService", code: 2,
                 userInfo: [NSLocalizedDescriptionKey:
                     "Writing tags for .\(url.pathExtension) is not supported."])
@@ -196,5 +225,59 @@ enum MediaMetadataService {
               let rep = img.representations.first
         else { return nil }
         return (rep.pixelsWide, rep.pixelsHigh)
+    }
+
+    // MARK: - AVAsset read-only fallback
+
+    /// Best-effort tag read via AVFoundation for formats with no native
+    /// parser (e.g. WAV, AAC, OGG, OPUS, WMA, MPEG). Returns whatever
+    /// `commonMetadata` + `metadata` expose, normalized to upper-case
+    /// Vorbis-style keys so it round-trips through `MediaMetadata`.
+    private static func readAVAsset(_ url: URL) -> MediaMetadata {
+        let asset = AVURLAsset(url: url)
+        var tags: [MediaMetadata.Tag] = []
+        var cover: Data?
+        var coverMime: String?
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var items: [AVMetadataItem] = []
+        asset.loadValuesAsynchronously(forKeys: ["commonMetadata", "metadata"]) {
+            items = asset.commonMetadata + asset.metadata
+            semaphore.signal()
+        }
+        // Bounded wait so we never block forever on a misbehaving file.
+        _ = semaphore.wait(timeout: .now() + 5)
+
+        for item in items {
+            let raw = (item.commonKey?.rawValue
+                       ?? item.key as? String
+                       ?? "").uppercased()
+            if raw.isEmpty { continue }
+            let key = mapAVKey(raw)
+            if let str = item.stringValue, !str.isEmpty {
+                // Skip duplicate keys (commonMetadata + metadata often overlap).
+                if tags.contains(where: { $0.key == key && $0.value == str }) {
+                    continue
+                }
+                tags.append(.init(key: key, value: str))
+            } else if let data = item.dataValue,
+                      cover == nil,
+                      raw.contains("ARTWORK") || raw.contains("COVER") || raw == "PIC" {
+                cover = data
+                coverMime = mimeForImageData(data)
+            }
+        }
+        return MediaMetadata(vendor: nil, tags: tags,
+                             coverArt: cover, coverMimeType: coverMime)
+    }
+
+    private static func mapAVKey(_ k: String) -> String {
+        switch k {
+        case "ALBUMNAME", "ALBUM": return "ALBUM"
+        case "TYPE": return "GENRE"
+        case "CREATIONDATE": return "DATE"
+        case "AUTHOR": return "ARTIST"
+        default: return k
+        }
     }
 }

@@ -49,7 +49,7 @@ class AppState {
             metadataEditorTargets = imageURLs
             return
         }
-        let mediaURLs = selection.filter(\.isEditableMedia).map(\.url)
+        let mediaURLs = selection.filter(\.isReadableMedia).map(\.url)
         if !mediaURLs.isEmpty {
             mediaMetadataEditorTargets = mediaURLs
             return

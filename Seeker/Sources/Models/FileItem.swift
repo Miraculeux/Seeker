@@ -274,8 +274,14 @@ struct FileItem: Identifiable, Hashable {
         !isDirectory && MediaMetadataService.isSupported(url)
     }
 
-    /// True for either an editable image or an editable audio/video file.
-    var isEditableMetadata: Bool { isEditableImage || isEditableMedia }
+    /// True if Seeker can read this file's tags (writable formats *and*
+    /// AVFoundation-only read-only formats like .wav / .opus).
+    var isReadableMedia: Bool {
+        !isDirectory && MediaMetadataService.isReadable(url)
+    }
+
+    /// True for either an editable image or a readable audio/video file.
+    var isEditableMetadata: Bool { isEditableImage || isReadableMedia }
 
     /// Shallow check: does this folder contain any .ncm files?
     /// Cached per directory URL because this is read from inside SwiftUI
