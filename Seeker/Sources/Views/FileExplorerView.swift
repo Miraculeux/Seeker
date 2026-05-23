@@ -1558,6 +1558,14 @@ struct QuickLookPreview: NSViewRepresentable {
     func updateNSView(_ nsView: QLPreviewView, context: Context) {
         nsView.previewItem = url as QLPreviewItem
     }
+
+    // Clear the preview item when the wrapper goes away so QLPreviewView
+    // tears down its internal AVPlayer and stops any in-progress audio /
+    // video playback (mp3, m4a, wav, mp4, mov, …). Without this, media
+    // can keep playing after the sheet is dismissed.
+    static func dismantleNSView(_ nsView: QLPreviewView, coordinator: ()) {
+        nsView.previewItem = nil
+    }
 }
 
 // MARK: - Quick Look Floating Panel (Finder-style)
@@ -1884,6 +1892,12 @@ class QuickLookPanelController: NSObject, @unchecked Sendable, NSWindowDelegate 
         guard let panel = panel, isVisible else { return }
         isVisible = false
         stopAutoPreview()
+        // Stop any in-flight media playback (e.g. MP3/MP4) immediately so
+        // audio doesn't continue while the close animation runs or after
+        // the panel is ordered out. QLPreviewView retains its AVPlayer-
+        // backed preview controller until the previewItem is cleared.
+        previewView?.previewItem = nil
+        currentURL = nil
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.12
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
