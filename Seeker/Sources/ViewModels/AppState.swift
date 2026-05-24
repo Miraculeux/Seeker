@@ -9,7 +9,17 @@ class AppState {
         didSet { SettingsManager.shared.showFavorites = showFavorites }
     }
     var showDualPane: Bool = SettingsManager.shared.showDualPane {
-        didSet { SettingsManager.shared.showDualPane = showDualPane }
+        didSet {
+            SettingsManager.shared.showDualPane = showDualPane
+            // The right pane is hidden in single-pane mode. If the user
+            // collapses to single-pane while `.right` is active, every
+            // subsequent navigation (sidebar favorite click, Go To Folder,
+            // etc.) would silently target the hidden right pane. Force
+            // focus back to the only visible pane.
+            if !showDualPane && activePane == .right {
+                activePane = .left
+            }
+        }
     }
     var showInfoPanel: Bool = SettingsManager.shared.showInfoPanel {
         didSet { SettingsManager.shared.showInfoPanel = showInfoPanel }

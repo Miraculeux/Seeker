@@ -7,6 +7,12 @@ struct PaneView: View {
     let side: AppState.PaneSide
     @FocusState private var isFilterFocused: Bool
 
+    /// When `true`, the breadcrumb is replaced by a text field where the
+    /// user can type or paste an absolute path (Windows-Explorer-style).
+    @State private var isEditingPath: Bool = false
+    @State private var pathInputText: String = ""
+    @FocusState private var isPathInputFocused: Bool
+
     var isActive: Bool {
         appState.activePane == side
     }
@@ -149,7 +155,146 @@ struct PaneView: View {
             .background(Color.primary.opacity(0.04))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
-            // Path breadcrumb
+            // Path breadcrumb / editable path input.
+            // Clicking the empty area of the breadcrumb (or the pencil
+            // icon) switches into a Windows-Explorer-style text field
+            // where the user can type or paste an absolute path.
+            pathBar
+
+            // While the user is editing a path, hide the secondary
+            // toolbar widgets so the text field can stretch to the full
+            // available width. Crucial in narrow panes where the field
+            // would otherwise be squeezed down to a few characters.
+            if !isEditingPath {
+                // View mode picker
+                Picker("", selection: viewModeBinding) {
+                    Image(systemName: "list.bullet").tag(FileExplorerViewModel.ViewMode.list)
+                    Image(systemName: "square.grid.2x2").tag(FileExplorerViewModel.ViewMode.icons)
+                    Image(systemName: "rectangle.split.3x1").tag(FileExplorerViewModel.ViewMode.columns)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 96)
+                .controlSize(.small)
+                .help("View as List / Icons / Columns")
+
+                // Icon-zoom slider, only shown in icon view. Live updates use
+                // `setIconSizeLive` so we don't write `UserDefaults` and post a
+                // cross-pane notification on every micro-step. The commit
+                // happens once the user releases the slider via
+                // `Slider(onEditingChanged:)`.
+                if pane.activeTab.viewMode == .icons {
+                    HStack(spacing: 2) {
+                        NavButton(
+                            icon: "minus.magnifyingglass",
+                            action: { pane.activeTab.zoomIconsOut() },
+                            disabled: pane.activeTab.iconSize <= SettingsManager.iconSizeMin
+                        )
+                        .help("Zoom out (⌘-)")
+                        Slider(
+                            value: Binding(
+                                get: { Double(pane.activeTab.iconSize) },
+                                set: { pane.activeTab.setIconSizeLive(CGFloat($0)) }
+                            ),
+                            in: Double(SettingsManager.iconSizeMin)...Double(SettingsManager.iconSizeMax),
+                            onEditingChanged: { editing in
+                                if !editing {
+                                    pane.activeTab.commitIconSize(pane.activeTab.iconSize)
+                                }
+                            }
+                        )
+                        .controlSize(.mini)
+                        .frame(width: 70)
+                        NavButton(
+                            icon: "plus.magnifyingglass",
+                            action: { pane.activeTab.zoomIconsIn() },
+                            disabled: pane.activeTab.iconSize >= SettingsManager.iconSizeMax
+                        )
+                        .help("Zoom in (⌘+)")
+                    }
+                }
+
+                // Refresh button
+                NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
+                    .help("Refresh")
+
+                // Auto Preview: slideshow current selection (2+) or all
+                // previewable items in the current folder.
+                let autoPreviewItems = autoPreviewToolbarURLs()
+                NavButton(
+                    icon: "play.rectangle.on.rectangle",
+                    action: {
+                        guard let panel = AppDelegate.shared?.quickLookPanel else { return }
+                        if panel.isAutoPreviewing {
+                            panel.stopAutoPreview()
+                            panel.close()
+                        } else {
+                            panel.startAutoPreview(
+                                urls: autoPreviewItems,
+                                interval: SettingsManager.shared.autoPreviewInterval
+                            )
+                        }
+                    },
+                    disabled: autoPreviewItems.count < 2
+                )
+                .help(autoPreviewItems.count < 2
+                      ? "Auto Preview (needs 2+ previewable items)"
+                      : "Auto Preview (\(autoPreviewItems.count) items)")
+
+                // Show hidden files
+                NavButton(icon: pane.activeTab.showHiddenFiles ? "eye" : "eye.slash", action: {
+                    pane.activeTab.showHiddenFiles.toggle()
+                    pane.activeTab.loadFiles()
+                }, disabled: false)
+                .help(pane.activeTab.showHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files")
+
+                // Filter field
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.secondary.opacity(0.6))
+                    TextField("Filter", text: searchTextBinding)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                        .focused($isFilterFocused)
+                        .onChange(of: pane.activeTab.searchText) { pane.activeTab.refilter() }
+                    if !pane.activeTab.searchText.isEmpty {
+                        Button {
+                            pane.activeTab.searchText = ""
+                            pane.activeTab.refilter()
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary.opacity(0.5))
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Clear Filter")
+                    }
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.primary.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .frame(width: 140)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color.primary.opacity(0.015))
+    }
+
+    // MARK: - Path Bar (breadcrumb / editable input)
+
+    @ViewBuilder
+    private var pathBar: some View {
+        if isEditingPath {
+            pathTextField
+        } else {
+            pathBreadcrumb
+        }
+    }
+
+    private var pathBreadcrumb: some View {
+        HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 1) {
                     let components = pane.activeTab.pathComponents
@@ -169,120 +314,163 @@ struct PaneView: View {
                     }
                 }
             }
-
-            // View mode picker
-            Picker("", selection: viewModeBinding) {
-                Image(systemName: "list.bullet").tag(FileExplorerViewModel.ViewMode.list)
-                Image(systemName: "square.grid.2x2").tag(FileExplorerViewModel.ViewMode.icons)
-                Image(systemName: "rectangle.split.3x1").tag(FileExplorerViewModel.ViewMode.columns)
+            // Empty-space click target lives OUTSIDE the ScrollView. Putting
+            // a `maxWidth: .infinity` view inside a horizontal ScrollView
+            // proposes an infinite content width which makes SwiftUI grow
+            // the surrounding toolbar row taller than expected.
+            Color.clear
+                .frame(minWidth: 8)
+                .contentShape(Rectangle())
+                .onTapGesture { beginEditingPath() }
+            // Pencil affordance — discoverable trigger for path editing.
+            Button(action: beginEditingPath) {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary.opacity(0.7))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
             }
-            .pickerStyle(.segmented)
-            .frame(width: 96)
-            .controlSize(.small)
-            .help("View as List / Icons / Columns")
-
-            // Icon-zoom slider, only shown in icon view. Live updates use
-            // `setIconSizeLive` so we don't write `UserDefaults` and post a
-            // cross-pane notification on every micro-step. The commit
-            // happens once the user releases the slider via
-            // `Slider(onEditingChanged:)`.
-            if pane.activeTab.viewMode == .icons {
-                HStack(spacing: 2) {
-                    NavButton(
-                        icon: "minus.magnifyingglass",
-                        action: { pane.activeTab.zoomIconsOut() },
-                        disabled: pane.activeTab.iconSize <= SettingsManager.iconSizeMin
-                    )
-                    .help("Zoom out (⌘-)")
-                    Slider(
-                        value: Binding(
-                            get: { Double(pane.activeTab.iconSize) },
-                            set: { pane.activeTab.setIconSizeLive(CGFloat($0)) }
-                        ),
-                        in: Double(SettingsManager.iconSizeMin)...Double(SettingsManager.iconSizeMax),
-                        onEditingChanged: { editing in
-                            if !editing {
-                                pane.activeTab.commitIconSize(pane.activeTab.iconSize)
-                            }
-                        }
-                    )
-                    .controlSize(.mini)
-                    .frame(width: 70)
-                    NavButton(
-                        icon: "plus.magnifyingglass",
-                        action: { pane.activeTab.zoomIconsIn() },
-                        disabled: pane.activeTab.iconSize >= SettingsManager.iconSizeMax
-                    )
-                    .help("Zoom in (⌘+)")
-                }
-            }
-
-            // Refresh button
-            NavButton(icon: "arrow.clockwise", action: { pane.activeTab.loadFiles() }, disabled: false)
-                .help("Refresh")
-
-            // Auto Preview: slideshow current selection (2+) or all
-            // previewable items in the current folder.
-            let autoPreviewItems = autoPreviewToolbarURLs()
-            NavButton(
-                icon: "play.rectangle.on.rectangle",
-                action: {
-                    guard let panel = AppDelegate.shared?.quickLookPanel else { return }
-                    if panel.isAutoPreviewing {
-                        panel.stopAutoPreview()
-                        panel.close()
-                    } else {
-                        panel.startAutoPreview(
-                            urls: autoPreviewItems,
-                            interval: SettingsManager.shared.autoPreviewInterval
-                        )
-                    }
-                },
-                disabled: autoPreviewItems.count < 2
-            )
-            .help(autoPreviewItems.count < 2
-                  ? "Auto Preview (needs 2+ previewable items)"
-                  : "Auto Preview (\(autoPreviewItems.count) items)")
-
-            // Show hidden files
-            NavButton(icon: pane.activeTab.showHiddenFiles ? "eye" : "eye.slash", action: {
-                pane.activeTab.showHiddenFiles.toggle()
-                pane.activeTab.loadFiles()
-            }, disabled: false)
-            .help(pane.activeTab.showHiddenFiles ? "Hide Hidden Files" : "Show Hidden Files")
-
-            // Filter field
-            HStack(spacing: 4) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.secondary.opacity(0.6))
-                TextField("Filter", text: searchTextBinding)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11))
-                    .focused($isFilterFocused)
-                    .onChange(of: pane.activeTab.searchText) { pane.activeTab.refilter() }
-                if !pane.activeTab.searchText.isEmpty {
-                    Button {
-                        pane.activeTab.searchText = ""
-                        pane.activeTab.refilter()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary.opacity(0.5))
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Clear Filter")
-                }
-            }
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(Color.primary.opacity(0.04))
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .frame(width: 140)
+            .buttonStyle(.borderless)
+            .help("Edit path (⌘L)")
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.015))
+        .frame(height: 22)
+        // Right-click anywhere in the breadcrumb to switch to text input,
+        // matching common file-manager affordances.
+        .contextMenu {
+            Button("Edit Path") { beginEditingPath() }
+            Button("Copy Path") {
+                let path = pane.activeTab.currentURL.path
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(path, forType: .string)
+            }
+        }
+    }
+
+    private var pathTextField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "folder")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary.opacity(0.7))
+            TextField("Enter path…", text: $pathInputText, onCommit: commitPathInput)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .focused($isPathInputFocused)
+                .onExitCommand { cancelEditingPath() }
+                .onSubmit { commitPathInput() }
+            if !pathInputText.isEmpty {
+                Button {
+                    pathInputText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
+                .buttonStyle(.borderless)
+                .help("Clear")
+            }
+            Button(action: cancelEditingPath) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary.opacity(0.7))
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help("Cancel (Esc)")
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .frame(maxWidth: .infinity)
+        .frame(height: 22)
+    }
+
+    private func beginEditingPath() {
+        pathInputText = displayPath(for: pane.activeTab.currentURL)
+        isEditingPath = true
+        appState.activePane = side
+        // Defer focus until the TextField is in the view tree.
+        DispatchQueue.main.async { isPathInputFocused = true }
+    }
+
+    private func cancelEditingPath() {
+        isEditingPath = false
+        isPathInputFocused = false
+        pathInputText = ""
+    }
+
+    private func commitPathInput() {
+        let trimmed = pathInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            cancelEditingPath()
+            return
+        }
+        guard let url = resolvePathInput(trimmed) else {
+            NSSound.beep()
+            return
+        }
+        cancelEditingPath()
+        pane.activeTab.navigateTo(url)
+        appState.activePane = side
+    }
+
+    /// Resolves user input into an existing directory URL. Accepts:
+    /// - `~` and `~user` style home shortcuts (via `NSString.expandingTildeInPath`)
+    /// - `file://` URLs (with or without percent-encoding)
+    /// - Absolute or relative POSIX paths (relative paths resolve against
+    ///   the current tab's directory, matching Windows Explorer behavior)
+    /// Returns `nil` when the path doesn't exist or points to a file.
+    private func resolvePathInput(_ raw: String) -> URL? {
+        var candidate = raw
+        // Strip surrounding quotes (drag-and-drop from terminal often
+        // includes them).
+        if candidate.count >= 2,
+           (candidate.hasPrefix("\"") && candidate.hasSuffix("\"")) ||
+           (candidate.hasPrefix("'") && candidate.hasSuffix("'")) {
+            candidate = String(candidate.dropFirst().dropLast())
+        }
+
+        let resolvedURL: URL
+        if candidate.lowercased().hasPrefix("file://") {
+            guard let u = URL(string: candidate) ?? URL(string: candidate.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? "") else {
+                return nil
+            }
+            resolvedURL = u
+        } else {
+            let expanded = (candidate as NSString).expandingTildeInPath
+            if expanded.hasPrefix("/") {
+                resolvedURL = URL(fileURLWithPath: expanded)
+            } else {
+                // Relative path — resolve against current directory.
+                resolvedURL = URL(
+                    fileURLWithPath: expanded,
+                    relativeTo: pane.activeTab.currentURL
+                ).standardizedFileURL
+            }
+        }
+
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedURL.path, isDirectory: &isDir) else {
+            return nil
+        }
+        // If the user typed a file path, navigate to its containing folder.
+        if !isDir.boolValue {
+            return resolvedURL.deletingLastPathComponent()
+        }
+        return resolvedURL
+    }
+
+    /// Tilde-aware presentation of a directory path used as the initial
+    /// text when entering edit mode.
+    private func displayPath(for url: URL) -> String {
+        let path = url.path
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
     }
 
     // MARK: - File Area
