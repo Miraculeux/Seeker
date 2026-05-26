@@ -422,6 +422,9 @@ struct SeekerApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: .shortcutsChanged)) { _ in
                     shortcutVersion += 1
                 }
+                .onOpenURL { url in
+                    appState.handleIncomingURL(url)
+                }
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1200, height: 700)

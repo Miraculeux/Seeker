@@ -211,6 +211,84 @@ class AppState {
             rightViewMode: rightPane.activeTab.viewMode.rawValue
         )
     }
+
+    // MARK: - URL Scheme Handling
+
+    /// Handle an incoming `seeker://` URL.
+    ///
+    /// Supported forms:
+    /// - `seeker://reveal?path=<URL-encoded absolute path>` — navigates the
+    ///   active pane to the parent directory and selects the target item.
+    /// - `seeker://open?path=<URL-encoded absolute path>` — navigates the
+    ///   active pane into the target directory (or its parent if a file).
+    /// - `seeker://<absolute path>` / `seeker:///absolute/path` — short form
+    ///   equivalent to `reveal`.
+    ///
+    /// The target path may also be supplied via the URL's `path` component
+    /// instead of the `path` query item (e.g. `seeker://reveal/Users/me/foo`).
+    func handleIncomingURL(_ url: URL) {
+        guard url.scheme?.lowercased() == "seeker" else { return }
+
+        // Extract target absolute path. Prefer ?path= query item; fall back
+        // to the URL's own path component.
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryPath = components?
+            .queryItems?
+            .first(where: { $0.name == "path" })?
+            .value
+        let rawPath: String? = {
+            if let q = queryPath, !q.isEmpty { return q }
+            let p = url.path
+            return p.isEmpty ? nil : p
+        }()
+
+        guard let pathString = rawPath, !pathString.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        // Expand `~` so callers can pass `seeker://reveal?path=~/Desktop/foo`.
+        let expanded = (pathString as NSString).expandingTildeInPath
+        let target = URL(fileURLWithPath: expanded).standardizedFileURL
+
+        // Bring the app forward so the action is visible.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let action = (url.host ?? "reveal").lowercased()
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        let exists = fm.fileExists(atPath: target.path, isDirectory: &isDir)
+
+        switch action {
+        case "open":
+            if exists && isDir.boolValue {
+                activeExplorer.navigateTo(target)
+            } else if exists {
+                // File — fall through to reveal behavior.
+                activeExplorer.revealAndSelect(target)
+            } else {
+                NSSound.beep()
+            }
+        case "reveal", "":
+            if exists {
+                if isDir.boolValue {
+                    // Directory — navigate into the parent and select it,
+                    // matching Finder's "Show in Finder" semantics.
+                    let parent = target.deletingLastPathComponent()
+                    if parent.path == target.path {
+                        activeExplorer.navigateTo(target)
+                    } else {
+                        activeExplorer.revealAndSelect(target)
+                    }
+                } else {
+                    activeExplorer.revealAndSelect(target)
+                }
+            } else {
+                NSSound.beep()
+            }
+        default:
+            NSSound.beep()
+        }
+    }
 }
 
 // MARK: - Pane State (tabs)
