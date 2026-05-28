@@ -34,6 +34,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 | Move to Other Pane | ⌘⇧M |
 | Back / Forward | ⌘[ / ⌘] |
 | Enclosing Folder | ⌘↑ |
+| Edit Path / Go to Folder | ⌘⇧G |
 | Toggle Hidden Files | ⌘⇧. |
 | Toggle Dual Pane | ⌘U |
 | Toggle Favorites | ⌘B |

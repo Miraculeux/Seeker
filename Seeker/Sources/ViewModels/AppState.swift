@@ -24,7 +24,17 @@ class AppState {
     var showInfoPanel: Bool = SettingsManager.shared.showInfoPanel {
         didSet { SettingsManager.shared.showInfoPanel = showInfoPanel }
     }
-    var showGoToFolder: Bool = false
+    /// Monotonically incremented whenever the user invokes the
+    /// "Go to Folder…" command. The active `PaneView` observes this token
+    /// and switches its path bar into the inline text-editing mode —
+    /// matching the behavior of clicking the pencil icon in the toolbar.
+    var pathEditRequestID: Int = 0
+
+    /// Requests that the currently active pane enter inline path-editing
+    /// mode. No popup; the breadcrumb is replaced by a text field.
+    func requestEditPath() {
+        pathEditRequestID &+= 1
+    }
 
     /// Non-nil when the Metadata Editor sheet is open. Holds the URLs of
     /// the image(s) being edited.

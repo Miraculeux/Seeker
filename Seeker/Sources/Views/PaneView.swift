@@ -62,6 +62,13 @@ struct PaneView: View {
                     }
             }
         )
+        // Respond to the global "edit path" request (⌘⇧G / Go menu).
+        // Only the active pane reacts; the inactive pane ignores the
+        // bump so a single keypress never affects both sides.
+        .onChange(of: appState.pathEditRequestID) { _, _ in
+            guard isActive else { return }
+            beginEditingPath()
+        }
     }
 
     private func updatePaneFrame(_ geo: GeometryProxy) {
