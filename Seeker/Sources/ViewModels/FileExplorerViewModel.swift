@@ -26,6 +26,21 @@ class FileExplorerViewModel: Identifiable {
     /// Sorted, unfiltered listing as loaded from disk. Source of truth for
     /// the visible `files` list — filter changes do not touch the disk.
     private var allFiles: [FileItem] = []
+    /// Sorted, unfiltered children of each expanded directory, keyed by
+    /// the parent's `FileItem.ID`. Built lazily on the first expansion of
+    /// each directory; refreshed when `loadFiles()` reloads the tab.
+    @ObservationIgnored private var childrenByParentID: [FileItem.ID: [FileItem]] = [:]
+    /// Set of directory ids whose children should be flattened into the
+    /// visible `files` list under their parent row. Persisted across
+    /// reloads of the current tab; cleared on `navigateTo(_:)`.
+    var expandedDirectoryIDs: Set<FileItem.ID> = []
+    /// Directories that have an in-flight child enumeration. Used by the
+    /// row UI to show a spinner instead of the disclosure chevron.
+    var loadingDirectoryIDs: Set<FileItem.ID> = []
+    /// Tree depth (number of ancestors) per displayed row. Top-level rows
+    /// are depth 0. Rebuilt by `rebuildVisibleFiles()` whenever the
+    /// expansion / filter / sort state changes.
+    @ObservationIgnored private var rowDepthByID: [FileItem.ID: Int] = [:]
     /// Currently displayed (filtered) files. Maintained alongside an O(1)
     /// id→index lookup so `selectedFile`/`selectedFiles` don't rebuild a
     /// dictionary on every access.
@@ -136,7 +151,15 @@ class FileExplorerViewModel: Identifiable {
     var renameText: String = ""
     var errorMessage: String?
     var showError: Bool = false
-    var viewMode: ViewMode = .list
+    var viewMode: ViewMode = .list {
+        didSet {
+            // Switching between list (tree-capable) and icon / column
+            // (flat) views must rebuild `files`: in non-list modes the
+            // flattened-tree representation would surface child rows
+            // without any indentation cue, which is confusing.
+            if oldValue != viewMode { rebuildVisibleFiles() }
+        }
+    }
     var undoStack: [UndoableAction] = []
 
     enum UndoableAction {
@@ -288,6 +311,14 @@ class FileExplorerViewModel: Identifiable {
         isSearching = false
         selectionAnchor = nil
         selectedFileIDs = []
+        // Leaving the current directory invalidates the tree expansion
+        // state — child caches are keyed by URL but it's confusing for
+        // the user if previously-expanded folders stay expanded after a
+        // navigation. Collapse everything.
+        expandedDirectoryIDs.removeAll()
+        loadingDirectoryIDs.removeAll()
+        childrenByParentID.removeAll()
+        rowDepthByID.removeAll()
 
         // Manage history (skip duplicate if navigating to same URL)
         if !isSameURL {
@@ -335,8 +366,9 @@ class FileExplorerViewModel: Identifiable {
                 guard let self, self.currentLoadToken == token else { return }
                 let sorted = self.sortItems(items)
                 self.allFiles = sorted
-                self.files = self.applyFilter(to: sorted)
+                self.rebuildVisibleFiles()
                 self.applyPendingSelection()
+                self.refreshExpandedChildren()
             }
         }
     }
@@ -452,7 +484,170 @@ class FileExplorerViewModel: Identifiable {
     /// Re-apply the search filter to the current listing without re-reading
     /// from disk. Bind this to `searchText` changes instead of `loadFiles()`.
     func refilter() {
-        files = applyFilter(to: allFiles)
+        rebuildVisibleFiles()
+    }
+
+    // MARK: - Tree Expansion (Finder-style list view)
+
+    /// Whether `file` is a directory whose children can be expanded inline.
+    /// Packages (`.app`, `.bundle`, …) are treated as opaque files.
+    func isExpandable(_ file: FileItem) -> Bool {
+        file.isDirectory && !file.isPackage
+    }
+
+    /// `true` when `file`'s children are currently inlined into `files`.
+    func isExpanded(_ file: FileItem) -> Bool {
+        expandedDirectoryIDs.contains(file.id)
+    }
+
+    /// `true` while an off-actor child enumeration is in flight for `file`.
+    func isLoadingChildren(_ file: FileItem) -> Bool {
+        loadingDirectoryIDs.contains(file.id)
+    }
+
+    /// Tree depth of `file` in the visible `files` list. Top-level rows
+    /// are depth 0; each expanded ancestor adds one level of indent.
+    func depth(of file: FileItem) -> Int {
+        rowDepthByID[file.id] ?? 0
+    }
+
+    /// Toggle inline expansion of `file`. No-op on non-directories or
+    /// packages.
+    func toggleExpanded(_ file: FileItem) {
+        guard isExpandable(file) else { return }
+        if expandedDirectoryIDs.contains(file.id) {
+            collapseDirectory(file)
+        } else {
+            expandDirectory(file)
+        }
+    }
+
+    /// Insert `file.id` into the expansion set and rebuild the visible
+    /// rows. If the children have not been enumerated yet (or were
+    /// dropped after a reload) an off-actor enumeration is dispatched.
+    func expandDirectory(_ file: FileItem) {
+        guard isExpandable(file) else { return }
+        expandedDirectoryIDs.insert(file.id)
+        if childrenByParentID[file.id] != nil {
+            rebuildVisibleFiles()
+            return
+        }
+        loadChildren(of: file)
+    }
+
+    /// Drop `file.id` from the expansion set and any descendant rows that
+    /// are no longer visible. Selection / anchor pointing at hidden rows
+    /// is cleared so subsequent arrow-key navigation has a valid anchor.
+    func collapseDirectory(_ file: FileItem) {
+        guard expandedDirectoryIDs.remove(file.id) != nil else { return }
+        // Compute the set of ids that were visible *under* `file` before
+        // the rebuild so we can prune selection.
+        let removed = Self.collectDescendantIDs(
+            of: file.id,
+            childrenByParentID: childrenByParentID,
+            expanded: expandedDirectoryIDs.union([file.id])
+        )
+        if !removed.isEmpty {
+            selectedFileIDs.subtract(removed)
+            if let anchor = selectionAnchor, removed.contains(anchor.id) {
+                selectionAnchor = file
+            }
+        }
+        rebuildVisibleFiles()
+    }
+
+    /// Off-actor enumeration of `file`'s direct children. Updates the
+    /// children cache and rebuilds the visible rows when complete.
+    private func loadChildren(of file: FileItem) {
+        guard !loadingDirectoryIDs.contains(file.id) else { return }
+        loadingDirectoryIDs.insert(file.id)
+        let parentID = file.id
+        let dirURL = file.url.standardizedFileURL
+        let options: FileManager.DirectoryEnumerationOptions =
+            showHiddenFiles ? [] : [.skipsHiddenFiles]
+        Task.detached(priority: .userInitiated) {
+            let items = Self.enumerate(url: dirURL, options: options) ?? []
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.loadingDirectoryIDs.remove(parentID)
+                self.childrenByParentID[parentID] = self.sortItems(items)
+                self.rebuildVisibleFiles()
+            }
+        }
+    }
+
+    /// Refresh cached children for every directory the user has expanded
+    /// (including nested ones). Called from `loadFiles()` so newly-created
+    /// or deleted files surface without requiring a manual collapse.
+    private func refreshExpandedChildren() {
+        for id in expandedDirectoryIDs {
+            // `FileItem.ID` is `url.absoluteString` — recover the URL.
+            guard let url = URL(string: id) else { continue }
+            let parentID = id
+            let dirURL = url.standardizedFileURL
+            let options: FileManager.DirectoryEnumerationOptions =
+                showHiddenFiles ? [] : [.skipsHiddenFiles]
+            Task.detached(priority: .userInitiated) {
+                let items = Self.enumerate(url: dirURL, options: options) ?? []
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    // Only update if the directory is still expanded —
+                    // user may have collapsed mid-flight.
+                    guard self.expandedDirectoryIDs.contains(parentID) else { return }
+                    self.childrenByParentID[parentID] = self.sortItems(items)
+                    self.rebuildVisibleFiles()
+                }
+            }
+        }
+    }
+
+    /// Walk the cached tree under `parentID` and return every descendant
+    /// id that is currently flattened into the visible rows.
+    private static func collectDescendantIDs(
+        of parentID: FileItem.ID,
+        childrenByParentID: [FileItem.ID: [FileItem]],
+        expanded: Set<FileItem.ID>
+    ) -> Set<FileItem.ID> {
+        var out: Set<FileItem.ID> = []
+        var stack: [FileItem.ID] = [parentID]
+        while let id = stack.popLast() {
+            guard let children = childrenByParentID[id] else { continue }
+            for child in children {
+                out.insert(child.id)
+                if expanded.contains(child.id) {
+                    stack.append(child.id)
+                }
+            }
+        }
+        return out
+    }
+
+    /// Recompute `files` (and `rowDepthByID`) from `allFiles`, the
+    /// expansion set, and any cached children. In list view the rows
+    /// are flattened depth-first; in icon / column view only the
+    /// top-level filtered listing is exposed so tree state is
+    /// transparent when the user is not in the list view.
+    private func rebuildVisibleFiles() {
+        var out: [FileItem] = []
+        var depths: [FileItem.ID: Int] = [:]
+        let treeMode = (viewMode == .list)
+
+        func walk(_ items: [FileItem], _ depth: Int) {
+            let visible = applyFilter(to: items)
+            out.reserveCapacity(out.count + visible.count)
+            for item in visible {
+                out.append(item)
+                if depth > 0 { depths[item.id] = depth }
+                if treeMode,
+                   expandedDirectoryIDs.contains(item.id),
+                   let children = childrenByParentID[item.id] {
+                    walk(children, depth + 1)
+                }
+            }
+        }
+        walk(allFiles, 0)
+        rowDepthByID = depths
+        files = out
     }
 
     /// Off-actor Trash enumeration via Finder AppleScript. Validates each
@@ -791,20 +986,6 @@ class FileExplorerViewModel: Identifiable {
                 if !op.completedDestinations.isEmpty {
                     self?.undoStack.append(.copy(destinationURLs: op.completedDestinations))
                 }
-            }
-        }
-    }
-
-    func duplicateSelected() {
-        let items = effectiveSelection
-        guard !items.isEmpty else { return }
-        let sources = items.map(\.url)
-        let dest = currentURL
-        FileOperationManager.shared.startCopy(sources: sources, to: dest) { [weak self] op in
-            self?.loadFiles()
-            self?.notifyFilesChanged()
-            if !op.completedDestinations.isEmpty {
-                self?.undoStack.append(.copy(destinationURLs: op.completedDestinations))
             }
         }
     }

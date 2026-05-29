@@ -26,6 +26,7 @@ struct SettingsView: View {
 // MARK: - General Settings
 
 struct GeneralSettingsTab: View {
+    @Environment(AppState.self) private var appState
     @State private var rememberLastLocation: Bool = SettingsManager.shared.rememberLastLocation
     @State private var showFileExtensions: Bool = SettingsManager.shared.showFileExtensions
     @State private var autoPreviewInterval: Double = SettingsManager.shared.autoPreviewInterval
@@ -101,8 +102,10 @@ struct GeneralSettingsTab: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Reveal in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([DiskThumbnailCache.shared.directoryURL])
+                    Button("Reveal in Seeker") {
+                        let cacheURL = DiskThumbnailCache.shared.directoryURL
+                        appState.activeExplorer.revealAndSelect(cacheURL)
+                        NSApp.activate(ignoringOtherApps: true)
                     }
                     .controlSize(.small)
                     Button(isClearingCache ? "Clearing\u{2026}" : "Clear Cache") {

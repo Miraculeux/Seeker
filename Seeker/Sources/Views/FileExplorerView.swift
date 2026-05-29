@@ -73,10 +73,15 @@ struct FileContentView: View {
                             file: file,
                             isSelected: isFileSelected(file),
                             isRenaming: viewModel.renamingFile == file,
+                            depth: viewModel.depth(of: file),
+                            isExpandable: viewModel.isExpandable(file),
+                            isExpanded: viewModel.isExpanded(file),
+                            isLoadingChildren: viewModel.isLoadingChildren(file),
                             visibleColumns: visibleColumns,
                             renameText: $viewModel.renameText,
                             onCommitRename: { viewModel.commitRename() },
-                            onCancelRename: { viewModel.cancelRename() }
+                            onCancelRename: { viewModel.cancelRename() },
+                            onToggleExpand: { viewModel.toggleExpanded(file) }
                         )
                         .equatable()
                         .id(file.id)
@@ -601,22 +606,83 @@ struct FileContentView: View {
     }
 
     private func openTerminal(at url: URL) {
-        // Reject paths with characters that could break out of an AppleScript
-        // string literal (quotes, backslash, control chars, line/paragraph
-        // separators). This mitigates AppleScript injection via folder names.
+        SystemTerminal.open(at: url)
+    }
+}
+
+// MARK: - Terminal launcher
+
+/// Opens Terminal.app with the given folder as its working directory while
+/// guaranteeing that only one window is created.
+///
+/// Why this isn't a one-liner:
+/// - `NSAppleScript("tell Terminal to do script \"cd …\"")` always *creates*
+///   a new Terminal window. If Terminal wasn't already running, macOS also
+///   opens a default `$HOME` window on launch — so the user ends up with
+///   two windows, only one of which is at the requested path.
+/// - `NSWorkspace.open([url], withApplicationAt: terminalURL)` has the same
+///   double-window glitch when Terminal is cold-starting.
+///
+/// Strategy: if Terminal is already running, fall back to the simple
+/// `do script` flow (one new window with `cd`). If Terminal is not running,
+/// activate it and then `cd` *inside* the front window that the launch
+/// produced, so we never get a stray `$HOME` window.
+enum SystemTerminal {
+    static func open(at url: URL) {
         let path = url.path
+        // Reject characters that could break out of the AppleScript string
+        // literal (quotes, backslash, newlines, separators, control chars).
         let forbidden: Set<Character> = ["\"", "\\", "\r", "\n", "\u{2028}", "\u{2029}", "\0"]
-        if path.contains(where: { forbidden.contains($0) || $0.asciiValue.map { $0 < 0x20 } ?? false }) {
-            // Fall back to opening Terminal.app on the folder via NSWorkspace,
-            // which does not interpret the path as code.
+        let unsafe = path.contains {
+            forbidden.contains($0) || ($0.asciiValue.map { $0 < 0x20 } ?? false)
+        }
+        if unsafe {
+            // Fall back to NSWorkspace — it doesn't interpret the path as
+            // code so it's injection-safe even though it may still produce
+            // a default window on cold start.
             let terminalURL = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
             let cfg = NSWorkspace.OpenConfiguration()
-            NSWorkspace.shared.open([url], withApplicationAt: terminalURL, configuration: cfg)
+            cfg.activates = true
+            NSWorkspace.shared.open(
+                [url], withApplicationAt: terminalURL,
+                configuration: cfg, completionHandler: nil
+            )
             return
         }
-        // Single-quote escape for the inner shell `cd` argument.
         let shellEscaped = path.replacingOccurrences(of: "'", with: "'\\''")
-        let script = "tell application \"Terminal\" to do script \"cd '\(shellEscaped)'\""
+        let isRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == "com.apple.Terminal"
+        }
+        let script: String
+        if isRunning {
+            // Terminal is already up — open one new window with the cd
+            // executed inline. Don't reuse an existing tab: the user may
+            // have running work there.
+            script = """
+            tell application "Terminal"
+                activate
+                do script "cd '\(shellEscaped)'"
+            end tell
+            """
+        } else {
+            // Cold start: activating Terminal opens one default ($HOME)
+            // window. Wait for it, then run `cd` *inside* its selected tab.
+            // This avoids spawning a second window and avoids the previous
+            // approach of trying to close auto-opened defaults (Terminal's
+            // `close … saving no` was a no-op against running-shell windows
+            // in the user's environment, leaving the $HOME window visible).
+            script = """
+            tell application "Terminal"
+                activate
+                set tries to 0
+                repeat while (count of windows) is 0 and tries < 40
+                    delay 0.05
+                    set tries to tries + 1
+                end repeat
+                do script "cd '\(shellEscaped)'" in selected tab of front window
+            end tell
+            """
+        }
         if let appleScript = NSAppleScript(source: script) {
             var error: NSDictionary?
             appleScript.executeAndReturnError(&error)
@@ -630,22 +696,43 @@ struct FileListRow: View, @MainActor Equatable {
     let file: FileItem
     let isSelected: Bool
     let isRenaming: Bool
+    let depth: Int
+    let isExpandable: Bool
+    let isExpanded: Bool
+    let isLoadingChildren: Bool
     let visibleColumns: [ColumnID]
     @Binding var renameText: String
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
+    let onToggleExpand: () -> Void
     @State private var hovering = false
     @FocusState private var isRenameFocused: Bool
+
+    /// Pixels of indent per tree depth level. Matches Finder's list view.
+    private static let indentPerLevel: CGFloat = 14
+    /// Width reserved for the disclosure chevron column so name columns
+    /// stay aligned whether or not the row is expandable. Wide enough
+    /// that the chevron is comfortably clickable on a trackpad.
+    private static let disclosureWidth: CGFloat = 22
+    /// Hit-target height for the disclosure button. The row itself is
+    /// ~22 pt tall, so matching that maximises the tappable area without
+    /// expanding row metrics.
+    private static let disclosureHeight: CGFloat = 22
 
     static func == (lhs: FileListRow, rhs: FileListRow) -> Bool {
         // Closures + binding compare by reference identity, which isn't
         // useful here; the inputs that actually drive the row's appearance
-        // are file/selection/rename/columns. renameText is intentionally
-        // excluded — when the row is in rename mode the TextField owns
-        // editing state via @Binding and the parent updates separately.
+        // are file/selection/rename/columns/tree state. renameText is
+        // intentionally excluded — when the row is in rename mode the
+        // TextField owns editing state via @Binding and the parent
+        // updates separately.
         lhs.file == rhs.file
             && lhs.isSelected == rhs.isSelected
             && lhs.isRenaming == rhs.isRenaming
+            && lhs.depth == rhs.depth
+            && lhs.isExpandable == rhs.isExpandable
+            && lhs.isExpanded == rhs.isExpanded
+            && lhs.isLoadingChildren == rhs.isLoadingChildren
             && lhs.visibleColumns == rhs.visibleColumns
     }
 
@@ -653,6 +740,14 @@ struct FileListRow: View, @MainActor Equatable {
         HStack(spacing: 0) {
             // Name column
             HStack(spacing: 7) {
+                // Tree indent + disclosure chevron. Always reserve the
+                // chevron's footprint so directories/files at the same
+                // depth align on a common name baseline.
+                if depth > 0 {
+                    Color.clear
+                        .frame(width: CGFloat(depth) * Self.indentPerLevel, height: 1)
+                }
+                disclosure
                 Image(nsImage: file.nsIcon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -715,6 +810,38 @@ struct FileListRow: View, @MainActor Equatable {
                 .fill(hovering ? Color.primary.opacity(0.03) : Color.clear)
         )
         .onHover { hovering = $0 }
+    }
+
+    /// Disclosure chevron / activity indicator shown at the start of
+    /// each row. Always occupies the same width so name baselines line
+    /// up regardless of whether the row is expandable.
+    @ViewBuilder
+    private var disclosure: some View {
+        if isLoadingChildren {
+            ProgressView()
+                .controlSize(.mini)
+                .frame(width: Self.disclosureWidth, height: Self.disclosureHeight)
+        } else if isExpandable {
+            Button(action: onToggleExpand) {
+                // Outer frame defines the hit target; the glyph stays
+                // small and centred. `contentShape` makes the entire
+                // frame (including transparent margins) clickable.
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary.opacity(0.75))
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .animation(.easeInOut(duration: 0.12), value: isExpanded)
+                    .frame(width: Self.disclosureWidth, height: Self.disclosureHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // The disclosure click must not propagate to the row's
+            // tap-to-select gesture; otherwise expanding a folder
+            // also selects it which feels jumpy.
+            .simultaneousGesture(TapGesture().onEnded {})
+        } else {
+            Color.clear.frame(width: Self.disclosureWidth, height: Self.disclosureHeight)
+        }
     }
 }
 

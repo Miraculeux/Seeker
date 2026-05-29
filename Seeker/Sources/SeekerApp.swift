@@ -184,6 +184,42 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             step = 1; forward = true
                         case (.icons, 123): // Icon view Left → previous item
                             step = 1; forward = false
+                        case (.list, 124): // List view Right → expand or step into
+                            guard let current = vm.selectedFile,
+                                  vm.isExpandable(current) else {
+                                return nil
+                            }
+                            if !vm.isExpanded(current) {
+                                vm.expandDirectory(current)
+                                return nil
+                            }
+                            // Already expanded: step into the first child,
+                            // matching Finder behaviour.
+                            step = 1; forward = true
+                        case (.list, 123): // List view Left → collapse or step to parent
+                            if let current = vm.selectedFile {
+                                if vm.isExpandable(current), vm.isExpanded(current) {
+                                    vm.collapseDirectory(current)
+                                    return nil
+                                }
+                                // Step back to the nearest ancestor row in
+                                // the flattened display.
+                                let currentDepth = vm.depth(of: current)
+                                if currentDepth > 0,
+                                   let idx = files.firstIndex(where: { $0 == current }) {
+                                    var i = idx - 1
+                                    while i >= 0 {
+                                        if vm.depth(of: files[i]) < currentDepth {
+                                            let parent = files[i]
+                                            vm.selectionAnchor = parent
+                                            vm.selectedFileIDs = [parent.id]
+                                            return nil
+                                        }
+                                        i -= 1
+                                    }
+                                }
+                            }
+                            return nil
                         case (_, 125): // List/Column Down → next item
                             step = 1; forward = true
                         case (_, 126): // List/Column Up → previous item
@@ -336,8 +372,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             appState.activeExplorer.createNewFolder()
         case .newFile:
             appState.activeExplorer.createNewFile()
-        case .duplicate:
-            appState.activeExplorer.duplicateSelected()
         case .moveToTrash:
             appState.activeExplorer.trashSelected()
         case .rename:
@@ -521,11 +555,6 @@ struct SeekerApp: App {
 
                 Divider()
 
-                Button("Duplicate") {
-                    appState.activeExplorer.duplicateSelected()
-                }
-                .shortcut(for: .duplicate)
-
                 Button("Move to Trash") {
                     appState.activeExplorer.trashSelected()
                 }
@@ -631,6 +660,7 @@ struct SeekerApp: App {
 
         Settings {
             SettingsView()
+                .environment(appState)
         }
     }
 }

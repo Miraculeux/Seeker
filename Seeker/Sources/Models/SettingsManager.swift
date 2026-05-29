@@ -25,7 +25,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
     case openFile = "openFile"
     case newFolder = "newFolder"
     case newFile = "newFile"
-    case duplicate = "duplicate"
     case moveToTrash = "moveToTrash"
     case rename = "rename"
     case copyToOtherPane = "copyToOtherPane"
@@ -59,7 +58,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openFile: return "Open File"
         case .newFolder: return "New Folder"
         case .newFile: return "New File"
-        case .duplicate: return "Duplicate"
         case .moveToTrash: return "Move to Trash"
         case .rename: return "Rename"
         case .copyToOtherPane: return "Copy to Other Pane"
@@ -84,7 +82,7 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
 
     var category: ShortcutCategory {
         switch self {
-        case .openFile, .newFolder, .newFile, .duplicate, .moveToTrash, .rename, .copyToOtherPane, .moveToOtherPane:
+        case .openFile, .newFolder, .newFile, .moveToTrash, .rename, .copyToOtherPane, .moveToOtherPane:
             return .fileOperations
         case .goBack, .goForward, .enclosingFolder, .goHome, .goDesktop, .goDownloads, .goToFolder:
             return .navigation
@@ -100,7 +98,6 @@ enum ShortcutAction: String, CaseIterable, Identifiable {
         case .openFile: return KeyShortcut(key: "o", modifiers: [.command])
         case .newFolder: return KeyShortcut(key: "n", modifiers: [.command, .shift])
         case .newFile: return KeyShortcut(key: "n", modifiers: [.command, .option])
-        case .duplicate: return KeyShortcut(key: "d", modifiers: [.command])
         case .moveToTrash: return KeyShortcut(key: "⌫", modifiers: [.command])
         case .rename: return KeyShortcut(key: "⏎", modifiers: [])
         case .copyToOtherPane: return KeyShortcut(key: "c", modifiers: [.command, .shift])

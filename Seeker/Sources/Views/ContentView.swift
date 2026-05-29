@@ -144,12 +144,7 @@ struct ContentView: View {
                 FavoriteToolbarBtn(appState: appState)
 
                 ToolbarBtn(icon: "terminal", tip: "Open Terminal") {
-                    let escapedPath = appState.activeExplorer.currentURL.path.replacingOccurrences(of: "'", with: "'\\''")
-                    let script = "tell application \"Terminal\" to do script \"cd '\(escapedPath)'\""
-                    if let appleScript = NSAppleScript(source: script) {
-                        var error: NSDictionary?
-                        appleScript.executeAndReturnError(&error)
-                    }
+                    SystemTerminal.open(at: appState.activeExplorer.currentURL)
                 }
 
                 ToolbarBtn(
