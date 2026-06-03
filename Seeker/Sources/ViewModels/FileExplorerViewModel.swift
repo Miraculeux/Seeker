@@ -731,6 +731,19 @@ class FileExplorerViewModel: Identifiable {
         return items
     }
 
+    /// Re-sort the in-memory listing using the current `sortOrder` /
+    /// `sortAscending` without re-enumerating the directory. Cheap O(n log n)
+    /// in-memory work — safe to call on every sort-header click, unlike
+    /// `loadFiles()` which would re-run `contentsOfDirectory` + per-file
+    /// resource fetches.
+    func resort() {
+        allFiles = sortItems(allFiles)
+        for (parentID, children) in childrenByParentID {
+            childrenByParentID[parentID] = sortItems(children)
+        }
+        rebuildVisibleFiles()
+    }
+
     func sortItems(_ items: [FileItem]) -> [FileItem] {
         let asc = sortAscending
         let order = sortOrder

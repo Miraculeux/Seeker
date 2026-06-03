@@ -123,8 +123,16 @@ final class DuplicateFinder {
 
             self.status = .hashingFull(done: 0, total: fullTotal, bytes: 0, totalBytes: fullTotalBytes)
 
+            // Sizes are known from Stage 1 — pass them through so Stage 3
+            // doesn't re-stat every candidate just for the progress bar.
+            var sizeByURL: [URL: Int64] = [:]
+            sizeByURL.reserveCapacity(fullStageURLs.count)
+            for (key, urls) in fullStageGroups {
+                for url in urls { sizeByURL[url] = key.size }
+            }
+
             // Stage 3: full hash, parallel.
-            let fullHashes = await Self.hashFullFiles(urls: fullStageURLs) { done, bytesAdded in
+            let fullHashes = await Self.hashFullFiles(urls: fullStageURLs, sizes: sizeByURL) { done, bytesAdded in
                 Task { @MainActor in
                     if case let .hashingFull(_, total, bytes, totalBytes) = self.status {
                         self.status = .hashingFull(
@@ -243,6 +251,7 @@ final class DuplicateFinder {
 
     private nonisolated static func hashFullFiles(
         urls: [URL],
+        sizes: [URL: Int64],
         progress: @escaping @Sendable (_ done: Int, _ bytesAdded: Int64) -> Void
     ) async -> [URL: UInt64] {
         let workers = max(2, ProcessInfo.processInfo.activeProcessorCount)
@@ -255,9 +264,9 @@ final class DuplicateFinder {
 
             for _ in 0..<workers {
                 guard let next = iterator.next() else { break }
+                let size = sizes[next] ?? 0
                 group.addTask {
                     let h = XXHash3.hashFile(at: next)
-                    let size = Int64((try? next.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
                     return (next, h, size)
                 }
                 inFlight += 1
@@ -271,9 +280,9 @@ final class DuplicateFinder {
                 progress(completed, result.2)
                 if Task.isCancelled { continue }
                 if let next = iterator.next() {
+                    let size = sizes[next] ?? 0
                     group.addTask {
                         let h = XXHash3.hashFile(at: next)
-                        let size = Int64((try? next.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
                         return (next, h, size)
                     }
                     inFlight += 1

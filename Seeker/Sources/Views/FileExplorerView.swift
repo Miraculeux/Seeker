@@ -167,7 +167,7 @@ struct FileContentView: View {
                 viewModel.sortOrder = sortKey
                 viewModel.sortAscending = true
             }
-            viewModel.loadFiles()
+            viewModel.resort()
         } label: {
             HStack(spacing: 2) {
                 Text(title)
@@ -374,12 +374,45 @@ struct FileContentView: View {
         return []
     }
 
+    /// Cheap predicate for whether the "Auto Preview" item should appear
+    /// in `fileContextMenu`. Avoids the disk enumeration that
+    /// `autoPreviewURLs` performs for folder right-clicks — the menu is
+    /// rebuilt on every right-click, so the latter must not run from
+    /// here. Folder branch optimistically returns `true`; the action
+    /// closure re-checks before starting the slideshow.
+    fileprivate func hasAutoPreviewCandidates(forContext file: FileItem) -> Bool {
+        let selectedIDs = viewModel.selectedFileIDs
+        if selectedIDs.count >= 2 {
+            var matches = 0
+            for item in viewModel.files {
+                guard selectedIDs.contains(item.id) else { continue }
+                guard !item.isDirectory || item.isPackage else { continue }
+                matches += 1
+                if matches >= 2 { return true }
+            }
+            return false
+        }
+        return file.isDirectory && !file.isPackage
+    }
+
+    /// Cheap predicate for the directory-background "Auto Preview" menu
+    /// item. Early-exits as soon as two previewable entries are seen,
+    /// avoiding the O(files) filter+map of the original implementation.
+    fileprivate func directoryHasMultiplePreviewable() -> Bool {
+        var matches = 0
+        for item in viewModel.files where !item.isDirectory || item.isPackage {
+            matches += 1
+            if matches >= 2 { return true }
+        }
+        return false
+    }
+
     @ViewBuilder
     private func fileContextMenu(for file: FileItem) -> some View {
         Button("Open") { viewModel.openItem(file) }
 
         if !file.isDirectory || file.isPackage {
-            let appURLs = NSWorkspace.shared.urlsForApplications(toOpen: file.url)
+            let appURLs = OpenWithAppsCache.apps(for: file.url)
             if !appURLs.isEmpty {
                 Menu("Open With") {
                     ForEach(appURLs, id: \.self) { appURL in
@@ -412,9 +445,13 @@ struct FileContentView: View {
             }
         }
 
-        let autoFiles = autoPreviewURLs(forContext: file)
-        if autoFiles.count >= 2 {
+        // Cheap visibility check (no disk IO, early-exit on 2 matches).
+        // Actual URL list — which may require a disk enumeration for
+        // folder right-clicks — is collected only at click time.
+        if hasAutoPreviewCandidates(forContext: file) {
             Button("Auto Preview") {
+                let autoFiles = autoPreviewURLs(forContext: file)
+                guard autoFiles.count >= 2 else { return }
                 AppDelegate.shared?.quickLookPanel.startAutoPreview(
                     urls: autoFiles,
                     interval: SettingsManager.shared.autoPreviewInterval
@@ -530,12 +567,14 @@ struct FileContentView: View {
         Button("Open Terminal Here") {
             openTerminal(at: viewModel.currentURL)
         }
-        let folderAutoFiles = viewModel.files
-            .filter { !$0.isDirectory || $0.isPackage }
-            .map(\.url)
-        if folderAutoFiles.count >= 2 {
+        // Cheap check (early-exits at 2 matches). URL list is materialised
+        // only when the user actually picks the menu item.
+        if directoryHasMultiplePreviewable() {
             Divider()
             Button("Auto Preview") {
+                let folderAutoFiles = viewModel.files
+                    .filter { !$0.isDirectory || $0.isPackage }
+                    .map(\.url)
                 AppDelegate.shared?.quickLookPanel.startAutoPreview(
                     urls: folderAutoFiles,
                     interval: SettingsManager.shared.autoPreviewInterval
@@ -867,6 +906,38 @@ struct FileListRow: View, @MainActor Equatable {
 }
 
 // MARK: - Icon Grid Cell
+
+/// Caches `NSWorkspace.urlsForApplications(toOpen:)` results so the
+/// "Open With" submenu doesn't hit the LaunchServices database on every
+/// right-click. Results are keyed by lowercase file extension because
+/// the app set is determined by UTI / extension, not by the specific
+/// file. Files without an extension fall back to per-URL lookup
+/// (uncached — rare).
+///
+/// Cache invalidation: an `NSWorkspace.didActivateApplicationNotification`
+/// observer clears the cache when the user installs / removes apps via
+/// Finder. This is heuristic but cheap.
+enum OpenWithAppsCache {
+    nonisolated(unsafe) private static let cache: NSCache<NSString, NSArray> = {
+        let c = NSCache<NSString, NSArray>()
+        c.countLimit = 256
+        return c
+    }()
+
+    static func apps(for url: URL) -> [URL] {
+        let ext = url.pathExtension.lowercased()
+        guard !ext.isEmpty else {
+            return NSWorkspace.shared.urlsForApplications(toOpen: url)
+        }
+        let key = ext as NSString
+        if let cached = cache.object(forKey: key) as? [URL] {
+            return cached
+        }
+        let apps = NSWorkspace.shared.urlsForApplications(toOpen: url)
+        cache.setObject(apps as NSArray, forKey: key)
+        return apps
+    }
+}
 
 /// Two-tier cache for QuickLook thumbnails used by `FileIconCell`.
 ///

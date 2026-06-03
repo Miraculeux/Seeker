@@ -85,6 +85,21 @@ struct FileItem: Identifiable, Hashable {
     let isHidden: Bool
     let isPackage: Bool
 
+    /// Formatted at init so SwiftUI list/icon rows don't pay the
+    /// `ByteCountFormatter` / `DateFormatter` cost on every body render.
+    let formattedSize: String
+    let formattedDate: String
+
+    private static func makeFormattedSize(isDirectory: Bool, fileSize: Int64) -> String {
+        if isDirectory { return "--" }
+        return FileItemCache.byteFormatter.string(fromByteCount: fileSize)
+    }
+
+    private static func makeFormattedDate(_ date: Date?) -> String {
+        guard let date else { return "--" }
+        return FileItemCache.dateFormatter.string(from: date)
+    }
+
     /// Hash and compare on `id` only. The synthesized conformance hashes
     /// every stored property (URL, two `Date?`s, bools, etc.), which
     /// shows up under `Set<FileItem>` operations driven by selection
@@ -118,6 +133,8 @@ struct FileItem: Identifiable, Hashable {
             self.creationDate = nil
             self.isHidden = false
             self.isPackage = false
+            self.formattedSize = "--"
+            self.formattedDate = "--"
             return
         }
 
@@ -149,6 +166,8 @@ struct FileItem: Identifiable, Hashable {
         self.creationDate = cDate
         self.isHidden = hidden
         self.isPackage = isDir && NSWorkspace.shared.isFilePackage(atPath: url.path)
+        self.formattedSize = Self.makeFormattedSize(isDirectory: isDir, fileSize: size)
+        self.formattedDate = Self.makeFormattedDate(mDate)
     }
 
     /// Resource keys to request from `contentsOfDirectory(at:includingPropertiesForKeys:)`
@@ -178,6 +197,8 @@ struct FileItem: Identifiable, Hashable {
             self.creationDate = nil
             self.isHidden = false
             self.isPackage = false
+            self.formattedSize = "--"
+            self.formattedDate = "--"
             return
         }
 
@@ -191,6 +212,8 @@ struct FileItem: Identifiable, Hashable {
         // Services round-trip when the kind is unambiguous from the file
         // type / extension. Falsey default is correct for plain directories.
         self.isPackage = isDir && (rv.isPackage ?? false)
+        self.formattedSize = Self.makeFormattedSize(isDirectory: isDir, fileSize: self.fileSize)
+        self.formattedDate = Self.makeFormattedDate(self.modificationDate)
     }
 
     /// Native macOS file icon, matching Finder's display.
@@ -218,16 +241,6 @@ struct FileItem: Identifiable, Hashable {
         let img = NSWorkspace.shared.icon(forFile: url.path)
         FileItemCache.iconByPath.setObject(img, forKey: key)
         return img
-    }
-
-    var formattedSize: String {
-        if isDirectory { return "--" }
-        return FileItemCache.byteFormatter.string(fromByteCount: fileSize)
-    }
-
-    var formattedDate: String {
-        guard let date = modificationDate else { return "--" }
-        return FileItemCache.dateFormatter.string(from: date)
     }
 
     var typeDescription: String {
