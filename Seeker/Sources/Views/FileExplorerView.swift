@@ -61,6 +61,10 @@ struct FileContentView: View {
 
     private var listView: some View {
         let visibleColumns = SettingsManager.shared.visibleColumnsOrdered
+        let files = viewModel.files
+        let altRowColor = Color(nsColor: NSColor.alternatingContentBackgroundColors.indices.contains(1)
+            ? NSColor.alternatingContentBackgroundColors[1]
+            : NSColor.controlBackgroundColor)
         return VStack(spacing: 0) {
             // Column header
             listHeader
@@ -68,7 +72,7 @@ struct FileContentView: View {
 
             ScrollViewReader { proxy in
                 List {
-                    ForEach(viewModel.files) { file in
+                    ForEach(files) { file in
                         FileListRow(
                             file: file,
                             isSelected: isFileSelected(file),
@@ -78,17 +82,16 @@ struct FileContentView: View {
                             isExpanded: viewModel.isExpanded(file),
                             isLoadingChildren: viewModel.isLoadingChildren(file),
                             visibleColumns: visibleColumns,
+                            altBackground: altRowColor,
+                            alternating: !(viewModel.fileRowIndex(file).isMultiple(of: 2)),
                             renameText: $viewModel.renameText,
                             onCommitRename: { viewModel.commitRename() },
                             onCancelRename: { viewModel.cancelRename() },
                             onToggleExpand: { viewModel.toggleExpanded(file) }
                         )
-                        .equatable()
-                        .id(file.id)
-                        .listRowBackground(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(isFileSelected(file) ? Color.accentColor.opacity(0.2) : Color.clear)
-                        )
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                         .simultaneousGesture(TapGesture(count: 1).onEnded {
                             if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
                                 viewModel.openItem(file)
@@ -106,13 +109,10 @@ struct FileContentView: View {
                         }
                     }
                 }
-                .listStyle(.inset(alternatesRowBackgrounds: true))
+                .listStyle(.plain)
+                .environment(\.defaultMinListRowHeight, 22)
                 .contextMenu { directoryContextMenu }
                 .onChange(of: viewModel.selectedFileIDs) { _, _ in
-                    // Only scroll when the focused selection actually moves
-                    // to a different item. Re-issuing scrollTo for the same
-                    // id (e.g. cmd-click toggling within the visible window)
-                    // caused observable jitter.
                     if let file = viewModel.selectedFile, file.id != lastScrolledID {
                         lastScrolledID = file.id
                         proxy.scrollTo(file.id)
@@ -701,6 +701,8 @@ struct FileListRow: View, @MainActor Equatable {
     let isExpanded: Bool
     let isLoadingChildren: Bool
     let visibleColumns: [ColumnID]
+    let altBackground: Color
+    let alternating: Bool
     @Binding var renameText: String
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
@@ -708,16 +710,18 @@ struct FileListRow: View, @MainActor Equatable {
     @State private var hovering = false
     @FocusState private var isRenameFocused: Bool
 
+    /// Fixed row height. Enforced inside `body` so every row in the
+    /// `LazyVStack` is exactly the same vertical size regardless of
+    /// whether it shows a disclosure chevron, a progress spinner, or
+    /// nothing — `LazyVStack` would otherwise let intrinsic content
+    /// height vary by a point or two, producing visible jitter.
+    private static let rowHeight: CGFloat = 22
     /// Pixels of indent per tree depth level. Matches Finder's list view.
     private static let indentPerLevel: CGFloat = 14
     /// Width reserved for the disclosure chevron column so name columns
     /// stay aligned whether or not the row is expandable. Wide enough
     /// that the chevron is comfortably clickable on a trackpad.
     private static let disclosureWidth: CGFloat = 22
-    /// Hit-target height for the disclosure button. The row itself is
-    /// ~22 pt tall, so matching that maximises the tappable area without
-    /// expanding row metrics.
-    private static let disclosureHeight: CGFloat = 22
 
     static func == (lhs: FileListRow, rhs: FileListRow) -> Bool {
         // Closures + binding compare by reference identity, which isn't
@@ -734,6 +738,7 @@ struct FileListRow: View, @MainActor Equatable {
             && lhs.isExpanded == rhs.isExpanded
             && lhs.isLoadingChildren == rhs.isLoadingChildren
             && lhs.visibleColumns == rhs.visibleColumns
+            && lhs.alternating == rhs.alternating
     }
 
     var body: some View {
@@ -803,13 +808,28 @@ struct FileListRow: View, @MainActor Equatable {
                 }
             }
         }
-        .padding(.vertical, 2)
         .padding(.horizontal, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(hovering ? Color.primary.opacity(0.03) : Color.clear)
-        )
+        .frame(height: Self.rowHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowBackground)
         .onHover { hovering = $0 }
+    }
+
+    @ViewBuilder
+    private var rowBackground: some View {
+        ZStack {
+            if alternating {
+                altBackground
+            }
+            if hovering && !isSelected {
+                Color.primary.opacity(0.03)
+            }
+            if isSelected {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.2))
+                    .padding(.horizontal, 2)
+            }
+        }
     }
 
     /// Disclosure chevron / activity indicator shown at the start of
@@ -820,7 +840,8 @@ struct FileListRow: View, @MainActor Equatable {
         if isLoadingChildren {
             ProgressView()
                 .controlSize(.mini)
-                .frame(width: Self.disclosureWidth, height: Self.disclosureHeight)
+                .scaleEffect(0.6)
+                .frame(width: Self.disclosureWidth, height: Self.rowHeight)
         } else if isExpandable {
             Button(action: onToggleExpand) {
                 // Outer frame defines the hit target; the glyph stays
@@ -831,7 +852,7 @@ struct FileListRow: View, @MainActor Equatable {
                     .foregroundColor(.secondary.opacity(0.75))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .animation(.easeInOut(duration: 0.12), value: isExpanded)
-                    .frame(width: Self.disclosureWidth, height: Self.disclosureHeight)
+                    .frame(width: Self.disclosureWidth, height: Self.rowHeight)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -840,7 +861,7 @@ struct FileListRow: View, @MainActor Equatable {
             // also selects it which feels jumpy.
             .simultaneousGesture(TapGesture().onEnded {})
         } else {
-            Color.clear.frame(width: Self.disclosureWidth, height: Self.disclosureHeight)
+            Color.clear.frame(width: Self.disclosureWidth, height: Self.rowHeight)
         }
     }
 }

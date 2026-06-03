@@ -511,6 +511,13 @@ class FileExplorerViewModel: Identifiable {
         rowDepthByID[file.id] ?? 0
     }
 
+    /// Position of `file` in the visible rows, or 0 if it's not present.
+    /// Used by the list view to drive alternating row backgrounds without
+    /// pulling the whole `files` index into the view.
+    func fileRowIndex(_ file: FileItem) -> Int {
+        fileIndex[file.id] ?? 0
+    }
+
     /// Toggle inline expansion of `file`. No-op on non-directories or
     /// packages.
     func toggleExpanded(_ file: FileItem) {
@@ -630,12 +637,25 @@ class FileExplorerViewModel: Identifiable {
     private func rebuildVisibleFiles() {
         var out: [FileItem] = []
         var depths: [FileItem.ID: Int] = [:]
+        var seen: Set<FileItem.ID> = []
         let treeMode = (viewMode == .list)
 
         func walk(_ items: [FileItem], _ depth: Int) {
             let visible = applyFilter(to: items)
             out.reserveCapacity(out.count + visible.count)
             for item in visible {
+                // Guard against the same id appearing twice in the flattened
+                // listing — duplicates cause SwiftUI's diffable containers
+                // (List / LazyVStack) to render only the first occurrence
+                // while still reserving a layout slot for the second, which
+                // shows up as a phantom empty row and breaks arrow-key
+                // navigation through that position.
+                guard seen.insert(item.id).inserted else {
+                    if let l = lastDuplicateLog, l == item.id { continue }
+                    lastDuplicateLog = item.id
+                    print("[Seeker] dropped duplicate row id=\(item.id)")
+                    continue
+                }
                 out.append(item)
                 if depth > 0 { depths[item.id] = depth }
                 if treeMode,
@@ -649,6 +669,8 @@ class FileExplorerViewModel: Identifiable {
         rowDepthByID = depths
         files = out
     }
+
+    @ObservationIgnored private var lastDuplicateLog: FileItem.ID?
 
     /// Off-actor Trash enumeration via Finder AppleScript. Validates each
     /// returned path is a real file URL pointing at a still-existing item
