@@ -142,6 +142,18 @@ class AppState {
         activeExplorer.navigateTo(url)
     }
 
+    /// Swap the contents of the left and right panes. Each pane keeps its
+    /// own tabs/history/view-mode — we just exchange which `PaneState`
+    /// lives on which side. The active side (left/right) is preserved, so
+    /// the user's focus follows the pane that moved, matching the typical
+    /// ForkLift / Total Commander "Switch Panels" behavior.
+    func swapPanes() {
+        guard showDualPane else { NSSound.beep(); return }
+        let temp = leftPane
+        leftPane = rightPane
+        rightPane = temp
+    }
+
     // Copy/move selected files to inactive pane's directory
     func copyToOtherPane() {
         let items = activeExplorer.effectiveSelection

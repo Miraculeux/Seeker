@@ -172,6 +172,11 @@ struct ContentView: View {
                     withAnimation(.easeInOut(duration: 0.15)) { appState.showDualPane.toggle() }
                 }
 
+                ToolbarBtn(icon: "arrow.left.arrow.right", tip: "Swap Panes") {
+                    appState.swapPanes()
+                }
+                .disabled(!appState.showDualPane)
+
                 ToolbarSep()
 
                 ToolbarBtn(icon: "sidebar.right", isActive: appState.showInfoPanel, tip: "Info Panel") {

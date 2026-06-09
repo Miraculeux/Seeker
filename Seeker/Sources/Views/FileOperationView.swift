@@ -131,11 +131,31 @@ struct FileOperationExpandedView: View {
 
 struct FileOperationRowView: View {
     @Bindable var operation: FileOperation
+    @State private var isExpanded = false
+
+    private var canExpand: Bool {
+        // Only meaningful while the op is live and there's more than one
+        // top-level item — otherwise the per-item list adds no info.
+        !operation.isFinished && !operation.isCancelled && operation.sourceURLs.count > 1
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             // Title row
             HStack {
+                if canExpand {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.12)) { isExpanded.toggle() }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .frame(width: 10)
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 Image(systemName: operation.kind == .copy ? "doc.on.doc" : "arrow.right.doc.on.clipboard")
                     .font(.system(size: 10))
                     .foregroundColor(.accentColor)
@@ -197,10 +217,14 @@ struct FileOperationRowView: View {
                 .font(.system(size: 9, design: .rounded))
                 .foregroundColor(.secondary)
 
-                // File count
-                Text("\(operation.filesCompleted) of \(operation.filesTotal) files")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary.opacity(0.7))
+                if isExpanded && canExpand {
+                    FileOperationItemList(operation: operation)
+                } else {
+                    // File count
+                    Text("\(operation.filesCompleted) of \(operation.filesTotal) files")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary.opacity(0.7))
+                }
             } else if operation.isFinished && operation.error == nil {
                 Text("Completed — \(operation.formattedTotalSize)")
                     .font(.system(size: 9))
@@ -214,5 +238,88 @@ struct FileOperationRowView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.primary.opacity(0.02))
+    }
+}
+
+// MARK: - Per-Item Pending List
+
+/// Lists every top-level source item the operation is processing, with a
+/// per-item status indicator (done / in-progress / pending). Lets the
+/// user see exactly which items remain instead of just "N of M files".
+private struct FileOperationItemList: View {
+    @Bindable var operation: FileOperation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("\(operation.filesCompleted) of \(operation.filesTotal) items")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(operation.sourceURLs.count - operation.filesCompleted) remaining")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary.opacity(0.7))
+            }
+            .padding(.top, 2)
+            .padding(.bottom, 4)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(operation.sourceURLs.enumerated()), id: \.offset) { index, url in
+                        FileOperationItemRow(
+                            url: url,
+                            status: status(for: index)
+                        )
+                    }
+                }
+            }
+            .frame(maxHeight: 140)
+        }
+    }
+
+    private func status(for index: Int) -> FileOperationItemRow.Status {
+        if index < operation.filesCompleted { return .done }
+        if index == operation.filesCompleted { return .inProgress }
+        return .pending
+    }
+}
+
+private struct FileOperationItemRow: View {
+    enum Status { case done, inProgress, pending }
+    let url: URL
+    let status: Status
+
+    var body: some View {
+        HStack(spacing: 6) {
+            statusIcon
+                .frame(width: 10, height: 10)
+
+            Text(url.lastPathComponent)
+                .font(.system(size: 10))
+                .foregroundColor(status == .pending ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch status {
+        case .done:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 9))
+                .foregroundColor(.green)
+        case .inProgress:
+            ProgressView()
+                .controlSize(.mini)
+                .scaleEffect(0.6)
+        case .pending:
+            Image(systemName: "circle")
+                .font(.system(size: 9))
+                .foregroundColor(.secondary.opacity(0.5))
+        }
     }
 }

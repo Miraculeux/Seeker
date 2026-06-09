@@ -486,6 +486,11 @@ struct SeekerApp: App {
                 }
                 .shortcut(for: .toggleDualPane)
 
+                Button("Swap Panes") {
+                    appState.swapPanes()
+                }
+                .disabled(!appState.showDualPane)
+
                 Divider()
 
                 Button("List View") {
