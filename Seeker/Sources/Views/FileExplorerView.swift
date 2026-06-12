@@ -118,7 +118,7 @@ struct FileContentView: View {
                         proxy.scrollTo(file.id)
                     }
                 }
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                .onDrop(of: [.fileURL, .image, .url], isTargeted: nil) { providers in
                     handleDrop(providers: providers)
                     return true
                 }
@@ -282,7 +282,7 @@ struct FileContentView: View {
             )
         }
         .contextMenu { directoryContextMenu }
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+        .onDrop(of: [.fileURL, .image, .url], isTargeted: nil) { providers in
             handleDrop(providers: providers)
             return true
         }
@@ -606,40 +606,62 @@ struct FileContentView: View {
         let otherVM = (side == .left ? appState.rightPane : appState.leftPane).activeTab
         let isMove = NSEvent.modifierFlags.contains(.shift)
 
-        // Collect all URLs first, then perform as a single operation
-        final class URLCollector: @unchecked Sendable {
-            private let lock = NSLock()
-            private var urls = [URL]()
-            func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
-            var result: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
-        }
-        let collector = URLCollector()
-        let group = DispatchGroup()
-
+        // Split: local-file providers go through the move/copy pipeline,
+        // everything else (browser image data, web URLs) goes through the
+        // network/save importer.
+        var fileProviders: [NSItemProvider] = []
+        var remoteProviders: [NSItemProvider] = []
         for provider in providers {
-            group.enter()
-            provider.loadDataRepresentation(forTypeIdentifier: "public.file-url") { data, _ in
-                defer { group.leave() }
-                guard let data,
-                      let sourceURL = URL(dataRepresentation: data, relativeTo: nil),
-                      sourceURL.isFileURL else { return }
-                collector.append(sourceURL)
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                fileProviders.append(provider)
+            } else {
+                remoteProviders.append(provider)
             }
         }
 
-        group.notify(queue: .main) {
-            let sourceURLs = collector.result
-            guard !sourceURLs.isEmpty else { return }
-            if isMove {
-                FileOperationManager.shared.startMove(sources: sourceURLs, to: destDir) { _ in
-                    vm.loadFiles()
-                    otherVM.loadFiles()
+        if !fileProviders.isEmpty {
+            // Collect all URLs first, then perform as a single operation
+            final class URLCollector: @unchecked Sendable {
+                private let lock = NSLock()
+                private var urls = [URL]()
+                func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
+                var result: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
+            }
+            let collector = URLCollector()
+            let group = DispatchGroup()
+
+            for provider in fileProviders {
+                group.enter()
+                provider.loadDataRepresentation(forTypeIdentifier: "public.file-url") { data, _ in
+                    defer { group.leave() }
+                    guard let data,
+                          let sourceURL = URL(dataRepresentation: data, relativeTo: nil),
+                          sourceURL.isFileURL else { return }
+                    collector.append(sourceURL)
                 }
-            } else {
-                FileOperationManager.shared.startCopy(sources: sourceURLs, to: destDir) { _ in
-                    vm.loadFiles()
-                    otherVM.loadFiles()
+            }
+
+            group.notify(queue: .main) {
+                let sourceURLs = collector.result
+                guard !sourceURLs.isEmpty else { return }
+                if isMove {
+                    FileOperationManager.shared.startMove(sources: sourceURLs, to: destDir) { _ in
+                        vm.loadFiles()
+                        otherVM.loadFiles()
+                    }
+                } else {
+                    FileOperationManager.shared.startCopy(sources: sourceURLs, to: destDir) { _ in
+                        vm.loadFiles()
+                        otherVM.loadFiles()
+                    }
                 }
+            }
+        }
+
+        if !remoteProviders.isEmpty {
+            BrowserDropImporter.importProviders(remoteProviders, into: destDir) {
+                vm.loadFiles()
+                otherVM.loadFiles()
             }
         }
     }
