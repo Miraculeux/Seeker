@@ -4,6 +4,22 @@ import QuickLookThumbnailing
 import UniformTypeIdentifiers
 import CommonCrypto
 
+/// After focusing a rename `TextField`, select only the basename (excludes
+/// the trailing extension) so typing immediately replaces the name without
+/// clobbering the extension — matches Finder's rename behaviour. For names
+/// with no extension or dotfiles like `.gitignore` this is a no-op, leaving
+/// the default select-all in effect.
+@MainActor
+fileprivate func selectFilenameBasenameInFieldEditor(_ name: String) {
+    guard let window = NSApp.keyWindow,
+          let editor = window.firstResponder as? NSTextView,
+          editor.isFieldEditor else { return }
+    let ns = name as NSString
+    let dot = ns.range(of: ".", options: .backwards)
+    guard dot.location != NSNotFound, dot.location > 0 else { return }
+    editor.selectedRange = NSRange(location: 0, length: dot.location)
+}
+
 // MARK: - File Content View (supports list, icon, column modes)
 
 struct FileContentView: View {
@@ -834,6 +850,9 @@ struct FileListRow: View, @MainActor Equatable {
                             // (e.g. right after creating a new folder).
                             DispatchQueue.main.async {
                                 isRenameFocused = true
+                                DispatchQueue.main.async {
+                                    selectFilenameBasenameInFieldEditor(file.name)
+                                }
                             }
                         }
                 } else {
@@ -1363,6 +1382,9 @@ struct FileIconCell: View, Equatable {
                     .onAppear {
                         DispatchQueue.main.async {
                             isRenameFocused = true
+                            DispatchQueue.main.async {
+                                selectFilenameBasenameInFieldEditor(file.name)
+                            }
                         }
                     }
             } else {
