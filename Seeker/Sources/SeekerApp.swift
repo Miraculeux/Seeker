@@ -13,6 +13,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
+            AppDelegate.shared = self
             NSApplication.shared.setActivationPolicy(.regular)
             NSApplication.shared.activate(ignoringOtherApps: true)
             if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
@@ -437,7 +438,12 @@ struct SeekerApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // Use `Window` (singleton) rather than `WindowGroup` so that
+        // incoming `seeker://` URLs from "Reveal in Seeker" cannot spawn
+        // additional windows. The app shares one AppState and one global
+        // key-event monitor, so a second window would route its keystrokes
+        // back into the first window's active pane.
+        Window("Seeker", id: "main") {
             ContentView()
                 .environment(appState)
                 .onAppear {
