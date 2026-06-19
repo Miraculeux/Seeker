@@ -70,18 +70,35 @@ final class DuplicateFinder {
         status = .cancelled
     }
 
+    /// Convenience for the common single-directory scan.
     func scan(root: URL, includeHidden: Bool = false) {
+        scan(roots: [root], includeHidden: includeHidden)
+    }
+
+    /// Scans one or more root directories as a single candidate pool.
+    /// Files are matched across all roots, so this finds duplicates that
+    /// span separate folders or even separate volumes (e.g. two external
+    /// USB disks mounted under `/Volumes`).
+    ///
+    /// Root order encodes a *keep priority*: within each duplicate group
+    /// the copy living under the earliest root is sorted first, so the
+    /// view's "keep the first, trash the rest" default keeps the copy on
+    /// the highest-priority root. Put the volume you want to preserve
+    /// first.
+    func scan(roots: [URL], includeHidden: Bool = false) {
         currentTask?.cancel()
         groups = []
         status = .scanning(scanned: 0)
 
+        // Standardised root paths drive the keep-priority ranking below.
+        let rankPaths = roots.map { Self.rankPrefix(for: $0.standardizedFileURL) }
         let floor = minimumFileSize
         let task = Task { [weak self] in
             guard let self else { return }
 
             // Stage 1: enumerate + group by size, off-main.
             let bySizeResult = await Task.detached(priority: .userInitiated) { () -> [Int64: [URL]] in
-                Self.enumerateBySize(root: root, includeHidden: includeHidden, minSize: floor)
+                Self.enumerateBySize(roots: roots, includeHidden: includeHidden, minSize: floor)
             }.value
 
             if Task.isCancelled { self.markCancelled(); return }
@@ -157,7 +174,17 @@ final class DuplicateFinder {
             }
             let finalGroups = byFullHash
                 .filter { $0.value.count > 1 }
-                .map { Group(fileSize: $0.key.size, urls: $0.value.sorted { $0.path < $1.path }) }
+                .map { Group(
+                    fileSize: $0.key.size,
+                    urls: $0.value.sorted { a, b in
+                        // Primary: keep-priority by root order. Secondary:
+                        // stable alphabetical within the same root.
+                        let ra = Self.rootRank(a, rankPaths: rankPaths)
+                        let rb = Self.rootRank(b, rankPaths: rankPaths)
+                        if ra != rb { return ra < rb }
+                        return a.path < b.path
+                    }
+                ) }
                 .sorted { $0.reclaimableBytes > $1.reclaimableBytes }
 
             self.groups = finalGroups
@@ -174,6 +201,46 @@ final class DuplicateFinder {
 
     private struct SizeHeadKey: Hashable { let size: Int64; let head: UInt64 }
     private struct SizeFullKey: Hashable { let size: Int64; let full: UInt64 }
+
+    /// Normalised path prefix used for keep-priority ranking. A trailing
+    /// separator avoids `/Volumes/Disk` matching `/Volumes/Disk2`.
+    private nonisolated static func rankPrefix(for root: URL) -> String {
+        let p = root.standardizedFileURL.path
+        return p.hasSuffix("/") ? p : p + "/"
+    }
+
+    /// Index of the first root whose subtree contains `url`, or
+    /// `rankPaths.count` if none match (keeps strays last).
+    private nonisolated static func rootRank(_ url: URL, rankPaths: [String]) -> Int {
+        let path = url.standardizedFileURL.path
+        for (i, prefix) in rankPaths.enumerated() where path.hasPrefix(prefix) {
+            return i
+        }
+        return rankPaths.count
+    }
+
+    /// Enumerates every root into a single size-keyed candidate table.
+    /// De-duplicates identical URLs so overlapping/nested roots can't
+    /// list the same file twice (which would otherwise masquerade as a
+    /// duplicate pair).
+    private nonisolated static func enumerateBySize(
+        roots: [URL],
+        includeHidden: Bool,
+        minSize: Int64
+    ) -> [Int64: [URL]] {
+        var bySize: [Int64: [URL]] = [:]
+        var seen = Set<URL>()
+        for root in roots {
+            if Task.isCancelled { return [:] }
+            let partial = enumerateBySize(root: root, includeHidden: includeHidden, minSize: minSize)
+            for (size, urls) in partial {
+                for url in urls where seen.insert(url.standardizedFileURL).inserted {
+                    bySize[size, default: []].append(url)
+                }
+            }
+        }
+        return bySize
+    }
 
     private nonisolated static func enumerateBySize(
         root: URL,

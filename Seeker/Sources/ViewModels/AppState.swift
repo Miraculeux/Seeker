@@ -45,16 +45,35 @@ class AppState {
     var mediaMetadataEditorTargets: [URL]?
 
     /// Non-nil when the Find Duplicates sheet is open. Holds the root
-    /// directory under which the duplicate scan should run.
-    var duplicateFinderRoot: URL?
+    /// directories under which the duplicate scan should run. Multiple
+    /// roots are scanned as one pool, so duplicates spanning separate
+    /// folders or volumes (e.g. two external USB disks) are found.
+    var duplicateFinderRoots: [URL]?
 
     /// Opens the duplicate finder rooted at the active pane's current
     /// directory. If the user has selected one or more directories, the
-    /// scan is rooted at the first selected directory instead.
+    /// scan is rooted at those directories instead — selecting multiple
+    /// folders scans them together as a single candidate pool.
     func openDuplicateFinder() {
         let active = activeExplorer
-        let selected = active.effectiveSelection.first { $0.isDirectory }
-        duplicateFinderRoot = selected?.url ?? active.currentURL
+        let selectedDirs = active.effectiveSelection
+            .filter { $0.isDirectory }
+            .map(\.url)
+        duplicateFinderRoots = selectedDirs.isEmpty ? [active.currentURL] : selectedDirs
+    }
+
+    /// Opens the duplicate finder across both panes' current directories,
+    /// scanning them as a single pool. The active pane is listed first so
+    /// its copies are kept by default (keep-priority follows root order).
+    /// Ideal for de-duplicating two mounted volumes side by side.
+    func openDuplicateFinderAcrossPanes() {
+        guard showDualPane else { openDuplicateFinder(); return }
+        let first = activeExplorer.currentURL
+        let second = inactiveExplorer.currentURL
+        // Collapse to a single root if both panes point at the same place.
+        duplicateFinderRoots = first.standardizedFileURL == second.standardizedFileURL
+            ? [first]
+            : [first, second]
     }
 
     /// Opens the appropriate Metadata Editor for the active pane's effective

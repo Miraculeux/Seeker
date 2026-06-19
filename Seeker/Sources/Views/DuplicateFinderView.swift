@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// Sheet that scans a chosen folder for duplicate files using
 /// `DuplicateFinder` (size \u2192 4 KB head xxHash3 \u2192 full-file xxHash3)
@@ -13,12 +14,25 @@ struct DuplicateFinderView: View {
     @State private var toDelete: Set<URL> = []
     /// Group IDs whose detail rows are expanded.
     @State private var expanded: Set<UUID> = []
+    /// Root directories being scanned. Mutable so the user can add (via
+    /// the "+" button or drag-and-drop) or remove folders and re-scan.
+    /// Order encodes keep-priority — earlier roots win.
+    @State private var roots: [URL]
+    /// True while a folder is hovered over the window during a drag.
+    @State private var isDropTargeted = false
+    /// The duplicate file the user clicked in the left list; drives the
+    /// embedded explorer on the right to navigate to and highlight it.
+    @State private var focusedURL: URL?
 
-    let rootURL: URL
+    init(rootURLs: [URL]) {
+        _roots = State(initialValue: rootURLs)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            Divider()
+            rootsBar
             Divider()
             Group {
                 switch finder.status {
@@ -45,9 +59,21 @@ struct DuplicateFinderView: View {
             Divider()
             footer
         }
-        .frame(width: 720, height: 540)
+        .frame(minWidth: 940, idealWidth: 1100, maxWidth: .infinity,
+               minHeight: 560, idealHeight: 680, maxHeight: .infinity)
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(2)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleFolderDrop(providers)
+        }
         .onAppear {
-            finder.scan(root: rootURL)
+            finder.scan(roots: roots)
             initializePreselection()
         }
         .onChange(of: finder.status) { _, newValue in
@@ -65,11 +91,12 @@ struct DuplicateFinderView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Find Duplicates")
                     .font(.system(size: 13, weight: .semibold))
-                Text(rootURL.path)
+                Text(rootSubtitle)
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(roots.map(\.path).joined(separator: "\n"))
             }
             Spacer()
             Button {
@@ -84,6 +111,68 @@ struct DuplicateFinderView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Color.primary.opacity(0.04))
+    }
+
+    // MARK: - Roots bar
+
+    /// Shows each scanned root as a removable chip (numbered by keep-
+    /// priority) plus an "Add Folder" control. Editing the list re-runs
+    /// the scan. Folders can also be dropped anywhere on the window.
+    private var rootsBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(roots.enumerated()), id: \.element) { idx, url in
+                    rootChip(index: idx, url: url)
+                }
+                Button {
+                    promptAddFolders()
+                } label: {
+                    Label("Add Folder", systemImage: "plus")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 4)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+        .background(Color.primary.opacity(0.02))
+    }
+
+    private func rootChip(index: Int, url: URL) -> some View {
+        HStack(spacing: 5) {
+            Text("\(index + 1)")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(.white)
+                .frame(width: 14, height: 14)
+                .background(Circle().fill(Color.accentColor.opacity(0.8)))
+                .help("Keep priority \(index + 1)")
+            Image(systemName: "folder.fill")
+                .font(.system(size: 9))
+                .foregroundColor(.accentColor)
+            Text(url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent)
+                .font(.system(size: 10))
+                .lineLimit(1)
+                .help(url.path)
+            if roots.count > 1 {
+                Button {
+                    removeRoot(url)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove from scan")
+            }
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+        )
     }
 
     // MARK: - States
@@ -154,6 +243,15 @@ struct DuplicateFinderView: View {
     }
 
     private var resultsState: some View {
+        HSplitView {
+            duplicateList
+                .frame(minWidth: 360, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+            DuplicateExplorerPanel(targetURL: focusedURL)
+                .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var duplicateList: some View {
         ScrollView {
             LazyVStack(spacing: 4) {
                 summaryBanner
@@ -162,6 +260,7 @@ struct DuplicateFinderView: View {
                         group: group,
                         isExpanded: expanded.contains(group.id),
                         toDelete: $toDelete,
+                        focusedURL: $focusedURL,
                         onToggleExpand: {
                             if expanded.contains(group.id) {
                                 expanded.remove(group.id)
@@ -169,27 +268,8 @@ struct DuplicateFinderView: View {
                                 expanded.insert(group.id)
                             }
                         },
-                        onReveal: { url in
-                            // Surface the file in the main window's active
-                            // pane while leaving this duplicate window open
-                            // so the user can keep triaging. Reuse the
-                            // active tab if it's already viewing the
-                            // parent dir; otherwise open a new tab there
-                            // so we don't blow away their navigation.
-                            let pane = appState.activePaneState
-                            let parent = url.deletingLastPathComponent().standardizedFileURL
-                            if pane.activeTab.currentURL.standardizedFileURL != parent {
-                                pane.addTab(url: parent)
-                            }
-                            pane.activeTab.revealAndSelect(url)
-                            // Bring the main window forward so the user
-                            // actually sees the highlighted file.
-                            if let mainWin = NSApp.windows.first(where: {
-                                $0.identifier?.rawValue != "duplicate-finder"
-                                    && $0.contentViewController != nil
-                            }) {
-                                mainWin.makeKeyAndOrderFront(nil)
-                            }
+                        onSelect: { url in
+                            focusedURL = url
                         }
                     )
                 }
@@ -255,6 +335,15 @@ struct DuplicateFinderView: View {
 
     // MARK: - Status text helpers
 
+    private var rootSubtitle: String {
+        switch roots.count {
+        case 0: return ""
+        case 1: return roots[0].path
+        default:
+            return "\(roots.count) locations \u{00B7} scanned as one pool"
+        }
+    }
+
     private var statusTitle: String {
         switch finder.status {
         case .scanning: return "Scanning files"
@@ -289,6 +378,72 @@ struct DuplicateFinderView: View {
         }
     }
 
+    // MARK: - Root management
+
+    /// Opens a folder picker (multi-select) and appends any new folders
+    /// to the scan, then re-runs.
+    private func promptAddFolders() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add to Scan"
+        panel.message = "Choose folders to include in the duplicate scan"
+        if panel.runModal() == .OK {
+            addRoots(panel.urls)
+        }
+    }
+
+    /// Appends folders that aren't already present (or nested under an
+    /// existing root) and re-runs the scan. New roots go to the end, so
+    /// they get the lowest keep-priority.
+    private func addRoots(_ urls: [URL]) {
+        var changed = false
+        for url in urls {
+            let std = url.standardizedFileURL
+            let isDir = (try? std.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            guard isDir else { continue }
+            if roots.contains(where: { $0.standardizedFileURL == std }) { continue }
+            roots.append(std)
+            changed = true
+        }
+        if changed { rescan() }
+    }
+
+    private func removeRoot(_ url: URL) {
+        guard roots.count > 1 else { return }
+        roots.removeAll { $0 == url }
+        rescan()
+    }
+
+    private func rescan() {
+        toDelete = []
+        expanded = []
+        focusedURL = nil
+        finder.scan(roots: roots)
+    }
+
+    /// Accepts folder URLs dropped onto the window.
+    private func handleFolderDrop(_ providers: [NSItemProvider]) -> Bool {
+        let group = DispatchGroup()
+        let collector = URLCollector()
+        var handled = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            handled = true
+            group.enter()
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                defer { group.leave() }
+                guard let data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                collector.append(url)
+            }
+        }
+        group.notify(queue: .main) {
+            let urls = collector.snapshot()
+            if !urls.isEmpty { addRoots(urls) }
+        }
+        return handled
+    }
+
     // MARK: - Actions
 
     /// Pre-check every URL except the first in each group: a sensible
@@ -304,6 +459,12 @@ struct DuplicateFinderView: View {
             }
         }
         toDelete = pre
+        // Auto-expand the first group and surface its first file in the
+        // explorer so the right pane isn't blank on first results.
+        if let first = finder.groups.first {
+            expanded.insert(first.id)
+            if focusedURL == nil { focusedURL = first.urls.first }
+        }
     }
 
     private func trashSelected() {
@@ -348,8 +509,9 @@ private struct DuplicateGroupRow: View {
     let group: DuplicateFinder.Group
     let isExpanded: Bool
     @Binding var toDelete: Set<URL>
+    @Binding var focusedURL: URL?
     let onToggleExpand: () -> Void
-    let onReveal: (URL) -> Void
+    let onSelect: (URL) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -376,6 +538,7 @@ private struct DuplicateGroupRow: View {
             if isExpanded {
                 VStack(spacing: 0) {
                     ForEach(Array(group.urls.enumerated()), id: \.element) { idx, url in
+                        let isFocused = focusedURL == url
                         HStack(spacing: 8) {
                             Toggle(isOn: Binding(
                                 get: { toDelete.contains(url) },
@@ -407,21 +570,280 @@ private struct DuplicateGroupRow: View {
                                     .truncationMode(.middle)
                             }
                             Spacer()
-                            Button {
-                                onReveal(url)
-                            } label: {
-                                Image(systemName: "magnifyingglass")
+                            if isFocused {
+                                Image(systemName: "arrow.right.circle.fill")
                                     .font(.system(size: 10))
+                                    .foregroundColor(.accentColor)
+                                    .help("Shown in explorer")
                             }
-                            .buttonStyle(.borderless)
-                            .help("Open in new tab")
                         }
                         .padding(.horizontal, 22)
                         .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(isFocused ? Color.accentColor.opacity(0.15) : Color.clear)
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture { onSelect(url) }
                     }
                 }
                 .padding(.top, 2)
             }
         }
+    }
+}
+
+/// Thread-safe accumulator for URLs gathered from concurrent
+/// `NSItemProvider` callbacks during a drag-and-drop.
+private final class URLCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urls: [URL] = []
+    func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
+    func snapshot() -> [URL] { lock.lock(); defer { lock.unlock() }; return urls }
+}
+
+/// Lightweight, self-contained file-explorer pane shown on the right of
+/// the duplicate finder. Reuses `FileExplorerViewModel` for navigation
+/// and reveal-and-select, but renders its own minimal listing so it
+/// never touches the main window's pane state. When `targetURL` changes
+/// (the user clicked a duplicate on the left) it navigates to the file's
+/// parent directory and highlights it.
+private struct DuplicateExplorerPanel: View {
+    let targetURL: URL?
+    @State private var vm = FileExplorerViewModel()
+    /// The row the user clicked inside this panel. Falls back to
+    /// `targetURL` (the duplicate selected on the left) when nil so the
+    /// action bar / preview always have something to act on.
+    @State private var selectedURL: URL?
+    /// URL currently shown in the QuickLook sheet, if any.
+    @State private var previewURL: URL?
+    @State private var showPreview = false
+
+    /// The file the action bar and preview operate on.
+    private var activeURL: URL? { selectedURL ?? targetURL }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            pathBar
+            Divider()
+            if vm.files.isEmpty {
+                emptyBody
+            } else {
+                listBody
+            }
+            Divider()
+            actionBar
+        }
+        .background(Color(nsColor: .controlBackgroundColor))
+        .onAppear { syncToTarget() }
+        .onChange(of: targetURL) { _, _ in syncToTarget() }
+        .sheet(isPresented: $showPreview) {
+            if let url = previewURL {
+                VStack(spacing: 0) {
+                    QuickLookPreview(url: url)
+                    HStack {
+                        Text(url.lastPathComponent)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Button("Open") { NSWorkspace.shared.open(url) }
+                        Button("Done") { showPreview = false }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                    .padding(10)
+                }
+                .frame(minWidth: 640, minHeight: 460)
+            }
+        }
+    }
+
+    private func syncToTarget() {
+        guard let url = targetURL else { return }
+        selectedURL = url
+        vm.revealAndSelect(url)
+    }
+
+    /// Opens a file (or navigates into a folder). Mirrors the main
+    /// explorer's double-click behaviour.
+    private func open(_ file: FileItem) {
+        if file.isDirectory && !file.isPackage {
+            selectedURL = nil
+            vm.navigateTo(file.url)
+        } else {
+            vm.openItem(file)
+        }
+    }
+
+    private func preview(_ url: URL) {
+        previewURL = url
+        showPreview = true
+    }
+
+    // MARK: - Path bar
+
+    private var pathBar: some View {
+        HStack(spacing: 6) {
+            Button {
+                vm.navigateTo(vm.currentURL.deletingLastPathComponent())
+            } label: {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .help("Enclosing folder")
+            .disabled(vm.currentURL.path == "/")
+
+            Image(systemName: "folder.fill")
+                .font(.system(size: 11))
+                .foregroundColor(.accentColor)
+            Text(vm.currentURL.path)
+                .font(.system(size: 10))
+                .lineLimit(1)
+                .truncationMode(.head)
+                .help(vm.currentURL.path)
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.03))
+    }
+
+    // MARK: - Listing
+
+    private var emptyBody: some View {
+        VStack {
+            Spacer()
+            Text("Empty folder")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var listBody: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(vm.files) { file in
+                        explorerRow(file)
+                            .id(file.id)
+                    }
+                }
+                .padding(6)
+            }
+            .onChange(of: targetURL) { _, _ in scrollToTarget(proxy) }
+            .onChange(of: vm.files) { _, _ in scrollToTarget(proxy) }
+        }
+    }
+
+    private func scrollToTarget(_ proxy: ScrollViewProxy) {
+        guard let url = targetURL,
+              let match = vm.files.first(where: {
+                  $0.url.standardizedFileURL.path == url.standardizedFileURL.path
+              }) else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                proxy.scrollTo(match.id, anchor: .center)
+            }
+        }
+    }
+
+    private func explorerRow(_ file: FileItem) -> some View {
+        let isTarget = targetURL.map {
+            file.url.standardizedFileURL.path == $0.standardizedFileURL.path
+        } ?? false
+        let isSelected = selectedURL.map {
+            file.url.standardizedFileURL.path == $0.standardizedFileURL.path
+        } ?? false
+        return HStack(spacing: 7) {
+            Image(nsImage: SidebarRow.icon(for: file.url))
+                .resizable()
+                .frame(width: 16, height: 16)
+            Text(file.name)
+                .font(.system(size: 11, weight: isTarget ? .semibold : .regular))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+            if !file.isDirectory {
+                Button {
+                    preview(file.url)
+                } label: {
+                    Image(systemName: "eye")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.borderless)
+                .help("Quick Look")
+            }
+            Text(file.isDirectory ? "" : file.formattedSize)
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+                .monospacedDigit()
+            if file.isDirectory {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isTarget ? Color.accentColor.opacity(0.22)
+                      : (isSelected ? Color.primary.opacity(0.08) : Color.clear))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { open(file) }
+        .onTapGesture { selectedURL = file.url }
+    }
+
+    // MARK: - Actions
+
+    private var actionBar: some View {
+        HStack(spacing: 10) {
+            Button {
+                if let url = activeURL { preview(url) }
+            } label: {
+                Label("Preview", systemImage: "eye")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.borderless)
+            .disabled(activeURL == nil)
+            .help("Quick Look the selected file")
+
+            Button {
+                if let url = activeURL { NSWorkspace.shared.open(url) }
+            } label: {
+                Label("Open", systemImage: "arrow.up.forward.app")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.borderless)
+            .disabled(activeURL == nil)
+            .help("Open with the default app")
+
+            Button {
+                if let url = activeURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            } label: {
+                Label("Reveal", systemImage: "macwindow")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.borderless)
+            .disabled(activeURL == nil)
+            .help("Reveal in Finder")
+
+            Spacer()
+
+            if let url = activeURL {
+                Text(url.lastPathComponent)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.primary.opacity(0.02))
     }
 }

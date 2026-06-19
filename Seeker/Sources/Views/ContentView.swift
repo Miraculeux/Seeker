@@ -76,14 +76,14 @@ struct ContentView: View {
                 .environment(appState)
             }
         }
-        .onChange(of: appState.duplicateFinderRoot) { _, newValue in
+        .onChange(of: appState.duplicateFinderRoots) { _, newValue in
             // The duplicate finder lives in its own window so the main
             // window stays interactive while the user reviews matches.
-            // Reset the trigger after dispatching so the same folder can
+            // Reset the trigger after dispatching so the same folders can
             // be re-opened later.
-            if let url = newValue {
-                openWindow(id: "duplicate-finder", value: url)
-                appState.duplicateFinderRoot = nil
+            if let urls = newValue, !urls.isEmpty {
+                openWindow(id: "duplicate-finder", value: urls)
+                appState.duplicateFinderRoots = nil
             }
         }
     }
@@ -165,6 +165,15 @@ struct ContentView: View {
                     appState.openDuplicateFinder()
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                ToolbarBtn(
+                    icon: "doc.on.doc.fill",
+                    tip: "Find Duplicates Across Panes (\u{2318}\u{2325}D)"
+                ) {
+                    appState.openDuplicateFinderAcrossPanes()
+                }
+                .disabled(!appState.showDualPane)
+                .keyboardShortcut("d", modifiers: [.command, .option])
 
                 ToolbarSep()
 
