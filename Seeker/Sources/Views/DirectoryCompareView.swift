@@ -11,9 +11,6 @@ struct DirectoryCompareView: View {
     @Environment(AppState.self) var appState
     @Environment(\.dismiss) private var dismiss
     @State private var comparer: DirectoryComparer
-    /// The entry the user clicked on the left; drives the explorer on
-    /// the right to navigate to and highlight it.
-    @State private var focusedURL: URL?
 
     init(dirA: URL, dirB: URL) {
         _comparer = State(initialValue: DirectoryComparer(dirA: dirA, dirB: dirB))
@@ -110,125 +107,34 @@ struct DirectoryCompareView: View {
 
     private var resultsState: some View {
         HSplitView {
-            VSplitView {
-                differenceList(
-                    title: "Only in A",
-                    badge: "A",
-                    badgeColor: .blue,
-                    folderName: comparer.dirA.lastPathComponent,
-                    entries: comparer.onlyInA
-                )
-                .frame(minHeight: 140, maxHeight: .infinity)
-
-                differenceList(
-                    title: "Only in B",
-                    badge: "B",
-                    badgeColor: .purple,
-                    folderName: comparer.dirB.lastPathComponent,
-                    entries: comparer.onlyInB
-                )
-                .frame(minHeight: 140, maxHeight: .infinity)
-            }
-            .frame(minWidth: 340, idealWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+            TriageExplorerPanel(
+                fixedURLs: comparer.onlyInA.map(\.url),
+                headerTitle: comparer.dirA.lastPathComponent,
+                headerBadge: "A",
+                headerBadgeColor: .blue,
+                emptyMessage: "Nothing only in A",
+                onDeleted: { url in handleDeleted(url) }
+            )
+            .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
 
             TriageExplorerPanel(
-                targetURL: focusedURL,
-                onDeleted: { url in
-                    comparer.remove(url)
-                    if focusedURL?.standardizedFileURL == url.standardizedFileURL {
-                        focusedURL = nil
-                    }
-                    NotificationCenter.default.post(name: .filesDidChange, object: nil)
-                }
+                fixedURLs: comparer.onlyInB.map(\.url),
+                headerTitle: comparer.dirB.lastPathComponent,
+                headerBadge: "B",
+                headerBadgeColor: .purple,
+                emptyMessage: "Nothing only in B",
+                onDeleted: { url in handleDeleted(url) }
             )
-            .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private func differenceList(
-        title: String,
-        badge: String,
-        badgeColor: Color,
-        folderName: String,
-        entries: [DirectoryComparer.Entry]
-    ) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                sideBadge(badge, color: badgeColor)
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(folderName)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Text("\(entries.count)")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.primary.opacity(0.04))
-
-            Divider()
-
-            if entries.isEmpty {
-                VStack {
-                    Spacer()
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 20))
-                        .foregroundColor(.green.opacity(0.6))
-                    Text("Nothing unique here")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 1) {
-                        ForEach(entries) { entry in
-                            entryRow(entry)
-                        }
-                    }
-                    .padding(6)
-                }
-            }
-        }
-        .background(Color(nsColor: .controlBackgroundColor))
-    }
-
-    private func entryRow(_ entry: DirectoryComparer.Entry) -> some View {
-        let isFocused = focusedURL?.standardizedFileURL == entry.url.standardizedFileURL
-        return HStack(spacing: 7) {
-            Image(nsImage: SidebarRow.icon(for: entry.url))
-                .resizable()
-                .frame(width: 16, height: 16)
-            Text(entry.name)
-                .font(.system(size: 11, weight: isFocused ? .semibold : .regular))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            Text(entry.isDirectory ? "" : entry.formattedSize)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-                .monospacedDigit()
-            if entry.isDirectory {
-                Image(systemName: "folder")
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(isFocused ? Color.accentColor.opacity(0.22) : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { focusedURL = entry.url }
+    private func handleDeleted(_ url: URL) {
+        // The fixed-list panels refresh from `comparer.onlyInA/onlyInB`,
+        // so just drop the entry. No app-wide `.filesDidChange` broadcast
+        // — that would make every main-window tab re-read its directory
+        // for a file the compare window doesn't even share with them.
+        comparer.remove(url)
     }
 
     // MARK: - Footer

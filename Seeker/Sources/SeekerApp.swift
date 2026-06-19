@@ -11,6 +11,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var typeAheadBuffer: String = ""
     private var typeAheadTimer: Timer?
 
+    /// True if `window` is one of the standalone helper windows (duplicate
+    /// finder / folder compare). Those windows handle their own keyboard
+    /// shortcuts, so app-wide handlers must not act on the main window's
+    /// state when one of them is key.
+    static func isHelperWindow(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        let id = window.identifier?.rawValue ?? ""
+        if id.contains("duplicate-finder") || id.contains("directory-compare") {
+            return true
+        }
+        return window.title == "Find Duplicates" || window.title == "Compare Folders"
+    }
+
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             AppDelegate.shared = self
@@ -78,18 +91,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if spaceMonitor == nil {
             // Space key → Quick Look, Return key → Open item
             spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // A modal alert is up (e.g. the "Move to Trash?" confirm).
+                // Let every key go to it — otherwise this monitor would,
+                // for example, treat Return as the Rename shortcut and
+                // swallow it before the alert's default button sees it.
+                if NSApp.modalWindow != nil {
+                    return event
+                }
+
                 // Standalone helper windows (duplicate finder, folder
                 // compare) own their own keyboard handling via SwiftUI's
                 // `.onKeyPress`. Don't let this main-window monitor steal
                 // Space / ⌘⌫ / arrows from them, or it would act on the
                 // main window's selection instead of the helper window's.
-                if let win = event.window {
-                    let id = win.identifier?.rawValue ?? ""
-                    let title = win.title
-                    if id.contains("duplicate-finder") || id.contains("directory-compare")
-                        || title == "Find Duplicates" || title == "Compare Folders" {
-                        return event
+                if AppDelegate.isHelperWindow(event.window) {
+                    // ⌘A would otherwise be grabbed by the auto Edit-menu
+                    // "Select All" key-equivalent (which targets the
+                    // native table, not the panel's custom selection).
+                    // Consume it here and tell the panel to select all.
+                    if event.keyCode == 0, event.modifierFlags.contains(.command),
+                       !event.modifierFlags.contains(.option),
+                       !event.modifierFlags.contains(.control) {
+                        NotificationCenter.default.post(name: .triageSelectAllRequested, object: nil)
+                        return nil
                     }
+                    return event
                 }
 
                 // Check if a shortcut recorder is active — forward event and consume
@@ -591,7 +617,15 @@ struct SeekerApp: App {
                 Divider()
 
                 Button("Move to Trash") {
-                    appState.activeExplorer.trashSelected()
+                    // ⌘⌫ is an app-wide menu shortcut, so it fires even
+                    // when a standalone helper window is key. Route it to
+                    // that window's triage panel instead of the main
+                    // window's explorer.
+                    if AppDelegate.isHelperWindow(NSApp.keyWindow) {
+                        NotificationCenter.default.post(name: .triageMoveToTrashRequested, object: nil)
+                    } else {
+                        appState.activeExplorer.trashSelected()
+                    }
                 }
                 .shortcut(for: .moveToTrash)
 

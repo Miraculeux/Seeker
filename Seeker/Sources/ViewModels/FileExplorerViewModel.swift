@@ -7,6 +7,14 @@ extension Notification.Name {
     static let columnSettingsChanged = Notification.Name("columnSettingsChanged")
     static let filesDidChange = Notification.Name("filesDidChange")
     static let iconSizeDidChange = Notification.Name("iconSizeDidChange")
+    /// Posted when the global "Move to Trash" menu shortcut (⌘⌫) fires
+    /// while a standalone helper window (duplicate finder / folder
+    /// compare) is key. The key window's triage panel handles it so the
+    /// shortcut acts on that window's selection, not the main window's.
+    static let triageMoveToTrashRequested = Notification.Name("triageMoveToTrashRequested")
+    /// Posted when ⌘A fires while a helper window is key. The key
+    /// window's triage panel selects all of its files.
+    static let triageSelectAllRequested = Notification.Name("triageSelectAllRequested")
 }
 
 @MainActor @Observable
