@@ -86,6 +86,13 @@ struct ContentView: View {
                 appState.duplicateFinderRoots = nil
             }
         }
+        .onChange(of: appState.directoryCompareTargets) { _, newValue in
+            // The compare window is standalone like the duplicate finder.
+            if let dirs = newValue, dirs.count == 2 {
+                openWindow(id: "directory-compare", value: dirs)
+                appState.directoryCompareTargets = nil
+            }
+        }
     }
 
 // MARK: - Modern Toolbar
@@ -174,6 +181,14 @@ struct ContentView: View {
                 }
                 .disabled(!appState.showDualPane)
                 .keyboardShortcut("d", modifiers: [.command, .option])
+
+                ToolbarBtn(
+                    icon: "arrow.left.arrow.right.square",
+                    tip: "Compare Folders (\u{2318}\u{21E7}K)"
+                ) {
+                    appState.openDirectoryCompare()
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
 
                 ToolbarSep()
 

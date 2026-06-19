@@ -78,6 +78,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if spaceMonitor == nil {
             // Space key → Quick Look, Return key → Open item
             spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Standalone helper windows (duplicate finder, folder
+                // compare) own their own keyboard handling via SwiftUI's
+                // `.onKeyPress`. Don't let this main-window monitor steal
+                // Space / ⌘⌫ / arrows from them, or it would act on the
+                // main window's selection instead of the helper window's.
+                if let win = event.window {
+                    let id = win.identifier?.rawValue ?? ""
+                    let title = win.title
+                    if id.contains("duplicate-finder") || id.contains("directory-compare")
+                        || title == "Find Duplicates" || title == "Compare Folders" {
+                        return event
+                    }
+                }
+
                 // Check if a shortcut recorder is active — forward event and consume
                 if ShortcutRecorderNSView.isRecordingShortcut {
                     ShortcutRecorderNSView.activeRecorder?.keyDown(with: event)
@@ -475,6 +489,16 @@ struct SeekerApp: App {
         WindowGroup("Find Duplicates", id: "duplicate-finder", for: [URL].self) { $rootURLs in
             if let urls = rootURLs, !urls.isEmpty {
                 DuplicateFinderView(rootURLs: urls)
+                    .environment(appState)
+            }
+        }
+        .windowResizability(.contentMinSize)
+
+        // Standalone folder-compare window. Two directories diffed by
+        // file name; lives in its own window like the duplicate finder.
+        WindowGroup("Compare Folders", id: "directory-compare", for: [URL].self) { $dirs in
+            if let dirs, dirs.count == 2 {
+                DirectoryCompareView(dirA: dirs[0], dirB: dirs[1])
                     .environment(appState)
             }
         }

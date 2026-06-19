@@ -246,8 +246,11 @@ struct DuplicateFinderView: View {
         HSplitView {
             duplicateList
                 .frame(minWidth: 360, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
-            DuplicateExplorerPanel(targetURL: focusedURL)
-                .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+            TriageExplorerPanel(
+                targetURL: focusedURL,
+                onDeleted: { url in removeFromGroups(url) }
+            )
+            .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -503,6 +506,25 @@ struct DuplicateFinderView: View {
         // Notify other panes so they refresh listings of the affected dirs.
         NotificationCenter.default.post(name: .filesDidChange, object: nil)
     }
+
+    /// Drops a single file (trashed from the embedded explorer panel)
+    /// from the displayed groups, collapsing any group that no longer
+    /// has \u2265 2 members. Keeps the left list in sync with the right
+    /// panel's delete action.
+    private func removeFromGroups(_ url: URL) {
+        let std = url.standardizedFileURL
+        var newGroups: [DuplicateFinder.Group] = []
+        for group in finder.groups {
+            let remaining = group.urls.filter { $0.standardizedFileURL != std }
+            if remaining.count > 1 {
+                newGroups.append(DuplicateFinder.Group(fileSize: group.fileSize, urls: remaining))
+            }
+        }
+        finder.groups = newGroups
+        toDelete.remove(url)
+        if focusedURL?.standardizedFileURL == std { focusedURL = nil }
+        NotificationCenter.default.post(name: .filesDidChange, object: nil)
+    }
 }
 
 private struct DuplicateGroupRow: View {
@@ -602,248 +624,3 @@ private final class URLCollector: @unchecked Sendable {
     func snapshot() -> [URL] { lock.lock(); defer { lock.unlock() }; return urls }
 }
 
-/// Lightweight, self-contained file-explorer pane shown on the right of
-/// the duplicate finder. Reuses `FileExplorerViewModel` for navigation
-/// and reveal-and-select, but renders its own minimal listing so it
-/// never touches the main window's pane state. When `targetURL` changes
-/// (the user clicked a duplicate on the left) it navigates to the file's
-/// parent directory and highlights it.
-private struct DuplicateExplorerPanel: View {
-    let targetURL: URL?
-    @State private var vm = FileExplorerViewModel()
-    /// The row the user clicked inside this panel. Falls back to
-    /// `targetURL` (the duplicate selected on the left) when nil so the
-    /// action bar / preview always have something to act on.
-    @State private var selectedURL: URL?
-    /// URL currently shown in the QuickLook sheet, if any.
-    @State private var previewURL: URL?
-    @State private var showPreview = false
-
-    /// The file the action bar and preview operate on.
-    private var activeURL: URL? { selectedURL ?? targetURL }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            pathBar
-            Divider()
-            if vm.files.isEmpty {
-                emptyBody
-            } else {
-                listBody
-            }
-            Divider()
-            actionBar
-        }
-        .background(Color(nsColor: .controlBackgroundColor))
-        .onAppear { syncToTarget() }
-        .onChange(of: targetURL) { _, _ in syncToTarget() }
-        .sheet(isPresented: $showPreview) {
-            if let url = previewURL {
-                VStack(spacing: 0) {
-                    QuickLookPreview(url: url)
-                    HStack {
-                        Text(url.lastPathComponent)
-                            .font(.system(size: 11))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer()
-                        Button("Open") { NSWorkspace.shared.open(url) }
-                        Button("Done") { showPreview = false }
-                            .keyboardShortcut(.defaultAction)
-                    }
-                    .padding(10)
-                }
-                .frame(minWidth: 640, minHeight: 460)
-            }
-        }
-    }
-
-    private func syncToTarget() {
-        guard let url = targetURL else { return }
-        selectedURL = url
-        vm.revealAndSelect(url)
-    }
-
-    /// Opens a file (or navigates into a folder). Mirrors the main
-    /// explorer's double-click behaviour.
-    private func open(_ file: FileItem) {
-        if file.isDirectory && !file.isPackage {
-            selectedURL = nil
-            vm.navigateTo(file.url)
-        } else {
-            vm.openItem(file)
-        }
-    }
-
-    private func preview(_ url: URL) {
-        previewURL = url
-        showPreview = true
-    }
-
-    // MARK: - Path bar
-
-    private var pathBar: some View {
-        HStack(spacing: 6) {
-            Button {
-                vm.navigateTo(vm.currentURL.deletingLastPathComponent())
-            } label: {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 11, weight: .semibold))
-            }
-            .buttonStyle(.borderless)
-            .help("Enclosing folder")
-            .disabled(vm.currentURL.path == "/")
-
-            Image(systemName: "folder.fill")
-                .font(.system(size: 11))
-                .foregroundColor(.accentColor)
-            Text(vm.currentURL.path)
-                .font(.system(size: 10))
-                .lineLimit(1)
-                .truncationMode(.head)
-                .help(vm.currentURL.path)
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.03))
-    }
-
-    // MARK: - Listing
-
-    private var emptyBody: some View {
-        VStack {
-            Spacer()
-            Text("Empty folder")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var listBody: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 1) {
-                    ForEach(vm.files) { file in
-                        explorerRow(file)
-                            .id(file.id)
-                    }
-                }
-                .padding(6)
-            }
-            .onChange(of: targetURL) { _, _ in scrollToTarget(proxy) }
-            .onChange(of: vm.files) { _, _ in scrollToTarget(proxy) }
-        }
-    }
-
-    private func scrollToTarget(_ proxy: ScrollViewProxy) {
-        guard let url = targetURL,
-              let match = vm.files.first(where: {
-                  $0.url.standardizedFileURL.path == url.standardizedFileURL.path
-              }) else { return }
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                proxy.scrollTo(match.id, anchor: .center)
-            }
-        }
-    }
-
-    private func explorerRow(_ file: FileItem) -> some View {
-        let isTarget = targetURL.map {
-            file.url.standardizedFileURL.path == $0.standardizedFileURL.path
-        } ?? false
-        let isSelected = selectedURL.map {
-            file.url.standardizedFileURL.path == $0.standardizedFileURL.path
-        } ?? false
-        return HStack(spacing: 7) {
-            Image(nsImage: SidebarRow.icon(for: file.url))
-                .resizable()
-                .frame(width: 16, height: 16)
-            Text(file.name)
-                .font(.system(size: 11, weight: isTarget ? .semibold : .regular))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            if !file.isDirectory {
-                Button {
-                    preview(file.url)
-                } label: {
-                    Image(systemName: "eye")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.borderless)
-                .help("Quick Look")
-            }
-            Text(file.isDirectory ? "" : file.formattedSize)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
-                .monospacedDigit()
-            if file.isDirectory {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(isTarget ? Color.accentColor.opacity(0.22)
-                      : (isSelected ? Color.primary.opacity(0.08) : Color.clear))
-        )
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) { open(file) }
-        .onTapGesture { selectedURL = file.url }
-    }
-
-    // MARK: - Actions
-
-    private var actionBar: some View {
-        HStack(spacing: 10) {
-            Button {
-                if let url = activeURL { preview(url) }
-            } label: {
-                Label("Preview", systemImage: "eye")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.borderless)
-            .disabled(activeURL == nil)
-            .help("Quick Look the selected file")
-
-            Button {
-                if let url = activeURL { NSWorkspace.shared.open(url) }
-            } label: {
-                Label("Open", systemImage: "arrow.up.forward.app")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.borderless)
-            .disabled(activeURL == nil)
-            .help("Open with the default app")
-
-            Button {
-                if let url = activeURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-            } label: {
-                Label("Reveal", systemImage: "macwindow")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.borderless)
-            .disabled(activeURL == nil)
-            .help("Reveal in Finder")
-
-            Spacer()
-
-            if let url = activeURL {
-                Text(url.lastPathComponent)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.02))
-    }
-}

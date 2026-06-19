@@ -62,18 +62,72 @@ class AppState {
         duplicateFinderRoots = selectedDirs.isEmpty ? [active.currentURL] : selectedDirs
     }
 
-    /// Opens the duplicate finder across both panes' current directories,
-    /// scanning them as a single pool. The active pane is listed first so
-    /// its copies are kept by default (keep-priority follows root order).
-    /// Ideal for de-duplicating two mounted volumes side by side.
+    /// Opens the duplicate finder across both panes, scanning their
+    /// directories as a single pool. For each pane, a selected sub-folder
+    /// (if any) takes precedence over the pane's current directory — so
+    /// you can pick a folder on each side and de-duplicate just those.
+    /// The active pane is listed first so its copies are kept by default
+    /// (keep-priority follows root order). Ideal for de-duplicating two
+    /// mounted volumes side by side.
     func openDuplicateFinderAcrossPanes() {
         guard showDualPane else { openDuplicateFinder(); return }
-        let first = activeExplorer.currentURL
-        let second = inactiveExplorer.currentURL
+        let first = activeExplorer.effectiveSelection.first { $0.isDirectory }?.url
+            ?? activeExplorer.currentURL
+        let second = inactiveExplorer.effectiveSelection.first { $0.isDirectory }?.url
+            ?? inactiveExplorer.currentURL
         // Collapse to a single root if both panes point at the same place.
         duplicateFinderRoots = first.standardizedFileURL == second.standardizedFileURL
             ? [first]
             : [first, second]
+    }
+
+    /// Non-nil when the Compare Folders window should open. Holds exactly
+    /// two directories: A (first) and B (second).
+    var directoryCompareTargets: [URL]?
+
+    /// Opens the folder-compare window for two directories. Sources, in
+    /// priority order:
+    ///   1. One selected sub-folder in each pane (left = A, right = B).
+    ///   2. Two selected sub-folders in the active pane.
+    ///   3. A single selected sub-folder in the active pane vs. the
+    ///      inactive pane's current directory.
+    ///   4. The active pane's directory as A and the inactive pane's as B.
+    /// Beeps if it can't resolve two distinct directories.
+    func openDirectoryCompare() {
+        let activeSel = activeExplorer.effectiveSelection
+            .filter { $0.isDirectory }.map(\.url)
+        let inactiveSel = inactiveExplorer.effectiveSelection
+            .filter { $0.isDirectory }.map(\.url)
+
+        // 1. One folder picked in each pane — the most intuitive case.
+        //    Order by physical side so left is always A, right is B.
+        if let first = activeSel.first, let second = inactiveSel.first {
+            let leftURL = activePane == .left ? first : second
+            let rightURL = activePane == .left ? second : first
+            setCompareTargets(leftURL, rightURL)
+            return
+        }
+        // 2. Two folders picked in the active pane.
+        if activeSel.count >= 2 {
+            setCompareTargets(activeSel[0], activeSel[1])
+            return
+        }
+        // 3. One folder picked in the active pane, compared against the
+        //    other pane's current directory.
+        if let only = activeSel.first, showDualPane {
+            setCompareTargets(only, inactiveExplorer.currentURL)
+            return
+        }
+        // 4. Fall back to the two panes' current directories.
+        guard showDualPane else { NSSound.beep(); return }
+        setCompareTargets(activeExplorer.currentURL, inactiveExplorer.currentURL)
+    }
+
+    /// Assigns the compare targets, beeping instead if the two resolve to
+    /// the same directory (nothing meaningful to diff).
+    private func setCompareTargets(_ a: URL, _ b: URL) {
+        guard a.standardizedFileURL != b.standardizedFileURL else { NSSound.beep(); return }
+        directoryCompareTargets = [a, b]
     }
 
     /// Opens the appropriate Metadata Editor for the active pane's effective
