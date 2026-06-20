@@ -28,6 +28,9 @@ struct TriageExplorerPanel: View {
     var headerBadgeColor: Color = .accentColor
     /// Message shown when the fixed list is empty.
     var emptyMessage: String = "Empty folder"
+    /// Optional secondary label per file (fixed-list mode), e.g. a
+    /// relative subpath shown under the name to disambiguate folders.
+    var subtitles: [URL: String]? = nil
     /// Invoked after a file is successfully moved to the Trash.
     var onDeleted: ((URL) -> Void)? = nil
     /// Invoked after an operation that may have changed the set of files
@@ -450,10 +453,24 @@ struct TriageExplorerPanel: View {
             Image(nsImage: SidebarRow.icon(for: file.url))
                 .resizable()
                 .frame(width: 16, height: 16)
-            Text(file.name)
-                .font(.system(size: 11, weight: (isTarget || isSelected) ? .semibold : .regular))
-                .lineLimit(1)
-                .truncationMode(.middle)
+            if let subtitle = subtitles?[file.url], !subtitle.isEmpty, subtitle != file.name {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(file.name)
+                        .font(.system(size: 11, weight: (isTarget || isSelected) ? .semibold : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(subtitle)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            } else {
+                Text(file.name)
+                    .font(.system(size: 11, weight: (isTarget || isSelected) ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer()
             Text(file.isDirectory ? "" : file.formattedSize)
                 .font(.system(size: 9))

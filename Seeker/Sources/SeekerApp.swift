@@ -538,6 +538,15 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+
+        // Standalone folder-sync window.
+        WindowGroup("Sync Folders", id: "folder-sync", for: [URL].self) { $dirs in
+            if let dirs, dirs.count == 2 {
+                FolderSyncView(rootA: dirs[0], rootB: dirs[1])
+                    .environment(appState)
+            }
+        }
+        .windowResizability(.contentMinSize)
         .commands {
             // MARK: - View Menu
             CommandGroup(after: .sidebar) {

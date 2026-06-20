@@ -110,6 +110,12 @@ struct ContentView: View {
                 appState.fileSearchRoot = nil
             }
         }
+        .onChange(of: appState.folderSyncRoots) { _, newValue in
+            if let dirs = newValue, dirs.count == 2 {
+                openWindow(id: "folder-sync", value: dirs)
+                appState.folderSyncRoots = nil
+            }
+        }
     }
 
 // MARK: - Modern Toolbar

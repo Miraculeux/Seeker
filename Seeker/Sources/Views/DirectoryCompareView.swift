@@ -33,12 +33,15 @@ struct DirectoryCompareView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            footer
         }
         .frame(minWidth: 940, idealWidth: 1100, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
         .onAppear { comparer.compare() }
+        // Re-compare when files change elsewhere (e.g. after a Sync from
+        // this window, or copy/move/rename in the side panels).
+        .onReceive(NotificationCenter.default.publisher(for: .filesDidChange)) { _ in
+            comparer.compare()
+        }
     }
 
     // MARK: - Header
@@ -46,41 +49,60 @@ struct DirectoryCompareView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "rectangle.split.2x1.fill")
-                .font(.system(size: 16))
+                .font(.system(size: 15))
                 .foregroundColor(.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Compare Folders")
-                    .font(.system(size: 13, weight: .semibold))
-                HStack(spacing: 6) {
-                    sideBadge("A", color: .blue)
-                    Text(comparer.dirA.lastPathComponent)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .help(comparer.dirA.path)
-                    Text("\u{2194}")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                    sideBadge("B", color: .purple)
-                    Text(comparer.dirB.lastPathComponent)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .help(comparer.dirB.path)
-                }
-            }
-            Spacer()
+            sideBadge("A", color: .blue)
+            Text(comparer.dirA.lastPathComponent)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(comparer.dirA.path)
+            Text("\u{2194}")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            sideBadge("B", color: .purple)
+            Text(comparer.dirB.lastPathComponent)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(comparer.dirB.path)
+
+            Spacer(minLength: 12)
+
+            Text(summary)
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .monospacedDigit()
+                .fixedSize()
+
             Button {
-                dismiss()
+                comparer.compare()
             } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary.opacity(0.6))
+                Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
+            .help("Rescan")
+
+            Toggle("Recursive", isOn: Binding(
+                get: { comparer.recursive },
+                set: { comparer.recursive = $0; comparer.compare() }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.system(size: 11))
+            .help("Compare entire folder trees by relative path")
+
+            Button {
+                appState.folderSyncRoots = [comparer.dirA, comparer.dirB]
+            } label: {
+                Label("Sync\u{2026}", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11))
+            }
+            .help("Sync these two folders\u{2026}")
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(Color.primary.opacity(0.04))
     }
 
@@ -112,7 +134,8 @@ struct DirectoryCompareView: View {
                 headerTitle: comparer.dirA.lastPathComponent,
                 headerBadge: "A",
                 headerBadgeColor: .blue,
-                emptyMessage: "Nothing only in A",
+                emptyMessage: comparer.recursive ? "Every file in A exists in B" : "Nothing only in A",
+                subtitles: comparer.recursive ? subtitleMap(comparer.onlyInA) : nil,
                 onDeleted: { url in handleDeleted(url) },
                 onChanged: { comparer.compare() }
             )
@@ -123,12 +146,19 @@ struct DirectoryCompareView: View {
                 headerTitle: comparer.dirB.lastPathComponent,
                 headerBadge: "B",
                 headerBadgeColor: .purple,
-                emptyMessage: "Nothing only in B",
+                emptyMessage: comparer.recursive ? "Every file in B exists in A" : "Nothing only in B",
+                subtitles: comparer.recursive ? subtitleMap(comparer.onlyInB) : nil,
                 onDeleted: { url in handleDeleted(url) },
                 onChanged: { comparer.compare() }
             )
             .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Maps each entry's URL to its relative subpath for the panel's
+    /// secondary row label (recursive mode).
+    private func subtitleMap(_ entries: [DirectoryComparer.Entry]) -> [URL: String] {
+        Dictionary(entries.map { ($0.url, $0.relativePath) }, uniquingKeysWith: { a, _ in a })
     }
 
     private func handleDeleted(_ url: URL) {
@@ -139,27 +169,7 @@ struct DirectoryCompareView: View {
         comparer.remove(url)
     }
 
-    // MARK: - Footer
-
-    private var footer: some View {
-        HStack(spacing: 8) {
-            Button {
-                comparer.compare()
-            } label: {
-                Label("Rescan", systemImage: "arrow.clockwise")
-                    .font(.system(size: 11))
-            }
-            Spacer()
-            Text(summary)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .monospacedDigit()
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.defaultAction)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
+    // MARK: - Summary
 
     private var summary: String {
         "\(comparer.onlyInA.count) only in A \u{00B7} \(comparer.onlyInB.count) only in B"

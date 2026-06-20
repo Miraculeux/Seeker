@@ -114,61 +114,29 @@ class AppState {
     /// two directories: A (first) and B (second).
     var directoryCompareTargets: [URL]?
 
-    /// Opens the folder-compare window for two directories. Sources, in
-    /// priority order:
+    /// Non-nil when the Sync Folders window should open. Holds exactly two
+    /// directories: A (first) and B (second).
+    var folderSyncRoots: [URL]?
+
+    /// Resolves the (A, B) directory pair from the current selection /
+    /// panes, in priority order:
     ///   1. One selected sub-folder in each pane (left = A, right = B).
     ///   2. Two selected sub-folders in the active pane.
     ///   3. A single selected sub-folder in the active pane vs. the
     ///      inactive pane's current directory.
     ///   4. The active pane's directory as A and the inactive pane's as B.
-    /// Beeps if it can't resolve two distinct directories.
-    func openDirectoryCompare() {
+    /// Returns nil if it can't resolve two distinct directories.
+    func resolveDirectoryPair() -> (URL, URL)? {
         let activeSel = activeExplorer.effectiveSelection
             .filter { $0.isDirectory }.map(\.url)
         let inactiveSel = inactiveExplorer.effectiveSelection
             .filter { $0.isDirectory }.map(\.url)
 
-        // 1. One folder picked in each pane — the most intuitive case.
-        //    Order by physical side so left is always A, right is B.
+        let pair: (URL, URL)?
         if let first = activeSel.first, let second = inactiveSel.first {
             let leftURL = activePane == .left ? first : second
             let rightURL = activePane == .left ? second : first
-            setCompareTargets(leftURL, rightURL)
-            return
-        }
-        // 2. Two folders picked in the active pane.
-        if activeSel.count >= 2 {
-            setCompareTargets(activeSel[0], activeSel[1])
-            return
-        }
-        // 3. One folder picked in the active pane, compared against the
-        //    other pane's current directory.
-        if let only = activeSel.first, showDualPane {
-            setCompareTargets(only, inactiveExplorer.currentURL)
-            return
-        }
-        // 4. Fall back to the two panes' current directories.
-        guard showDualPane else { NSSound.beep(); return }
-        setCompareTargets(activeExplorer.currentURL, inactiveExplorer.currentURL)
-    }
-
-    /// Assigns the compare targets, beeping instead if the two resolve to
-    /// the same directory (nothing meaningful to diff).
-    private func setCompareTargets(_ a: URL, _ b: URL) {
-        guard a.standardizedFileURL != b.standardizedFileURL else { NSSound.beep(); return }
-        directoryCompareTargets = [a, b]
-    }
-
-    /// True when `openDirectoryCompare()` could resolve two distinct
-    /// directories to compare (drives the toolbar button's enabled
-    /// state). Mirrors the resolution order in `openDirectoryCompare()`.
-    var canCompareDirectories: Bool {
-        let activeSel = activeExplorer.effectiveSelection.filter { $0.isDirectory }.map(\.url)
-        let inactiveSel = inactiveExplorer.effectiveSelection.filter { $0.isDirectory }.map(\.url)
-
-        let pair: (URL, URL)?
-        if let first = activeSel.first, let second = inactiveSel.first {
-            pair = (first, second)
+            pair = (leftURL, rightURL)
         } else if activeSel.count >= 2 {
             pair = (activeSel[0], activeSel[1])
         } else if let only = activeSel.first, showDualPane {
@@ -178,8 +146,26 @@ class AppState {
         } else {
             pair = nil
         }
-        guard let (a, b) = pair else { return false }
-        return a.standardizedFileURL != b.standardizedFileURL
+        guard let (a, b) = pair, a.standardizedFileURL != b.standardizedFileURL else { return nil }
+        return (a, b)
+    }
+
+    /// Opens the folder-compare window for the resolved directory pair.
+    func openDirectoryCompare() {
+        guard let (a, b) = resolveDirectoryPair() else { NSSound.beep(); return }
+        directoryCompareTargets = [a, b]
+    }
+
+    /// Opens the folder-sync window for the resolved directory pair.
+    func openFolderSync() {
+        guard let (a, b) = resolveDirectoryPair() else { NSSound.beep(); return }
+        folderSyncRoots = [a, b]
+    }
+
+    /// True when `resolveDirectoryPair()` can produce a pair (drives the
+    /// Compare / Sync toolbar buttons' enabled state).
+    var canCompareDirectories: Bool {
+        resolveDirectoryPair() != nil
     }
 
     /// Opens the appropriate Metadata Editor for the active pane's effective
