@@ -635,6 +635,11 @@ struct SeekerApp: App {
                     }
                 }
 
+                Button("Batch Rename\u{2026}") {
+                    appState.openBatchRename()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
                 Divider()
 
                 Button("Copy to Other Pane") {

@@ -76,6 +76,17 @@ struct ContentView: View {
                 .environment(appState)
             }
         }
+        .sheet(isPresented: Binding(
+            get: { appState.batchRenameTargets != nil },
+            set: { if !$0 { appState.batchRenameTargets = nil } }
+        )) {
+            if let targets = appState.batchRenameTargets {
+                BatchRenameView(urls: targets) { _ in
+                    appState.activeExplorer.loadFiles()
+                    NotificationCenter.default.post(name: .filesDidChange, object: nil)
+                }
+            }
+        }
         .onChange(of: appState.duplicateFinderRoots) { _, newValue in
             // The duplicate finder lives in its own window so the main
             // window stays interactive while the user reviews matches.
@@ -124,92 +135,118 @@ struct ContentView: View {
 
             Spacer()
 
-            // Center group: file operations
-            HStack(spacing: 2) {
-                ToolbarBtn(icon: "doc.on.doc", tip: "Copy to Other Pane (F5)") {
-                    appState.copyToOtherPane()
+            // Center groups: file ops, pane transfer, analysis, view
+            HStack(spacing: 8) {
+                // Group 4: general file operations
+                HStack(spacing: 2) {
+                    ToolbarBtn(icon: "folder.badge.plus", tip: "New Folder") {
+                        appState.activeExplorer.createNewFolder()
+                    }
+
+                    ToolbarBtn(icon: "doc.badge.plus", tip: "New File") {
+                        appState.activeExplorer.createNewFile()
+                    }
+
+                    FavoriteToolbarBtn(appState: appState)
+
+                    ToolbarBtn(icon: "terminal", tip: "Open Terminal") {
+                        SystemTerminal.open(at: appState.activeExplorer.currentURL)
+                    }
+
+                    ToolbarBtn(
+                        icon: "info.circle",
+                        tip: "Edit Metadata (\u{2318}I)"
+                    ) {
+                        appState.openMetadataEditor()
+                    }
+                    .disabled(!appState.activeExplorer.hasEditableMetadataSelection)
+                    .keyboardShortcut("i", modifiers: .command)
+
+                    ToolbarBtn(
+                        icon: "character.cursor.ibeam",
+                        tip: "Batch Rename (\u{2318}\u{21E7}R)"
+                    ) {
+                        appState.openBatchRename()
+                    }
+                    .disabled(!appState.activeExplorer.hasSelection)
+
+                    ShareToolbarBtn(appState: appState)
+
+                    ToolbarBtn(icon: "trash", tip: "Delete") {
+                        appState.activeExplorer.trashSelected()
+                    }
+                    .disabled(!appState.activeExplorer.hasSelection)
                 }
-                .disabled(!appState.showDualPane)
+                .padding(3)
+                .background(Color.primary.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-                ToolbarBtn(icon: "arrow.right.doc.on.clipboard", tip: "Move to Other Pane (F6)") {
-                    appState.moveToOtherPane()
+                // Group 1: pane transfer
+                HStack(spacing: 2) {
+                    ToolbarBtn(icon: "doc.on.doc", tip: "Copy to Other Pane (F5)") {
+                        appState.copyToOtherPane()
+                    }
+                    .disabled(!appState.showDualPane || !appState.activeExplorer.hasSelection)
+
+                    ToolbarBtn(icon: "arrow.right.doc.on.clipboard", tip: "Move to Other Pane (F6)") {
+                        appState.moveToOtherPane()
+                    }
+                    .disabled(!appState.showDualPane || !appState.activeExplorer.hasSelection)
+
+                    ToolbarBtn(icon: "arrow.left.arrow.right", tip: "Swap Panes") {
+                        appState.swapPanes()
+                    }
                 }
-                .disabled(!appState.showDualPane)
+                .padding(3)
+                .background(Color.primary.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-                ToolbarBtn(icon: "folder.badge.plus", tip: "New Folder") {
-                    appState.activeExplorer.createNewFolder()
+                // Group 2: duplicates + compare
+                HStack(spacing: 2) {
+                    ToolbarBtn(
+                        icon: "doc.on.doc",
+                        tip: "Find Duplicates (\u{2318}\u{21E7}D)"
+                    ) {
+                        appState.openDuplicateFinder()
+                    }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                    ToolbarBtn(
+                        icon: "doc.on.doc.fill",
+                        tip: "Find Duplicates Across Panes (\u{2318}\u{2325}D)"
+                    ) {
+                        appState.openDuplicateFinderAcrossPanes()
+                    }
+                    .disabled(!appState.showDualPane)
+                    .keyboardShortcut("d", modifiers: [.command, .option])
+
+                    ToolbarBtn(
+                        icon: "arrow.left.arrow.right.square",
+                        tip: "Compare Folders (\u{2318}\u{21E7}K)"
+                    ) {
+                        appState.openDirectoryCompare()
+                    }
+                    .disabled(!appState.canCompareDirectories)
+                    .keyboardShortcut("k", modifiers: [.command, .shift])
                 }
+                .padding(3)
+                .background(Color.primary.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
-                ToolbarBtn(icon: "doc.badge.plus", tip: "New File") {
-                    appState.activeExplorer.createNewFile()
+                // Group 3: view toggles
+                HStack(spacing: 2) {
+                    ToolbarBtn(icon: "rectangle.split.2x1", isActive: appState.showDualPane, tip: "Dual Pane") {
+                        withAnimation(.easeInOut(duration: 0.15)) { appState.showDualPane.toggle() }
+                    }
+
+                    ToolbarBtn(icon: "sidebar.right", isActive: appState.showInfoPanel, tip: "Info Panel") {
+                        withAnimation(.easeInOut(duration: 0.15)) { appState.showInfoPanel.toggle() }
+                    }
                 }
-
-                ToolbarBtn(icon: "trash", tip: "Delete") {
-                    appState.activeExplorer.trashSelected()
-                }
-
-                FavoriteToolbarBtn(appState: appState)
-
-                ToolbarBtn(icon: "terminal", tip: "Open Terminal") {
-                    SystemTerminal.open(at: appState.activeExplorer.currentURL)
-                }
-
-                ToolbarBtn(
-                    icon: "info.circle",
-                    tip: "Edit Metadata (\u{2318}I)"
-                ) {
-                    appState.openMetadataEditor()
-                }
-                .disabled(!appState.activeExplorer.hasEditableMetadataSelection)
-                .keyboardShortcut("i", modifiers: .command)
-
-                ShareToolbarBtn(appState: appState)
-
-                ToolbarBtn(
-                    icon: "doc.on.doc",
-                    tip: "Find Duplicates (\u{2318}\u{21E7}D)"
-                ) {
-                    appState.openDuplicateFinder()
-                }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
-
-                ToolbarBtn(
-                    icon: "doc.on.doc.fill",
-                    tip: "Find Duplicates Across Panes (\u{2318}\u{2325}D)"
-                ) {
-                    appState.openDuplicateFinderAcrossPanes()
-                }
-                .disabled(!appState.showDualPane)
-                .keyboardShortcut("d", modifiers: [.command, .option])
-
-                ToolbarBtn(
-                    icon: "arrow.left.arrow.right.square",
-                    tip: "Compare Folders (\u{2318}\u{21E7}K)"
-                ) {
-                    appState.openDirectoryCompare()
-                }
-                .keyboardShortcut("k", modifiers: [.command, .shift])
-
-                ToolbarSep()
-
-                ToolbarBtn(icon: "rectangle.split.2x1", isActive: appState.showDualPane, tip: "Dual Pane") {
-                    withAnimation(.easeInOut(duration: 0.15)) { appState.showDualPane.toggle() }
-                }
-
-                ToolbarBtn(icon: "arrow.left.arrow.right", tip: "Swap Panes") {
-                    appState.swapPanes()
-                }
-                .disabled(!appState.showDualPane)
-
-                ToolbarSep()
-
-                ToolbarBtn(icon: "sidebar.right", isActive: appState.showInfoPanel, tip: "Info Panel") {
-                    withAnimation(.easeInOut(duration: 0.15)) { appState.showInfoPanel.toggle() }
-                }
+                .padding(3)
+                .background(Color.primary.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             }
-            .padding(3)
-            .background(Color.primary.opacity(0.04))
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
 
             Spacer()
 
@@ -243,22 +280,29 @@ struct ToolbarBtn: View {
     let tip: String
     let action: () -> Void
     @State private var hovering = false
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(isActive ? .accentColor : (hovering ? .primary : .secondary))
+                .foregroundColor(iconColor)
                 .frame(width: 28, height: 24)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isActive ? Color.accentColor.opacity(0.15) : (hovering ? Color.primary.opacity(0.06) : Color.clear))
+                        .fill(isActive ? Color.accentColor.opacity(0.15) : (hovering && isEnabled ? Color.primary.opacity(0.06) : Color.clear))
                 )
         }
         .buttonStyle(.borderless)
         .help(tip)
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.1), value: hovering)
+    }
+
+    private var iconColor: Color {
+        if !isEnabled { return .secondary.opacity(0.25) }
+        if isActive { return .accentColor }
+        return hovering ? .primary : .secondary
     }
 }
 

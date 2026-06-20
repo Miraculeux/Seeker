@@ -1207,6 +1207,14 @@ class FileExplorerViewModel: Identifiable {
         return []
     }
 
+    /// True when at least one file is selected (multi-selection set is
+    /// non-empty, or there's a single focused selection). Toolbar
+    /// predicates read this every body invocation, so it avoids the
+    /// `effectiveSelection` array allocation.
+    var hasSelection: Bool {
+        !selectedFileIDs.isEmpty || selectedFile != nil
+    }
+
     /// O(1) for the selection-empty case, otherwise scans the cached
     /// `selectedFiles` set. Toolbar predicates read this every body
     /// invocation so it intentionally avoids the `Array(selectedFiles)`

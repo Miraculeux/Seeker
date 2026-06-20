@@ -30,6 +30,11 @@ struct TriageExplorerPanel: View {
     var emptyMessage: String = "Empty folder"
     /// Invoked after a file is successfully moved to the Trash.
     var onDeleted: ((URL) -> Void)? = nil
+    /// Invoked after an operation that may have changed the set of files
+    /// beyond simple deletion (e.g. a batch rename), so a fixed-list host
+    /// can re-derive its contents. No-op in browse mode (the panel
+    /// reloads its own directory).
+    var onChanged: (() -> Void)? = nil
 
     @State private var vm = FileExplorerViewModel()
     /// Cached `FileItem`s for fixed-list mode (rebuilt when `fixedURLs`
@@ -44,6 +49,8 @@ struct TriageExplorerPanel: View {
     @State private var anchorURL: URL?
     @State private var previewURL: URL?
     @State private var showPreview = false
+    /// Drives the batch-rename sheet.
+    @State private var showRename = false
     /// Drives keyboard focus so the list can receive Space / ⌘⌫ key
     /// presses (standard Finder shortcuts).
     @FocusState private var listFocused: Bool
@@ -133,6 +140,11 @@ struct TriageExplorerPanel: View {
             // Return focus to the list when Quick Look closes so Space
             // can re-open it without an extra click.
             if !isShowing { DispatchQueue.main.async { listFocused = true } }
+        }
+        .sheet(isPresented: $showRename) {
+            BatchRenameView(urls: activeURLs) { renamed in
+                applyRenamed(renamed)
+            }
         }
     }
 
@@ -278,6 +290,24 @@ struct TriageExplorerPanel: View {
                 // change; the destination refreshes via the op manager.
             }
         }
+    }
+
+    /// Applies the result of a batch rename: refresh the listing and move
+    /// the selection onto the renamed files.
+    private func applyRenamed(_ renamed: [(from: URL, to: URL)]) {
+        guard !renamed.isEmpty else { return }
+        let newSelection = Set(renamed.map { $0.to })
+        if isFixed {
+            // Let the host re-derive its file set (names changed, which
+            // may also change A/B uniqueness in the compare window).
+            onChanged?()
+        } else {
+            vm.loadFiles()
+        }
+        selection = newSelection
+        anchorURL = renamed.first?.to
+        NotificationCenter.default.post(name: .filesDidChange, object: nil)
+        DispatchQueue.main.async { listFocused = true }
     }
 
     // MARK: - Headers
@@ -448,14 +478,15 @@ struct TriageExplorerPanel: View {
     // MARK: - Actions
 
     private var actionBar: some View {
-        HStack(spacing: 4) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 2) {
             // Space → Quick Look. Standard macOS Finder behaviour.
             Button {
                 previewActive()
             } label: {
                 Image(systemName: "eye")
                     .font(.system(size: 12))
-                    .frame(width: 24, height: 20)
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.borderless)
             .disabled(primaryURL == nil)
@@ -466,7 +497,7 @@ struct TriageExplorerPanel: View {
             } label: {
                 Image(systemName: "arrow.up.forward.app")
                     .font(.system(size: 12))
-                    .frame(width: 24, height: 20)
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.borderless)
             .disabled(primaryURL == nil)
@@ -478,7 +509,7 @@ struct TriageExplorerPanel: View {
             } label: {
                 Image(systemName: "macwindow")
                     .font(.system(size: 12))
-                    .frame(width: 24, height: 20)
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.borderless)
             .disabled(activeURLs.isEmpty)
@@ -489,7 +520,7 @@ struct TriageExplorerPanel: View {
             } label: {
                 Image(systemName: "doc.on.doc")
                     .font(.system(size: 12))
-                    .frame(width: 24, height: 20)
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.borderless)
             .disabled(activeURLs.isEmpty)
@@ -500,11 +531,22 @@ struct TriageExplorerPanel: View {
             } label: {
                 Image(systemName: "arrow.right.doc.on.clipboard")
                     .font(.system(size: 12))
-                    .frame(width: 24, height: 20)
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.borderless)
             .disabled(activeURLs.isEmpty)
             .help("Move to a folder\u{2026}")
+
+            Button {
+                showRename = true
+            } label: {
+                Image(systemName: "character.cursor.ibeam")
+                    .font(.system(size: 12))
+                    .frame(width: 22, height: 20)
+            }
+            .buttonStyle(.borderless)
+            .disabled(activeURLs.isEmpty)
+            .help("Batch rename\u{2026}")
 
             // ⌘⌫ → move to Trash. Standard macOS Finder behaviour.
             Button(role: .destructive) {
@@ -512,13 +554,11 @@ struct TriageExplorerPanel: View {
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 12))
-                    .frame(width: 24, height: 20)
+                    .frame(width: 22, height: 20)
             }
             .buttonStyle(.borderless)
             .disabled(activeURLs.isEmpty)
             .help("Move to Trash (\u{2318}\u{232B})")
-
-            Spacer(minLength: 4)
 
             if activeURLs.count > 1 {
                 Text("\(activeURLs.count) selected")
@@ -526,10 +566,12 @@ struct TriageExplorerPanel: View {
                     .foregroundColor(.secondary)
                     .monospacedDigit()
                     .fixedSize()
+                    .padding(.leading, 4)
             }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
         .background(Color.primary.opacity(0.02))
     }
 }

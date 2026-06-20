@@ -113,7 +113,8 @@ struct DirectoryCompareView: View {
                 headerBadge: "A",
                 headerBadgeColor: .blue,
                 emptyMessage: "Nothing only in A",
-                onDeleted: { url in handleDeleted(url) }
+                onDeleted: { url in handleDeleted(url) },
+                onChanged: { comparer.compare() }
             )
             .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
 
@@ -123,7 +124,8 @@ struct DirectoryCompareView: View {
                 headerBadge: "B",
                 headerBadgeColor: .purple,
                 emptyMessage: "Nothing only in B",
-                onDeleted: { url in handleDeleted(url) }
+                onDeleted: { url in handleDeleted(url) },
+                onChanged: { comparer.compare() }
             )
             .frame(minWidth: 320, idealWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
         }

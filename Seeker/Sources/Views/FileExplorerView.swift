@@ -489,7 +489,13 @@ struct FileContentView: View {
             Divider()
         }
 
-        Button("Rename…") { viewModel.beginRename(file) }
+        Button(viewModel.effectiveSelection.count > 1 ? "Batch Rename…" : "Rename…") {
+            if viewModel.effectiveSelection.count > 1 {
+                appState.openBatchRename()
+            } else {
+                viewModel.beginRename(file)
+            }
+        }
         Button("Move to Trash") { viewModel.trashSelected() }
 
         Divider()

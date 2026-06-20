@@ -44,6 +44,20 @@ class AppState {
     /// URLs of the media file(s) being edited.
     var mediaMetadataEditorTargets: [URL]?
 
+    /// Non-nil when the Batch Rename sheet is open. Holds the URLs of the
+    /// files being renamed.
+    var batchRenameTargets: [URL]?
+
+    /// Opens the Batch Rename sheet for the active pane's selection (or
+    /// all files in the current directory if nothing is selected).
+    func openBatchRename() {
+        let active = activeExplorer
+        let selected = active.effectiveSelection.map(\.url)
+        let targets = selected.isEmpty ? active.files.map(\.url) : selected
+        guard !targets.isEmpty else { NSSound.beep(); return }
+        batchRenameTargets = targets
+    }
+
     /// Non-nil when the Find Duplicates sheet is open. Holds the root
     /// directories under which the duplicate scan should run. Multiple
     /// roots are scanned as one pool, so duplicates spanning separate
@@ -128,6 +142,29 @@ class AppState {
     private func setCompareTargets(_ a: URL, _ b: URL) {
         guard a.standardizedFileURL != b.standardizedFileURL else { NSSound.beep(); return }
         directoryCompareTargets = [a, b]
+    }
+
+    /// True when `openDirectoryCompare()` could resolve two distinct
+    /// directories to compare (drives the toolbar button's enabled
+    /// state). Mirrors the resolution order in `openDirectoryCompare()`.
+    var canCompareDirectories: Bool {
+        let activeSel = activeExplorer.effectiveSelection.filter { $0.isDirectory }.map(\.url)
+        let inactiveSel = inactiveExplorer.effectiveSelection.filter { $0.isDirectory }.map(\.url)
+
+        let pair: (URL, URL)?
+        if let first = activeSel.first, let second = inactiveSel.first {
+            pair = (first, second)
+        } else if activeSel.count >= 2 {
+            pair = (activeSel[0], activeSel[1])
+        } else if let only = activeSel.first, showDualPane {
+            pair = (only, inactiveExplorer.currentURL)
+        } else if showDualPane {
+            pair = (activeExplorer.currentURL, inactiveExplorer.currentURL)
+        } else {
+            pair = nil
+        }
+        guard let (a, b) = pair else { return false }
+        return a.standardizedFileURL != b.standardizedFileURL
     }
 
     /// Opens the appropriate Metadata Editor for the active pane's effective
