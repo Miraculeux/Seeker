@@ -1084,6 +1084,56 @@ class FileExplorerViewModel: Identifiable {
         notifyFilesChanged()
     }
 
+    /// Permanently deletes the effective selection, bypassing the Trash.
+    /// This cannot be undone, so it always asks for confirmation first.
+    func deleteSelectedPermanently() {
+        let items = effectiveSelection
+        guard !items.isEmpty else { return }
+
+        let alert = NSAlert()
+        if items.count == 1 {
+            alert.messageText = "Permanently delete \u{201C}\(items[0].name)\u{201D}?"
+        } else {
+            alert.messageText = "Permanently delete \(items.count) items?"
+        }
+        alert.informativeText = "\(items.count == 1 ? "This item" : "These items") will be deleted immediately. You can't undo this action."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Pick the file to select afterwards (same logic as trashSelected).
+        let deletedIDs = Set(items.map(\.id))
+        let nextNeighborURL: URL? = {
+            guard let lastIdx = files.lastIndex(where: { deletedIDs.contains($0.id) }) else { return nil }
+            if let next = files[(lastIdx + 1)...].first(where: { !deletedIDs.contains($0.id) }) {
+                return next.url
+            }
+            guard let firstIdx = files.firstIndex(where: { deletedIDs.contains($0.id) }) else { return nil }
+            if let prev = files[..<firstIdx].last(where: { !deletedIDs.contains($0.id) }) {
+                return prev.url
+            }
+            return nil
+        }()
+
+        let fm = FileManager.default
+        for item in items {
+            do {
+                try fm.removeItem(at: item.url)
+            } catch {
+                showFileError("Could not delete: \(error.localizedDescription)")
+                break
+            }
+        }
+        selectionAnchor = nil
+        selectedFileIDs = []
+        if let neighbor = nextNeighborURL {
+            pendingSelectionURL = neighbor
+        }
+        loadFiles()
+        notifyFilesChanged()
+    }
+
     func moveSelectedTo(destination: URL) {
         let items = effectiveSelection
         guard !items.isEmpty else { return }

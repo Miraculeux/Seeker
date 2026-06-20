@@ -497,6 +497,7 @@ struct FileContentView: View {
             }
         }
         Button("Move to Trash") { viewModel.trashSelected() }
+        Button("Delete Immediately…") { viewModel.deleteSelectedPermanently() }
 
         Divider()
 

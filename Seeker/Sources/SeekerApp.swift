@@ -647,6 +647,16 @@ struct SeekerApp: App {
                 }
                 .shortcut(for: .moveToTrash)
 
+                Button("Delete Immediately\u{2026}") {
+                    // Permanent delete bypasses the Trash. Only meaningful
+                    // for the main window; ignore when a helper window
+                    // (which only trashes) is key.
+                    if !AppDelegate.isHelperWindow(NSApp.keyWindow) {
+                        appState.activeExplorer.deleteSelectedPermanently()
+                    }
+                }
+                .keyboardShortcut(.delete, modifiers: [.command, .option])
+
                 Button("Rename") {
                     if let file = appState.activeExplorer.selectedFile {
                         appState.activeExplorer.beginRename(file)
