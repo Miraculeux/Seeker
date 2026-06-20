@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import AppKit
 
 @MainActor @Observable
 class FileOperation: Identifiable {
@@ -17,10 +18,20 @@ class FileOperation: Identifiable {
     var isCancelled: Bool = false
     var error: String?
     var completedDestinations: [URL] = []
+    /// Resolved per-source destination + whether the existing item there
+    /// should be replaced. Populated by the conflict-resolution step;
+    /// when empty, the manager falls back to auto-renaming.
+    var plan: [PlannedItem] = []
     /// Whether `cleanupFinished` has already scheduled an auto-dismiss task
     /// for this operation's error. Prevents stacking sleeps if cleanup runs
     /// multiple times.
     var dismissalScheduled: Bool = false
+
+    struct PlannedItem {
+        let source: URL
+        let destination: URL
+        let replace: Bool
+    }
 
     enum Kind: String {
         case copy = "Copying"
@@ -93,7 +104,10 @@ class FileOperationManager {
     }
 
     func startCopy(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
-        let op = FileOperation(kind: .copy, sourceURLs: sources, destinationDir: destination)
+        guard let plan = resolveConflicts(sources: sources, destination: destination, kind: .copy),
+              !plan.isEmpty else { return }
+        let op = FileOperation(kind: .copy, sourceURLs: plan.map(\.source), destinationDir: destination)
+        op.plan = plan
         operations.append(op)
         Task {
             await performOperation(op)
@@ -103,12 +117,95 @@ class FileOperationManager {
     }
 
     func startMove(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
-        let op = FileOperation(kind: .move, sourceURLs: sources, destinationDir: destination)
+        guard let plan = resolveConflicts(sources: sources, destination: destination, kind: .move),
+              !plan.isEmpty else { return }
+        let op = FileOperation(kind: .move, sourceURLs: plan.map(\.source), destinationDir: destination)
+        op.plan = plan
         operations.append(op)
         Task {
             await performOperation(op)
             onComplete(op)
             cleanupFinished()
+        }
+    }
+
+    // MARK: - Conflict resolution
+
+    private enum ConflictChoice { case replace, keepBoth, skip, cancel }
+
+    /// Builds the per-source execution plan, prompting the user for any
+    /// destination name collisions. Returns `nil` if the user cancels the
+    /// whole operation. Finder-style rule: pasting/copying an item into
+    /// its own parent directory auto-keeps-both without a prompt; moving an
+    /// item into the folder it already lives in is silently skipped.
+    private func resolveConflicts(sources: [URL], destination: URL, kind: FileOperation.Kind) -> [FileOperation.PlannedItem]? {
+        let fm = FileManager.default
+        let destStd = destination.standardizedFileURL.path
+        var plan: [FileOperation.PlannedItem] = []
+        var applyToAll: ConflictChoice?
+
+        for source in sources {
+            let target = destination.appendingPathComponent(source.lastPathComponent)
+            let sameDir = source.deletingLastPathComponent().standardizedFileURL.path == destStd
+
+            guard fm.fileExists(atPath: target.path) else {
+                plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: false))
+                continue
+            }
+
+            // Item already in the destination folder.
+            if sameDir {
+                if kind == .move {
+                    continue // already where it'd go — nothing to do
+                }
+                // Copy in place → duplicate with a unique name (Finder).
+                plan.append(FileOperation.PlannedItem(source: source, destination: uniqueDestination(for: source, in: destination), replace: false))
+                continue
+            }
+
+            let choice = applyToAll ?? promptConflict(name: source.lastPathComponent, kind: kind, hasMore: source != sources.last)
+            switch choice {
+            case .cancel:
+                return nil
+            case .skip:
+                continue
+            case .replace:
+                plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: true))
+            case .keepBoth:
+                plan.append(FileOperation.PlannedItem(source: source, destination: uniqueDestination(for: source, in: destination), replace: false))
+            }
+            // The prompt sets applyToAll via the suppression button.
+            if applyToAll == nil, lastPromptApplyToAll {
+                applyToAll = choice
+            }
+        }
+        return plan
+    }
+
+    /// Set by `promptConflict` to communicate the "Apply to all" checkbox.
+    private var lastPromptApplyToAll = false
+
+    private func promptConflict(name: String, kind: FileOperation.Kind, hasMore: Bool) -> ConflictChoice {
+        let alert = NSAlert()
+        alert.messageText = "An item named \u{201C}\(name)\u{201D} already exists in this location."
+        alert.informativeText = "Do you want to replace it with the one you're \(kind == .move ? "moving" : "copying")?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Replace")     // .alertFirstButtonReturn
+        alert.addButton(withTitle: "Keep Both")   // .alertSecondButtonReturn
+        alert.addButton(withTitle: "Skip")        // .alertThirdButtonReturn
+        let cancelButton = alert.addButton(withTitle: "Cancel")
+        cancelButton.keyEquivalent = "\u{1b}"     // Esc
+        if hasMore {
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "Apply to all"
+        }
+        let response = alert.runModal()
+        lastPromptApplyToAll = alert.suppressionButton?.state == .on
+        switch response {
+        case .alertFirstButtonReturn: return .replace
+        case .alertSecondButtonReturn: return .keepBoth
+        case .alertThirdButtonReturn: return .skip
+        default: return .cancel
         }
     }
 
@@ -125,11 +222,20 @@ class FileOperationManager {
         op.totalBytes = sizeMap.values.reduce(0, +)
         op.startTime = .now
 
-        for sourceURL in op.sourceURLs {
+        for item in op.plan {
             guard !op.isCancelled else { break }
 
-            let destURL = uniqueDestination(for: sourceURL, in: op.destinationDir)
+            let sourceURL = item.source
+            let destURL = item.destination
             op.currentFile = sourceURL.lastPathComponent
+
+            // For an explicit "Replace", remove the existing destination
+            // first so move/copy land on a clean path.
+            if item.replace {
+                try? await Task.detached(priority: .userInitiated) {
+                    try FileManager.default.removeItem(at: destURL)
+                }.value
+            }
 
             do {
                 if op.kind == .move {

@@ -104,6 +104,12 @@ struct ContentView: View {
                 appState.directoryCompareTargets = nil
             }
         }
+        .onChange(of: appState.fileSearchRoot) { _, newValue in
+            if let root = newValue {
+                openWindow(id: "file-search", value: root)
+                appState.fileSearchRoot = nil
+            }
+        }
     }
 
 // MARK: - Modern Toolbar
@@ -203,6 +209,14 @@ struct ContentView: View {
 
                 // Group 2: duplicates + compare
                 HStack(spacing: 2) {
+                    ToolbarBtn(
+                        icon: "magnifyingglass",
+                        tip: "Search (\u{2318}F)"
+                    ) {
+                        appState.openSearch()
+                    }
+                    .keyboardShortcut("f", modifiers: .command)
+
                     ToolbarBtn(
                         icon: "doc.on.doc",
                         tip: "Find Duplicates (\u{2318}\u{21E7}D)"

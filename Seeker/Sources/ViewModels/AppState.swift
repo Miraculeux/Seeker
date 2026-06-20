@@ -58,6 +58,21 @@ class AppState {
         batchRenameTargets = targets
     }
 
+    /// Non-nil when the recursive Search window should open. Holds the
+    /// directory to search under.
+    var fileSearchRoot: URL?
+
+    /// Opens the recursive search window rooted at the active pane's
+    /// current directory (or a single selected sub-folder if there is one).
+    func openSearch() {
+        let active = activeExplorer
+        if let dir = active.effectiveSelection.first(where: { $0.isDirectory })?.url {
+            fileSearchRoot = dir
+        } else {
+            fileSearchRoot = active.currentURL
+        }
+    }
+
     /// Non-nil when the Find Duplicates sheet is open. Holds the root
     /// directories under which the duplicate scan should run. Multiple
     /// roots are scanned as one pool, so duplicates spanning separate

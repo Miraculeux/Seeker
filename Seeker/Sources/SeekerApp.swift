@@ -529,6 +529,15 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+
+        // Standalone recursive search window.
+        WindowGroup("Search", id: "file-search", for: URL.self) { $root in
+            if let root {
+                FileSearchView(root: root)
+                    .environment(appState)
+            }
+        }
+        .windowResizability(.contentMinSize)
         .commands {
             // MARK: - View Menu
             CommandGroup(after: .sidebar) {
