@@ -208,6 +208,7 @@ struct ContentView: View {
                     ToolbarBtn(icon: "arrow.left.arrow.right", tip: "Swap Panes") {
                         appState.swapPanes()
                     }
+                    .disabled(!appState.showDualPane)
                 }
                 .padding(3)
                 .background(Color.primary.opacity(0.04))

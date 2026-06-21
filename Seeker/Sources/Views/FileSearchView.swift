@@ -44,6 +44,12 @@ struct FileSearchView: View {
         }
         .frame(minWidth: 620, idealWidth: 760, maxWidth: .infinity,
                minHeight: 460, idealHeight: 600, maxHeight: .infinity)
+        .background(
+            // Esc closes the window regardless of which control is focused.
+            Button("") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+                .hidden()
+        )
         .onAppear { DispatchQueue.main.async { queryFocused = true } }
         .sheet(isPresented: $showPreview) {
             if let url = previewURL {
