@@ -180,6 +180,13 @@ struct FolderSyncView: View {
             .disabled(isBusy)
 
             if case .syncing = syncer.status {
+                Button {
+                    syncer.togglePause()
+                } label: {
+                    Label(syncer.isPaused ? "Resume" : "Pause",
+                          systemImage: syncer.isPaused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 11))
+                }
                 Button("Stop") { syncer.cancel() }
             }
 

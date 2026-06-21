@@ -26,6 +26,11 @@ class FileOperation: Identifiable {
     /// for this operation's error. Prevents stacking sleeps if cleanup runs
     /// multiple times.
     var dismissalScheduled: Bool = false
+    /// True while this operation is waiting its turn in the serial queue.
+    var isQueued: Bool = true
+    /// Completion handler invoked on the main actor when the operation
+    /// finishes. Stored so the queue pump can call it.
+    @ObservationIgnored var onComplete: (@MainActor (FileOperation) -> Void)?
 
     struct PlannedItem {
         let source: URL
@@ -95,6 +100,19 @@ class FileOperationManager {
     static let shared = FileOperationManager()
     var operations: [FileOperation] = []
 
+    /// When true, in-flight transfers pause between files / chunks and the
+    /// queue stops starting new operations until resumed.
+    var isPaused = false
+
+    /// Soft throughput cap for chunked copies, in bytes/second. `nil` is
+    /// unlimited. Same-volume APFS clones and moves are not throttled.
+    var throttleBytesPerSecond: Int64?
+
+    /// Destination volumes with an operation currently transferring. The
+    /// queue runs operations to the **same** volume serially (avoids disk
+    /// contention) while letting **different** volumes run in parallel.
+    private var busyVolumes: Set<String> = []
+
     var activeOperations: [FileOperation] {
         operations.filter { !$0.isFinished && !$0.isCancelled }
     }
@@ -103,17 +121,23 @@ class FileOperationManager {
         !activeOperations.isEmpty
     }
 
+    /// The operation currently transferring (not just queued), if any.
+    var runningOperation: FileOperation? {
+        operations.first { !$0.isQueued && !$0.isFinished && !$0.isCancelled }
+    }
+
+    var queuedCount: Int {
+        operations.filter { $0.isQueued && !$0.isCancelled && !$0.isFinished }.count
+    }
+
     func startCopy(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
         guard let plan = resolveConflicts(sources: sources, destination: destination, kind: .copy),
               !plan.isEmpty else { return }
         let op = FileOperation(kind: .copy, sourceURLs: plan.map(\.source), destinationDir: destination)
         op.plan = plan
+        op.onComplete = onComplete
         operations.append(op)
-        Task {
-            await performOperation(op)
-            onComplete(op)
-            cleanupFinished()
-        }
+        pump()
     }
 
     func startMove(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
@@ -121,11 +145,48 @@ class FileOperationManager {
               !plan.isEmpty else { return }
         let op = FileOperation(kind: .move, sourceURLs: plan.map(\.source), destinationDir: destination)
         op.plan = plan
+        op.onComplete = onComplete
         operations.append(op)
-        Task {
-            await performOperation(op)
-            onComplete(op)
-            cleanupFinished()
+        pump()
+    }
+
+    // MARK: - Queue pump
+
+    /// Starts every queued operation whose destination volume is idle.
+    /// Operations targeting the same volume run serially (less disk
+    /// contention); operations on different volumes run concurrently.
+    private func pump() {
+        // Drop operations cancelled while still waiting in the queue.
+        operations.removeAll { $0.isCancelled && $0.isQueued }
+        for op in operations where op.isQueued && !op.isCancelled && !op.isFinished {
+            let vol = Self.volumeKey(for: op.destinationDir)
+            if busyVolumes.contains(vol) { continue }
+            busyVolumes.insert(vol)
+            op.isQueued = false
+            Task {
+                await performOperation(op)
+                op.onComplete?(op)
+                cleanupFinished()
+                busyVolumes.remove(vol)
+                pump()
+            }
+        }
+    }
+
+    /// Identifies the volume a URL lives on (its mount-point path) so the
+    /// queue can serialise per-volume. Falls back to the root volume.
+    private nonisolated static func volumeKey(for url: URL) -> String {
+        let v = try? url.resourceValues(forKeys: [.volumeURLKey])
+        return v?.volume?.path ?? "/"
+    }
+
+    func togglePause() { isPaused.toggle() }
+
+    /// Blocks while the queue is globally paused (and the op isn't
+    /// cancelled). Called between files and between copy chunks.
+    func waitWhilePaused(_ op: FileOperation) async {
+        while isPaused && !op.isCancelled {
+            try? await Task.sleep(for: .milliseconds(200))
         }
     }
 
@@ -224,6 +285,8 @@ class FileOperationManager {
 
         for item in op.plan {
             guard !op.isCancelled else { break }
+            await waitWhilePaused(op)
+            guard !op.isCancelled else { break }
 
             let sourceURL = item.source
             let destURL = item.destination
@@ -295,6 +358,8 @@ class FileOperationManager {
 
         for (src, dst, size) in manifest {
             guard !operation.isCancelled else { throw CancellationError() }
+            await FileOperationManager.shared.waitWhilePaused(operation)
+            guard !operation.isCancelled else { throw CancellationError() }
             operation.currentFile = src.lastPathComponent
 
             try await Task.detached(priority: .userInitiated) {
@@ -338,7 +403,10 @@ class FileOperationManager {
                         cancelled = true
                         break
                     }
+                    // Honor a global pause mid-file.
+                    await FileOperationManager.shared.waitWhilePaused(operation)
 
+                    let chunkStart = ContinuousClock.now
                     guard let data = try readHandle.read(upToCount: chunkSize),
                           !data.isEmpty else { break }
                     try writeHandle.write(contentsOf: data)
@@ -351,6 +419,18 @@ class FileOperationManager {
                         pendingBytes = 0
                         lastUpdate = now
                         await MainActor.run { operation.copiedBytes += bytes }
+                    }
+
+                    // Throttle: sleep so this chunk takes ~bytes/limit time.
+                    if let limit = await MainActor.run(body: { FileOperationManager.shared.throttleBytesPerSecond }),
+                       limit > 0 {
+                        let target = Double(data.count) / Double(limit)
+                        let elapsed = Double((ContinuousClock.now - chunkStart).components.seconds)
+                            + Double((ContinuousClock.now - chunkStart).components.attoseconds) / 1e18
+                        let remaining = target - elapsed
+                        if remaining > 0 {
+                            try? await Task.sleep(for: .seconds(remaining))
+                        }
                     }
                 }
 

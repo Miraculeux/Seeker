@@ -75,8 +75,13 @@ final class FolderSyncer {
 
     var status: Status = .idle
     var actions: [Action] = []
+    /// When true, in-flight sync actions pause before the next file.
+    var isPaused = false
 
     private var currentTask: Task<Void, Never>?
+    /// Completed-action counter, mutated on the main actor as each volume
+    /// group reports progress.
+    private var completedCount = 0
 
     init(rootA: URL, rootB: URL) {
         self.rootA = rootA
@@ -93,6 +98,24 @@ final class FolderSyncer {
         currentTask?.cancel()
         currentTask = nil
         status = .cancelled
+    }
+
+    func togglePause() { isPaused.toggle() }
+
+    /// Blocks while paused (with a cancellation escape). Called before
+    /// each action inside a volume group.
+    func waitWhilePaused() async {
+        while isPaused {
+            if Task.isCancelled { return }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+
+    private func bumpProgress(total: Int) {
+        completedCount += 1
+        if case .syncing = status {
+            status = .syncing(done: completedCount, total: total)
+        }
     }
 
     // MARK: - Analyze
@@ -220,30 +243,58 @@ final class FolderSyncer {
 
     // MARK: - Apply
 
-    /// Executes the enabled actions off the main thread. Copies overwrite
+    /// Executes the enabled actions. Actions are grouped by their
+    /// destination volume: groups run **concurrently** (different disks
+    /// progress in parallel) while each group runs **serially** (same
+    /// disk avoids contention). Honors `isPaused`. Copies overwrite
     /// silently (sync semantics); deletes go to the Trash.
     func apply() {
         currentTask?.cancel()
+        isPaused = false
+        completedCount = 0
         let items = enabledActions
         guard !items.isEmpty else { status = .finished(applied: 0, failed: 0); return }
-        status = .syncing(done: 0, total: items.count)
+        let total = items.count
+        status = .syncing(done: 0, total: total)
+
+        // Partition by the volume the file lands on.
+        let groups = Dictionary(grouping: items) { Self.volumeKey(for: $0.destination) }
 
         let task = Task { [weak self] in
             guard let self else { return }
-            var applied = 0
-            var failed = 0
-            for (index, action) in items.enumerated() {
-                if Task.isCancelled { self.status = .cancelled; return }
-                let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
-                    Self.perform(action)
-                }.value
-                if ok { applied += 1 } else { failed += 1 }
-                self.status = .syncing(done: index + 1, total: items.count)
+            let tally = await withTaskGroup(of: (Int, Int).self) { group -> (Int, Int) in
+                for (_, actions) in groups {
+                    group.addTask {
+                        var applied = 0
+                        var failed = 0
+                        for action in actions {
+                            if Task.isCancelled { break }
+                            await self.waitWhilePaused()
+                            if Task.isCancelled { break }
+                            let ok = Self.perform(action)
+                            if ok { applied += 1 } else { failed += 1 }
+                            await self.bumpProgress(total: total)
+                        }
+                        return (applied, failed)
+                    }
+                }
+                var a = 0
+                var f = 0
+                for await (applied, failed) in group { a += applied; f += failed }
+                return (a, f)
             }
-            self.status = .finished(applied: applied, failed: failed)
+            if Task.isCancelled { self.status = .cancelled; return }
+            self.status = .finished(applied: tally.0, failed: tally.1)
             NotificationCenter.default.post(name: .filesDidChange, object: nil)
         }
         currentTask = task
+    }
+
+    /// Identifies the volume a URL lives on (its mount-point path) so the
+    /// sync can run per-volume groups in parallel.
+    private nonisolated static func volumeKey(for url: URL) -> String {
+        let v = try? url.resourceValues(forKeys: [.volumeURLKey])
+        return v?.volume?.path ?? "/"
     }
 
     private nonisolated static func perform(_ action: Action) -> Bool {

@@ -92,6 +92,51 @@ struct FileOperationExpandedView: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
 
+            // Queue controls: pause/resume + throughput limit
+            HStack(spacing: 8) {
+                Button {
+                    manager.togglePause()
+                } label: {
+                    Label(manager.isPaused ? "Resume" : "Pause",
+                          systemImage: manager.isPaused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!manager.hasActiveOperations)
+
+                if manager.queuedCount > 0 {
+                    Text("\(manager.queuedCount) queued")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Menu {
+                    Button("Unlimited") { manager.throttleBytesPerSecond = nil }
+                    Button("100 MB/s") { manager.throttleBytesPerSecond = 100 * 1_000_000 }
+                    Button("50 MB/s") { manager.throttleBytesPerSecond = 50 * 1_000_000 }
+                    Button("10 MB/s") { manager.throttleBytesPerSecond = 10 * 1_000_000 }
+                    Button("1 MB/s") { manager.throttleBytesPerSecond = 1_000_000 }
+                } label: {
+                    Label(limitLabel, systemImage: "speedometer")
+                        .font(.system(size: 10))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+
+            if manager.isPaused {
+                Text("Paused")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 4)
+            }
+
             Divider()
 
             // Operations list
@@ -124,6 +169,11 @@ struct FileOperationExpandedView: View {
             }
         }
         .padding(.bottom, 4)
+    }
+
+    private var limitLabel: String {
+        guard let limit = manager.throttleBytesPerSecond else { return "Unlimited" }
+        return ByteCountFormatter.string(fromByteCount: limit, countStyle: .file) + "/s"
     }
 }
 
