@@ -32,7 +32,10 @@ struct FileOperationCompactView: View {
                             .font(.system(size: 8, design: .rounded))
                             .foregroundColor(.secondary)
                             .lineLimit(1)
+                            .monospacedDigit()
                         }
+                        .frame(width: 110, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
 
                         // Mini progress bar
                         ProgressView(value: op.progress)
@@ -255,17 +258,21 @@ struct FileOperationRowView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text("\(operation.formattedCopiedSize) / \(operation.formattedTotalSize)")
+                        .frame(width: 96, alignment: .trailing)
 
                     Text("  ·  ")
 
                     Text(operation.formattedSpeed)
+                        .frame(width: 64, alignment: .trailing)
 
                     Text("  ·  ")
 
                     Text(operation.formattedTimeRemaining)
+                        .frame(width: 56, alignment: .trailing)
                 }
                 .font(.system(size: 9, design: .rounded))
                 .foregroundColor(.secondary)
+                .monospacedDigit()
 
                 if isExpanded && canExpand {
                     FileOperationItemList(operation: operation)

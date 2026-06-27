@@ -34,7 +34,26 @@ cp -r .build/arm64-apple-macosx/release/Seeker_Seeker.bundle "$APP_BUNDLE/Conten
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
 echo "==> Code signing (hardened runtime)..."
-SIGN_IDENTITY="${SIGN_IDENTITY:-Apple Development: marvelzhu@gmail.com (M54Y4GPL75)}"
+# Pick a signing identity. If SIGN_IDENTITY is not provided, use the first
+# valid codesigning identity in the keychain. When none exists (e.g. the
+# Apple Development cert was revoked/removed), fall back to ad-hoc signing so
+# the app still runs locally. A secure --timestamp requires a real cert, so it
+# is only used for genuine identities; ad-hoc signatures use --timestamp=none.
+if [[ -z "${SIGN_IDENTITY:-}" ]]; then
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*) [0-9A-F]* "\(.*\)"/\1/p' | head -n1)"
+fi
+if [[ -z "$SIGN_IDENTITY" ]]; then
+    echo "    (no valid signing identity found; using ad-hoc signature)"
+    SIGN_IDENTITY="-"
+fi
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    TIMESTAMP_FLAG="--timestamp=none"
+else
+    TIMESTAMP_FLAG="--timestamp"
+fi
+echo "    (signing identity: $SIGN_IDENTITY)"
+
 # Sign nested bundles first (no --deep: it's deprecated and skips inner
 # code-sign requirements). Enable hardened runtime + secure timestamp so the
 # binary can be notarised and runs with library validation.
@@ -46,10 +65,10 @@ find "$APP_BUNDLE/Contents" -type d \( -name "*.bundle" -o -name "*.framework" -
             echo "    (skipping resources-only bundle: $(basename "$nested"))"
             continue
         fi
-        codesign --force --options runtime --timestamp \
+        codesign --force --options runtime "$TIMESTAMP_FLAG" \
                  --sign "$SIGN_IDENTITY" "$nested"
       done
-codesign --force --options runtime --timestamp \
+codesign --force --options runtime "$TIMESTAMP_FLAG" \
          --entitlements Seeker/Seeker.entitlements \
          --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 codesign --verify --strict --verbose=2 "$APP_BUNDLE"

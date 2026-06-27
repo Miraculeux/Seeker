@@ -271,10 +271,15 @@ struct ContentView: View {
 
             Spacer()
 
-            // Right group: progress indicator
+            // Right group: progress indicator. Reserve a fixed-width slot so
+            // the compact view's fluctuating text (speed / time / size) never
+            // changes the toolbar's overall layout — otherwise the flanking
+            // Spacers rebalance on every progress tick and the centered button
+            // groups visibly shake.
             HStack(spacing: 6) {
                 FileOperationCompactView()
             }
+            .frame(width: 220, alignment: .trailing)
             .padding(.trailing, 12)
         }
         .padding(.vertical, 7)
