@@ -38,6 +38,13 @@ struct FolderSyncView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
+            if let op = syncer.activeOperation {
+                FileOperationRowView(operation: op)
+                Divider()
+            } else if let act = syncer.currentActivity {
+                activityBanner(act)
+                Divider()
+            }
             footer
         }
         .frame(minWidth: 660, idealWidth: 820, maxWidth: .infinity,
@@ -170,6 +177,29 @@ struct FolderSyncView: View {
         }
     }
 
+    /// Compact banner shown while the delete phase runs, naming the file
+    /// currently being moved to the Trash.
+    private func activityBanner(_ act: FolderSyncer.Activity) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: act.kind.symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(color(for: act.kind))
+                .frame(width: 16)
+            Text(act.kind.label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(color(for: act.kind))
+            Text(act.name)
+                .font(.system(size: 11))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.02))
+    }
+
     // MARK: - Footer
 
     private var footer: some View {
@@ -183,8 +213,8 @@ struct FolderSyncView: View {
                 Button {
                     syncer.togglePause()
                 } label: {
-                    Label(syncer.isPaused ? "Resume" : "Pause",
-                          systemImage: syncer.isPaused ? "play.fill" : "pause.fill")
+                    Label(FileOperationManager.shared.isPaused ? "Resume" : "Pause",
+                          systemImage: FileOperationManager.shared.isPaused ? "play.fill" : "pause.fill")
                         .font(.system(size: 11))
                 }
                 Button("Stop") { syncer.cancel() }
@@ -237,6 +267,9 @@ struct FolderSyncView: View {
             let enabled = syncer.enabledActions.count
             return parts.isEmpty ? "" : parts.joined(separator: " \u{00B7} ") + " \u{00B7} \(enabled) selected"
         case .syncing(let done, let total):
+            if let op = syncer.activeOperation, !op.isFinished {
+                return "\(op.formattedTimeRemaining) remaining \u{00B7} \(op.formattedSpeed)"
+            }
             return "\(done) / \(total)"
         case .finished(let applied, let failed):
             return failed > 0 ? "\(applied) done, \(failed) failed" : "\(applied) synced"

@@ -150,6 +150,24 @@ class FileOperationManager {
         pump()
     }
 
+    /// Runs a pre-resolved batch of copies on behalf of folder sync. Unlike
+    /// `startCopy`, the destinations are exact (relative-path preserving)
+    /// targets and existing items are overwritten silently — sync semantics,
+    /// no conflict prompts. Returns the operation so the caller can observe
+    /// its byte-level progress, speed and ETA, and drive pause/cancel.
+    @discardableResult
+    func startPlannedCopy(_ plan: [FileOperation.PlannedItem],
+                          onComplete: @escaping @MainActor (FileOperation) -> Void) -> FileOperation? {
+        guard !plan.isEmpty else { return nil }
+        let op = FileOperation(kind: .copy, sourceURLs: plan.map(\.source),
+                               destinationDir: plan[0].destination.deletingLastPathComponent())
+        op.plan = plan
+        op.onComplete = onComplete
+        operations.append(op)
+        pump()
+        return op
+    }
+
     // MARK: - Queue pump
 
     /// Starts every queued operation whose destination volume is idle.

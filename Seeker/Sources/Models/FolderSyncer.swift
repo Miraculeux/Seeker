@@ -56,6 +56,14 @@ final class FolderSyncer {
                 case .deleteB: return "Delete from B"
                 }
             }
+            /// Sort rank used to group actions by operation in the list.
+            var sortOrder: Int {
+                switch self {
+                case .copyToB: return 0
+                case .copyToA: return 1
+                case .deleteB: return 2
+                }
+            }
         }
         let id = UUID()
         let kind: Kind
@@ -75,13 +83,19 @@ final class FolderSyncer {
 
     var status: Status = .idle
     var actions: [Action] = []
-    /// When true, in-flight sync actions pause before the next file.
-    var isPaused = false
+    /// The live copy operation (driven by the shared FileOperationManager)
+    /// while a sync is applying, so the view can show byte-level progress.
+    var activeOperation: FileOperation?
+    /// The action currently being performed during the delete phase, so the
+    /// view can show "Delete from B — <name>" while trashing runs.
+    var currentActivity: Activity?
+
+    struct Activity {
+        let kind: Action.Kind
+        let name: String
+    }
 
     private var currentTask: Task<Void, Never>?
-    /// Completed-action counter, mutated on the main actor as each volume
-    /// group reports progress.
-    private var completedCount = 0
 
     init(rootA: URL, rootB: URL) {
         self.rootA = rootA
@@ -97,26 +111,13 @@ final class FolderSyncer {
     func cancel() {
         currentTask?.cancel()
         currentTask = nil
+        activeOperation?.cancel()
+        currentActivity = nil
         status = .cancelled
     }
 
-    func togglePause() { isPaused.toggle() }
-
-    /// Blocks while paused (with a cancellation escape). Called before
-    /// each action inside a volume group.
-    func waitWhilePaused() async {
-        while isPaused {
-            if Task.isCancelled { return }
-            try? await Task.sleep(for: .milliseconds(200))
-        }
-    }
-
-    private func bumpProgress(total: Int) {
-        completedCount += 1
-        if case .syncing = status {
-            status = .syncing(done: completedCount, total: total)
-        }
-    }
+    /// Pauses/resumes the in-flight copy via the shared manager.
+    func togglePause() { FileOperationManager.shared.togglePause() }
 
     // MARK: - Analyze
 
@@ -164,11 +165,15 @@ final class FolderSyncer {
                 if sameFile(metaA, metaB) { continue }
                 let aNewer = metaA.mtime > metaB.mtime
                 switch direction {
-                case .mirror, .update where aNewer:
+                case .mirror:
                     plan.append(Action(kind: .copyToB, relativePath: rel, source: metaA.url,
                                        destination: b.appendingPathComponent(rel), size: metaA.size))
                 case .update:
-                    break // B is newer/equal; update never downgrades
+                    // Update never downgrades; only copy when A is newer.
+                    if aNewer {
+                        plan.append(Action(kind: .copyToB, relativePath: rel, source: metaA.url,
+                                           destination: b.appendingPathComponent(rel), size: metaA.size))
+                    }
                 case .twoWay:
                     if aNewer {
                         plan.append(Action(kind: .copyToB, relativePath: rel, source: metaA.url,
@@ -199,7 +204,12 @@ final class FolderSyncer {
             }
         }
 
-        return plan.sorted { $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending }
+        return plan.sorted {
+            if $0.kind.sortOrder != $1.kind.sortOrder {
+                return $0.kind.sortOrder < $1.kind.sortOrder
+            }
+            return $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
+        }
     }
 
     /// Two files are considered identical when size and modification time
@@ -243,58 +253,62 @@ final class FolderSyncer {
 
     // MARK: - Apply
 
-    /// Executes the enabled actions. Actions are grouped by their
-    /// destination volume: groups run **concurrently** (different disks
-    /// progress in parallel) while each group runs **serially** (same
-    /// disk avoids contention). Honors `isPaused`. Copies overwrite
-    /// silently (sync semantics); deletes go to the Trash.
+    /// Executes the enabled actions. Deletes go to the Trash immediately
+    /// (cheap), while copies are handed to the shared FileOperationManager
+    /// — the same engine the main window uses — so the sync gets byte-level
+    /// progress, speed/ETA, pause and throttle for free. Copies overwrite
+    /// silently (sync semantics).
     func apply() {
         currentTask?.cancel()
-        isPaused = false
-        completedCount = 0
         let items = enabledActions
         guard !items.isEmpty else { status = .finished(applied: 0, failed: 0); return }
-        let total = items.count
-        status = .syncing(done: 0, total: total)
 
-        // Partition by the volume the file lands on.
-        let groups = Dictionary(grouping: items) { Self.volumeKey(for: $0.destination) }
-
-        let task = Task { [weak self] in
-            guard let self else { return }
-            let tally = await withTaskGroup(of: (Int, Int).self) { group -> (Int, Int) in
-                for (_, actions) in groups {
-                    group.addTask {
-                        var applied = 0
-                        var failed = 0
-                        for action in actions {
-                            if Task.isCancelled { break }
-                            await self.waitWhilePaused()
-                            if Task.isCancelled { break }
-                            let ok = Self.perform(action)
-                            if ok { applied += 1 } else { failed += 1 }
-                            await self.bumpProgress(total: total)
-                        }
-                        return (applied, failed)
-                    }
-                }
-                var a = 0
-                var f = 0
-                for await (applied, failed) in group { a += applied; f += failed }
-                return (a, f)
-            }
-            if Task.isCancelled { self.status = .cancelled; return }
-            self.status = .finished(applied: tally.0, failed: tally.1)
-            NotificationCenter.default.post(name: .filesDidChange, object: nil)
+        let deletes = items.filter { $0.kind == .deleteB }
+        // Build a copy plan with exact destinations; sync always overwrites.
+        let plan = items.compactMap { action -> FileOperation.PlannedItem? in
+            guard action.kind != .deleteB, let source = action.source else { return nil }
+            return FileOperation.PlannedItem(source: source, destination: action.destination, replace: true)
         }
-        currentTask = task
-    }
 
-    /// Identifies the volume a URL lives on (its mount-point path) so the
-    /// sync can run per-volume groups in parallel.
-    private nonisolated static func volumeKey(for url: URL) -> String {
-        let v = try? url.resourceValues(forKeys: [.volumeURLKey])
-        return v?.volume?.path ?? "/"
+        status = .syncing(done: 0, total: items.count)
+
+        currentTask = Task { [weak self] in
+            guard let self else { return }
+
+            // Phase 1 — deletes. Trash each item one at a time, surfacing the
+            // file name so the user sees what's being removed.
+            var deletedOK = 0
+            var deletedFail = 0
+            for action in deletes {
+                if Task.isCancelled { self.currentActivity = nil; self.status = .cancelled; return }
+                self.currentActivity = Activity(kind: .deleteB, name: action.relativePath)
+                let ok = await Task.detached(priority: .userInitiated) { Self.perform(action) }.value
+                if ok { deletedOK += 1 } else { deletedFail += 1 }
+            }
+            self.currentActivity = nil
+
+            guard !plan.isEmpty else {
+                self.status = .finished(applied: deletedOK, failed: deletedFail)
+                if deletedOK > 0 { NotificationCenter.default.post(name: .filesDidChange, object: nil) }
+                return
+            }
+
+            // Phase 2 — copies via the shared FileOperationManager (the same
+            // engine the main window uses): byte-level progress, speed/ETA,
+            // pause and throttle. Copies overwrite silently (sync semantics);
+            // the manager surfaces the current file name as it works.
+            self.activeOperation = FileOperationManager.shared.startPlannedCopy(plan) { [weak self] op in
+                guard let self else { return }
+                self.activeOperation = nil
+                if op.isCancelled {
+                    self.status = .cancelled
+                } else {
+                    let failed = deletedFail + (op.error != nil ? 1 : 0)
+                    self.status = .finished(applied: deletedOK + op.filesCompleted, failed: failed)
+                }
+                NotificationCenter.default.post(name: .filesDidChange, object: nil)
+            }
+        }
     }
 
     private nonisolated static func perform(_ action: Action) -> Bool {
