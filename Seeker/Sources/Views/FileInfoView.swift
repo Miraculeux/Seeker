@@ -15,6 +15,9 @@ struct FileInfoView: View {
     @State private var folderSize: Int64?
     @State private var folderSizeTask: Task<Void, Never>?
     @State private var folderSizeTargetID: FileItem.ID?
+    @State private var volumeInfo: VolumeInfo?
+    @State private var volumeInfoTask: Task<Void, Never>?
+    @State private var volumeInfoTargetURL: URL?
 
     private var selectedFile: FileItem? {
         appState.activeExplorer.selectedFile
@@ -22,6 +25,18 @@ struct FileInfoView: View {
 
     private var selectedFileIDs: Set<FileItem.ID> {
         appState.activeExplorer.selectedFileIDs
+    }
+
+    /// When nothing is selected, the panel falls back to showing info for
+    /// the current location if it is a volume root (e.g. the user clicked a
+    /// disk in the sidebar). Returns the standardized volume URL, or nil if
+    /// the current directory is not itself a mount point.
+    private var volumeRootURL: URL? {
+        guard selectedFileIDs.isEmpty, selectedFile == nil else { return nil }
+        let url = appState.activeExplorer.currentURL.standardizedFileURL
+        guard let volume = (try? url.resourceValues(forKeys: [.volumeURLKey]))?
+            .volume?.standardizedFileURL else { return nil }
+        return volume == url ? url : nil
     }
 
     var body: some View {
@@ -43,6 +58,8 @@ struct FileInfoView: View {
                 multiSelectionContent
             } else if let file = selectedFile {
                 fileInfoContent(file)
+            } else if let volumeURL = volumeRootURL {
+                volumeInfoContent(volumeURL)
             } else {
                 noSelection
             }
@@ -163,6 +180,157 @@ struct FileInfoView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - Volume Info Content
+
+    /// Disk/volume summary shown when the current location is a mount point
+    /// and nothing is selected (e.g. the user clicked a disk in the sidebar).
+    private func volumeInfoContent(_ url: URL) -> some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                // Icon + Name
+                VStack(spacing: 8) {
+                    Image(nsImage: SidebarRow.icon(for: url))
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 96, height: 96)
+
+                    Text(volumeInfo?.name ?? url.lastPathComponent)
+                        .font(.system(size: 12, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+
+                    Text(volumeInfo?.format ?? "Volume")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 16)
+
+                Divider()
+                    .padding(.horizontal, 12)
+
+                if let info = volumeInfo, info.totalCapacity > 0 {
+                    // Capacity bar
+                    VStack(spacing: 6) {
+                        GeometryReader { geo in
+                            let fraction = max(0, min(1, Double(info.usedCapacity) / Double(info.totalCapacity)))
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color.primary.opacity(0.08))
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color.accentColor.opacity(0.7))
+                                    .frame(width: max(2, geo.size.width * fraction))
+                            }
+                        }
+                        .frame(height: 8)
+
+                        HStack {
+                            Text("\(byteString(info.usedCapacity)) used")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Text("\(byteString(info.availableCapacity)) free")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+
+                    Divider()
+                        .padding(.horizontal, 12)
+
+                    VStack(spacing: 10) {
+                        infoRow("Capacity", byteString(info.totalCapacity))
+                        infoRow("Used", byteString(info.usedCapacity))
+                        infoRow("Available", byteString(info.availableCapacity))
+                        if let format = info.format {
+                            infoRow("Format", format)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.vertical, 8)
+                }
+
+                Divider()
+                    .padding(.horizontal, 12)
+
+                // Path
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Path")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                    Text(url.path)
+                        .font(.system(size: 10))
+                        .foregroundColor(.primary.opacity(0.7))
+                        .textSelection(.enabled)
+                        .lineLimit(3)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+
+                Spacer(minLength: 8)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: url) {
+            await loadVolumeInfo(for: url)
+        }
+    }
+
+    private func byteString(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func loadVolumeInfo(for url: URL) async {
+        // Reuse the cached result if we're already showing this volume.
+        if volumeInfoTargetURL == url, volumeInfo != nil { return }
+        volumeInfo = nil
+        volumeInfoTargetURL = url
+        let info = await Task.detached(priority: .utility) {
+            Self.computeVolumeInfo(at: url)
+        }.value
+        guard !Task.isCancelled, volumeInfoTargetURL == url else { return }
+        volumeInfo = info
+    }
+
+    private struct VolumeInfo: Equatable {
+        var name: String
+        var totalCapacity: Int64
+        var availableCapacity: Int64
+        var format: String?
+        var usedCapacity: Int64 { max(0, totalCapacity - availableCapacity) }
+    }
+
+    private nonisolated static func computeVolumeInfo(at url: URL) -> VolumeInfo? {
+        let keys: Set<URLResourceKey> = [
+            .volumeNameKey,
+            .volumeTotalCapacityKey,
+            .volumeAvailableCapacityKey,
+            .volumeAvailableCapacityForImportantUsageKey,
+            .volumeLocalizedFormatDescriptionKey
+        ]
+        guard let rv = try? url.resourceValues(forKeys: keys) else { return nil }
+        let total = Int64(rv.volumeTotalCapacity ?? 0)
+        // `volumeAvailableCapacityForImportantUsage` matches the free space
+        // Finder reports (it accounts for purgeable space); fall back to the
+        // plain available capacity when the richer value isn't provided.
+        let available: Int64
+        if let important = rv.volumeAvailableCapacityForImportantUsage, important > 0 {
+            available = important
+        } else {
+            available = Int64(rv.volumeAvailableCapacity ?? 0)
+        }
+        return VolumeInfo(
+            name: rv.volumeName ?? url.lastPathComponent,
+            totalCapacity: total,
+            availableCapacity: min(available, total),
+            format: rv.volumeLocalizedFormatDescription
+        )
     }
 
     // MARK: - File Info Content
