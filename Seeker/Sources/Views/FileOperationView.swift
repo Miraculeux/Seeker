@@ -61,7 +61,7 @@ struct FileOperationCompactView: View {
             .buttonStyle(.plain)
             .popover(isPresented: $isExpanded, arrowEdge: .bottom) {
                 FileOperationExpandedView()
-                    .frame(width: 340)
+                    .frame(width: 460)
             }
         }
     }
@@ -142,7 +142,9 @@ struct FileOperationExpandedView: View {
 
             Divider()
 
-            // Operations list
+            // Operations list. A ScrollView collapses to a tiny height inside
+            // a popover, so we pin a comfortable minimum (the popover then
+            // sizes around it) and cap the maximum before it scrolls.
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(manager.operations) { op in
@@ -150,7 +152,7 @@ struct FileOperationExpandedView: View {
                     }
                 }
             }
-            .frame(maxHeight: 300)
+            .frame(minHeight: 320, maxHeight: 720)
 
             if manager.activeOperations.count > 1 {
                 Divider()
@@ -320,17 +322,18 @@ private struct FileOperationItemList: View {
             .padding(.top, 2)
             .padding(.bottom, 4)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(operation.sourceURLs.enumerated()), id: \.offset) { index, url in
-                        FileOperationItemRow(
-                            url: url,
-                            status: status(for: index)
-                        )
-                    }
+            // No inner ScrollView: let the list expand naturally so only the
+            // outer operations ScrollView scrolls. Nesting a second vertical
+            // ScrollView here produced two competing scrollbars when an
+            // operation had many files.
+            LazyVStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(operation.sourceURLs.enumerated()), id: \.offset) { index, url in
+                    FileOperationItemRow(
+                        url: url,
+                        status: status(for: index)
+                    )
                 }
             }
-            .frame(maxHeight: 140)
         }
     }
 

@@ -113,6 +113,12 @@ class FileOperationManager {
     /// contention) while letting **different** volumes run in parallel.
     private var busyVolumes: Set<String> = []
 
+    /// Activity token that keeps the Mac awake while transfers are in
+    /// flight. Held for the duration of any active operation and released
+    /// once the queue drains, so a long copy isn't interrupted by idle
+    /// sleep or sudden process termination.
+    private var activityToken: NSObjectProtocol?
+
     var activeOperations: [FileOperation] {
         operations.filter { !$0.isFinished && !$0.isCancelled }
     }
@@ -186,8 +192,25 @@ class FileOperationManager {
                 op.onComplete?(op)
                 cleanupFinished()
                 busyVolumes.remove(vol)
+                updatePowerAssertion()
                 pump()
             }
+        }
+        updatePowerAssertion()
+    }
+
+    /// Acquires or releases the no-sleep activity token to match whether any
+    /// operation is currently active. Idempotent — safe to call repeatedly.
+    private func updatePowerAssertion() {
+        if hasActiveOperations {
+            if activityToken == nil {
+                activityToken = ProcessInfo.processInfo.beginActivity(
+                    options: [.idleSystemSleepDisabled, .suddenTerminationDisabled],
+                    reason: "Transferring files")
+            }
+        } else if let token = activityToken {
+            ProcessInfo.processInfo.endActivity(token)
+            activityToken = nil
         }
     }
 
@@ -242,7 +265,16 @@ class FileOperationManager {
                 continue
             }
 
-            let choice = applyToAll ?? promptConflict(name: source.lastPathComponent, kind: kind, hasMore: source != sources.last)
+            let choice: ConflictChoice
+            if let all = applyToAll {
+                choice = all
+            } else {
+                choice = promptConflict(name: source.lastPathComponent, kind: kind, hasMore: source != sources.last)
+                // Remember the choice for the rest of the batch *before* the
+                // switch below — otherwise the `.skip`/`.cancel` early exits
+                // would jump over this and keep re-prompting.
+                if lastPromptApplyToAll { applyToAll = choice }
+            }
             switch choice {
             case .cancel:
                 return nil
@@ -252,10 +284,6 @@ class FileOperationManager {
                 plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: true))
             case .keepBoth:
                 plan.append(FileOperation.PlannedItem(source: source, destination: uniqueDestination(for: source, in: destination), replace: false))
-            }
-            // The prompt sets applyToAll via the suppression button.
-            if applyToAll == nil, lastPromptApplyToAll {
-                applyToAll = choice
             }
         }
         return plan
@@ -411,59 +439,19 @@ class FileOperationManager {
                 }
                 defer { try? writeHandle.close() }
 
-                let chunkSize = 1024 * 1024  // 1 MB chunks
-                var lastUpdate = ContinuousClock.now
-                var pendingBytes: Int64 = 0
-
-                var cancelled = false
-                while true {
-                    if await operation.isCancelled {
-                        cancelled = true
-                        break
-                    }
-                    // Honor a global pause mid-file.
-                    await FileOperationManager.shared.waitWhilePaused(operation)
-
-                    let chunkStart = ContinuousClock.now
-                    guard let data = try readHandle.read(upToCount: chunkSize),
-                          !data.isEmpty else { break }
-                    try writeHandle.write(contentsOf: data)
-                    pendingBytes += Int64(data.count)
-
-                    // Update UI at most every 50ms
-                    let now = ContinuousClock.now
-                    if now - lastUpdate > .milliseconds(50) {
-                        let bytes = pendingBytes
-                        pendingBytes = 0
-                        lastUpdate = now
-                        await MainActor.run { operation.copiedBytes += bytes }
-                    }
-
-                    // Throttle: sleep so this chunk takes ~bytes/limit time.
-                    if let limit = await MainActor.run(body: { FileOperationManager.shared.throttleBytesPerSecond }),
-                       limit > 0 {
-                        let target = Double(data.count) / Double(limit)
-                        let elapsed = Double((ContinuousClock.now - chunkStart).components.seconds)
-                            + Double((ContinuousClock.now - chunkStart).components.attoseconds) / 1e18
-                        let remaining = target - elapsed
-                        if remaining > 0 {
-                            try? await Task.sleep(for: .seconds(remaining))
-                        }
-                    }
-                }
-
-                // On cancellation, close handles and delete the partial file
-                if cancelled {
+                // Stream the contents with incremental progress. This call
+                // preallocates contiguous space for dense files (less
+                // fragmentation on big files) and preserves holes for sparse
+                // files (so they never balloon to full allocation).
+                do {
+                    try await self.copyContents(srcFD: readHandle.fileDescriptor,
+                                                dstFD: writeHandle.fileDescriptor,
+                                                operation: operation)
+                } catch is CancellationError {
                     try? readHandle.close()
                     try? writeHandle.close()
                     try? fm.removeItem(at: dst)
                     throw CancellationError()
-                }
-
-                // Flush remaining bytes
-                if pendingBytes > 0 {
-                    let bytes = pendingBytes
-                    await MainActor.run { operation.copiedBytes += bytes }
                 }
 
                 // Copy file attributes (permissions, dates, etc.)
@@ -476,6 +464,151 @@ class FileOperationManager {
                 }
             }.value
         }
+    }
+
+    /// Transfer buffer size scaled to the file's logical length. Keeps small
+    /// files from over-allocating while giving large files bigger chunks
+    /// (fewer syscalls). Clamped so a file never gets a buffer larger than
+    /// itself.
+    private nonisolated static func transferChunkSize(for fileSize: Int64) -> Int {
+        let mb = 1024 * 1024
+        let base: Int
+        switch fileSize {
+        case ..<(1 * 1024 * 1024):       base = 128 * 1024   // < 1 MB
+        case ..<(16 * 1024 * 1024):      base = 1 * mb       // < 16 MB
+        case ..<(256 * 1024 * 1024):     base = 4 * mb       // < 256 MB
+        case ..<(4 * 1024 * 1024 * 1024): base = 8 * mb      // < 4 GB
+        default:                          base = 16 * mb      // >= 4 GB
+        }
+        if fileSize <= 0 { return base }
+        return max(64 * 1024, min(base, Int(min(fileSize, Int64(base)))))
+    }
+
+    /// Streams a file's contents between two open descriptors with
+    /// incremental progress, honoring pause / cancel / throttle.
+    /// Two optimisations for big files:
+    /// * **Dense files** get their full size reserved up front with
+    ///   `F_PREALLOCATE` (contiguous when possible) so the kernel doesn't
+    ///   grow + fragment the file block-by-block as we write.
+    /// * **Sparse files** are detected via allocated-vs-logical size and
+    ///   copied hole-aware using `SEEK_DATA` / `SEEK_HOLE`: only real data
+    ///   extents are written and the gaps are left as holes, so a TB-scale
+    ///   sparse file never balloons into TBs of actual blocks.
+    private nonisolated func copyContents(srcFD: Int32, dstFD: Int32,
+                                          operation: FileOperation) async throws {
+        var st = stat()
+        guard fstat(srcFD, &st) == 0 else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        let fileSize = Int64(st.st_size)
+        // st_blocks counts 512-byte units actually allocated. A file using
+        // noticeably fewer blocks than its logical length is sparse.
+        let allocatedBytes = Int64(st.st_blocks) * 512
+        let isSparse = fileSize > 0 && allocatedBytes < fileSize - fileSize / 10
+
+        if isSparse {
+            // Set the final logical size; unwritten regions stay holes.
+            _ = ftruncate(dstFD, off_t(fileSize))
+        } else if fileSize > 0 {
+            // Reserve contiguous space; fall back to non-contiguous, then
+            // give up silently (best-effort — writes still succeed).
+            var store = fstore_t(fst_flags: UInt32(F_ALLOCATECONTIG),
+                                 fst_posmode: F_PEOFPOSMODE,
+                                 fst_offset: 0,
+                                 fst_length: off_t(fileSize),
+                                 fst_bytesalloc: 0)
+            if fcntl(dstFD, F_PREALLOCATE, &store) == -1 {
+                store.fst_flags = UInt32(F_ALLOCATEALL)
+                _ = fcntl(dstFD, F_PREALLOCATE, &store)
+            }
+        }
+
+        // Determine the byte ranges that actually hold data.
+        var regions: [(start: Int64, end: Int64)] = []
+        if isSparse {
+            var pos: Int64 = 0
+            while pos < fileSize {
+                let dataStart = lseek(srcFD, off_t(pos), SEEK_DATA)
+                if dataStart < 0 { break }           // ENXIO: rest is a hole
+                let holeStart = lseek(srcFD, dataStart, SEEK_HOLE)
+                let dataEnd = holeStart < 0 ? fileSize : Int64(holeStart)
+                regions.append((Int64(dataStart), dataEnd))
+                pos = dataEnd
+            }
+        } else if fileSize > 0 {
+            regions.append((0, fileSize))
+        }
+
+        // Pick a transfer buffer scaled to the file size: tiny files don't
+        // need (and shouldn't waste) a big allocation, while huge files
+        // benefit from fewer read/write syscalls.
+        let chunkSize = Self.transferChunkSize(for: fileSize)
+        var buffer = [UInt8](repeating: 0, count: chunkSize)
+        var lastUpdate = ContinuousClock.now
+        var pendingBytes: Int64 = 0
+
+        // Push buffered progress to the UI, at most every 50ms unless forced.
+        func flush(_ now: ContinuousClock.Instant, force: Bool) async {
+            guard pendingBytes > 0, force || now - lastUpdate > .milliseconds(50) else { return }
+            let bytes = pendingBytes
+            pendingBytes = 0
+            lastUpdate = now
+            await MainActor.run { operation.copiedBytes += bytes }
+        }
+
+        var lastEnd: Int64 = 0
+        for region in regions {
+            // Credit any skipped hole before this region as instantly copied
+            // so the progress bar tracks the logical (not allocated) size.
+            if region.start > lastEnd {
+                pendingBytes += region.start - lastEnd
+            }
+            var offset = region.start
+            _ = lseek(srcFD, off_t(offset), SEEK_SET)
+            _ = lseek(dstFD, off_t(offset), SEEK_SET)
+
+            while offset < region.end {
+                if await operation.isCancelled { throw CancellationError() }
+                await FileOperationManager.shared.waitWhilePaused(operation)
+
+                let want = Int(min(Int64(chunkSize), region.end - offset))
+                let chunkStart = ContinuousClock.now
+                let n = buffer.withUnsafeMutableBytes { read(srcFD, $0.baseAddress, want) }
+                if n < 0 { throw CocoaError(.fileReadUnknown) }
+                if n == 0 { break }
+
+                var written = 0
+                while written < n {
+                    let w = buffer.withUnsafeBytes {
+                        write(dstFD, $0.baseAddress!.advanced(by: written), n - written)
+                    }
+                    if w < 0 { throw CocoaError(.fileWriteUnknown) }
+                    written += w
+                }
+
+                offset += Int64(n)
+                pendingBytes += Int64(n)
+                await flush(ContinuousClock.now, force: false)
+
+                // Throttle: sleep so this chunk takes ~bytes/limit time.
+                if let limit = await MainActor.run(body: { FileOperationManager.shared.throttleBytesPerSecond }),
+                   limit > 0 {
+                    let target = Double(n) / Double(limit)
+                    let span = ContinuousClock.now - chunkStart
+                    let elapsed = Double(span.components.seconds)
+                        + Double(span.components.attoseconds) / 1e18
+                    let remaining = target - elapsed
+                    if remaining > 0 {
+                        try? await Task.sleep(for: .seconds(remaining))
+                    }
+                }
+            }
+            lastEnd = region.end
+        }
+
+        // Credit a trailing hole, if any, then flush the last batch.
+        if fileSize > lastEnd { pendingBytes += fileSize - lastEnd }
+        await flush(ContinuousClock.now, force: true)
     }
 
     /// APFS clonefile fast-path. Returns true on success, false if cloning
