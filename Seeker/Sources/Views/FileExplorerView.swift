@@ -108,21 +108,14 @@ struct FileContentView: View {
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
-                        .simultaneousGesture(TapGesture(count: 1).onEnded {
-                            if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
-                                viewModel.openItem(file)
-                            } else {
-                                unfocusTextFields()
-                                let flags = NSEvent.modifierFlags
-                                viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
-                                appState.activePane = side
-                            }
-                        })
                         .overlay(RightClickCatcher { ensureContextSelection(file) })
+                        // Native AppKit drag source. Handles click/select and
+                        // drag initiation so the drag pasteboard advertises the
+                        // legacy NSFilenamesPboardType/NSURL that classic apps
+                        // (e.g. IINA) require — SwiftUI's `.onDrag` only exposes
+                        // modern promised UTIs and never reaches them.
+                        .overlay(dragCatcher(for: file, chevron: chevronRange(for: file)))
                         .contextMenu { fileContextMenu(for: file) }
-                        .onDrag {
-                            fileDragProvider(for: file.url)
-                        }
                     }
                 }
                 .listStyle(.plain)
@@ -200,23 +193,48 @@ struct FileContentView: View {
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
-    private func fileDragProvider(for url: URL) -> NSItemProvider {
-        let provider = NSItemProvider()
-        provider.suggestedName = url.lastPathComponent
-        // Register an in-place file representation so receivers reference the
-        // ORIGINAL file on disk. Registering only a data representation for
-        // public.file-url makes macOS synthesize a temporary/cached copy,
-        // which is what other apps ended up receiving.
-        provider.registerFileRepresentation(
-            forTypeIdentifier: UTType.fileURL.identifier,
-            fileOptions: [.openInPlace],
-            visibility: .all
-        ) { completion in
-            // `coordinated: true` hands back the real URL without copying.
-            completion(url, true, nil)
-            return nil
+    /// URLs to carry when a drag starts on `file`: the whole selection when
+    /// `file` is part of a multi-selection, otherwise just `file`.
+    private func dragURLs(for file: FileItem) -> [URL] {
+        if viewModel.selectedFileIDs.contains(file.id) && viewModel.selectedFileIDs.count > 1 {
+            return viewModel.files
+                .filter { viewModel.selectedFileIDs.contains($0.id) }
+                .map(\.url)
         }
-        return provider
+        return [file.url]
+    }
+
+    /// x-range (in row-local points) occupied by the disclosure chevron, so
+    /// the drag catcher can forward clicks there to expand/collapse instead
+    /// of selecting. `nil` for non-expandable rows. Mirrors the geometry in
+    /// `FileListRow` (4pt row padding, 14pt indent/level, 22pt chevron).
+    private func chevronRange(for file: FileItem) -> ClosedRange<CGFloat>? {
+        guard viewModel.isExpandable(file) else { return nil }
+        let minX: CGFloat = 4 + CGFloat(viewModel.depth(of: file)) * 14
+        return minX...(minX + 22)
+    }
+
+    /// Native AppKit drag/click overlay for a row or icon cell. Handles
+    /// selection, double-click open, chevron expand, and — crucially — starts
+    /// a real AppKit dragging session whose pasteboard advertises legacy
+    /// file types so classic apps like IINA accept the drop with the
+    /// original path.
+    private func dragCatcher(for file: FileItem, chevron: ClosedRange<CGFloat>? = nil) -> some View {
+        FileDragCatcher(
+            isEnabled: viewModel.renamingFile != file,
+            chevronRange: chevron,
+            urls: { dragURLs(for: file) },
+            onClick: { command, shift, clickCount in
+                if clickCount >= 2 {
+                    viewModel.openItem(file)
+                } else {
+                    unfocusTextFields()
+                    viewModel.handleFileClick(file, command: command, shift: shift)
+                    appState.activePane = side
+                }
+            },
+            onToggleExpand: chevron == nil ? nil : { viewModel.toggleExpanded(file) }
+        )
     }
 
     private func updateIconGridColumnCount(width: CGFloat) {
@@ -261,21 +279,9 @@ struct FileContentView: View {
                         onCancelRename: { viewModel.cancelRename() }
                     )
                     .equatable()
-                    .simultaneousGesture(TapGesture(count: 1).onEnded {
-                        if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
-                            viewModel.openItem(file)
-                        } else {
-                            unfocusTextFields()
-                            let flags = NSEvent.modifierFlags
-                            viewModel.handleFileClick(file, command: flags.contains(.command), shift: flags.contains(.shift))
-                            appState.activePane = side
-                        }
-                    })
                     .overlay(RightClickCatcher { ensureContextSelection(file) })
+                    .overlay(dragCatcher(for: file))
                     .contextMenu { fileContextMenu(for: file) }
-                    .onDrag {
-                        fileDragProvider(for: file.url)
-                    }
                 }
             }
             .padding(12)
@@ -1571,6 +1577,128 @@ private final class RightClickNSView: NSView {
             onRightClick?()
         }
         super.mouseDown(with: event)
+    }
+}
+
+// MARK: - Native file drag source
+
+/// AppKit-backed overlay that owns left-click selection and drag initiation
+/// for a file row / icon cell.
+///
+/// Why not SwiftUI's `.onDrag`: on macOS `.onDrag` bridges an
+/// `NSItemProvider` to the drag pasteboard advertising only modern, *promised*
+/// UTIs (`public.file-url`). Classic AppKit apps such as IINA register for the
+/// legacy `NSFilenamesPboardType` / `NSURL` drag types and never see the
+/// promise, so the drop is silently rejected. Starting a real
+/// `beginDraggingSession` with `NSURL` pasteboard writers eagerly publishes
+/// those legacy types (pointing at the ORIGINAL path — no cache copy), so
+/// every drop target works.
+struct FileDragCatcher: NSViewRepresentable {
+    var isEnabled: Bool = true
+    var chevronRange: ClosedRange<CGFloat>? = nil
+    let urls: () -> [URL]
+    let onClick: (_ command: Bool, _ shift: Bool, _ clickCount: Int) -> Void
+    var onToggleExpand: (() -> Void)? = nil
+
+    func makeNSView(context: Context) -> NSView {
+        let v = FileDragNSView()
+        configure(v)
+        return v
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let v = nsView as? FileDragNSView else { return }
+        configure(v)
+    }
+
+    private func configure(_ v: FileDragNSView) {
+        v.isDragEnabled = isEnabled
+        v.chevronRange = chevronRange
+        v.urlsProvider = urls
+        v.clickHandler = onClick
+        v.toggleExpandHandler = onToggleExpand
+    }
+}
+
+private final class FileDragNSView: NSView, NSDraggingSource {
+    var isDragEnabled = true
+    var chevronRange: ClosedRange<CGFloat>?
+    var urlsProvider: (() -> [URL])?
+    var clickHandler: ((Bool, Bool, Int) -> Void)?
+    var toggleExpandHandler: (() -> Void)?
+
+    func draggingSession(_ session: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        // `.copy` outside the app (Finder/IINA/etc.), generic within.
+        context == .withinApplication ? .generic : [.copy, .link, .generic]
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard isDragEnabled else { return nil }
+        guard let event = NSApp.currentEvent else { return nil }
+        switch event.type {
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            // Leave control-click to the right-click catcher below us.
+            if event.modifierFlags.contains(.control) { return nil }
+            let local = convert(point, from: superview)
+            return bounds.contains(local) ? self : nil
+        default:
+            return nil
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let start = event.locationInWindow
+        let threshold: CGFloat = 4
+        var didDrag = false
+        trackingLoop: while let next = window?.nextEvent(matching: [.leftMouseUp, .leftMouseDragged]) {
+            switch next.type {
+            case .leftMouseDragged:
+                if hypot(next.locationInWindow.x - start.x,
+                         next.locationInWindow.y - start.y) > threshold {
+                    didDrag = true
+                    beginDrag(with: next)
+                    break trackingLoop
+                }
+            case .leftMouseUp:
+                break trackingLoop
+            default:
+                break
+            }
+        }
+        guard !didDrag else { return }
+        // A click (not a drag). Forward to the chevron toggle when it lands on
+        // the disclosure triangle, otherwise to selection / open.
+        if let range = chevronRange, let toggle = toggleExpandHandler {
+            let local = convert(event.locationInWindow, from: nil)
+            if range.contains(local.x) {
+                toggle()
+                return
+            }
+        }
+        clickHandler?(event.modifierFlags.contains(.command),
+                      event.modifierFlags.contains(.shift),
+                      event.clickCount)
+    }
+
+    private func beginDrag(with event: NSEvent) {
+        guard let urls = urlsProvider?(), !urls.isEmpty else { return }
+        let origin = convert(event.locationInWindow, from: nil)
+        let iconSize = NSSize(width: 32, height: 32)
+        let items: [NSDraggingItem] = urls.enumerated().map { index, url in
+            let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            icon.size = iconSize
+            let offset = CGFloat(index) * 6
+            item.setDraggingFrame(
+                NSRect(x: origin.x - 16 + offset,
+                       y: origin.y - 16 - offset,
+                       width: iconSize.width, height: iconSize.height),
+                contents: icon
+            )
+            return item
+        }
+        beginDraggingSession(with: items, event: event, source: self)
     }
 }
 
