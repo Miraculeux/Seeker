@@ -203,9 +203,17 @@ struct FileContentView: View {
     private func fileDragProvider(for url: URL) -> NSItemProvider {
         let provider = NSItemProvider()
         provider.suggestedName = url.lastPathComponent
-        let data = url.dataRepresentation
-        provider.registerDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier, visibility: .all) { completion in
-            completion(data, nil)
+        // Register an in-place file representation so receivers reference the
+        // ORIGINAL file on disk. Registering only a data representation for
+        // public.file-url makes macOS synthesize a temporary/cached copy,
+        // which is what other apps ended up receiving.
+        provider.registerFileRepresentation(
+            forTypeIdentifier: UTType.fileURL.identifier,
+            fileOptions: [.openInPlace],
+            visibility: .all
+        ) { completion in
+            // `coordinated: true` hands back the real URL without copying.
+            completion(url, true, nil)
             return nil
         }
         return provider
