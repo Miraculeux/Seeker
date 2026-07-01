@@ -216,8 +216,14 @@ class FileExplorerViewModel: Identifiable {
                 // it's not the one this tab is viewing. Cuts cross-tab
                 // fan-out from O(tabs) to O(tabs viewing same dir).
                 if let dir = affectedDir {
-                    let here = self._standardizedCurrentURL
-                    let changed = dir.standardizedFileURL
+                    // Compare by path (not URL) so a trailing-slash
+                    // mismatch doesn't defeat the check: source dirs are
+                    // derived via deletingLastPathComponent() (which adds a
+                    // trailing slash), while a pane's currentURL from
+                    // navigation has none. standardizedFileURL keeps the
+                    // slash, so URL equality would wrongly differ.
+                    let here = self._standardizedCurrentURL.path
+                    let changed = dir.standardizedFileURL.path
                     if here != changed { return }
                 }
                 self.loadFiles()
