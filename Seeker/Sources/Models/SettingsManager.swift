@@ -188,6 +188,7 @@ final class SettingsManager {
         static let iconSize = "iconSize"
         static let userFavorites = "userFavoritePaths"
         static let autoPreviewInterval = "autoPreviewInterval"
+        static let textPreviewByteLimit = "textPreviewByteLimit"
     }
 
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
@@ -226,6 +227,27 @@ final class SettingsManager {
         set {
             let clamped = min(max(newValue, Self.autoPreviewIntervalMin), Self.autoPreviewIntervalMax)
             defaults.set(clamped, forKey: Keys.autoPreviewInterval)
+        }
+    }
+
+    // MARK: - Text Preview
+
+    /// Maximum number of bytes read from a file when showing the plain-text
+    /// preview (`[` / `]`). Files larger than this are truncated so opening
+    /// a huge file stays instant. Stored in bytes; UI edits it in KB.
+    static let textPreviewByteLimitDefault: Int = 128 * 1024      // 128 KB
+    static let textPreviewByteLimitMin: Int = 1 * 1024            // 1 KB
+    static let textPreviewByteLimitMax: Int = 16 * 1024 * 1024    // 16 MB
+
+    var textPreviewByteLimit: Int {
+        get {
+            let raw = defaults.object(forKey: Keys.textPreviewByteLimit) as? Int
+            let value = raw ?? Self.textPreviewByteLimitDefault
+            return min(max(value, Self.textPreviewByteLimitMin), Self.textPreviewByteLimitMax)
+        }
+        set {
+            let clamped = min(max(newValue, Self.textPreviewByteLimitMin), Self.textPreviewByteLimitMax)
+            defaults.set(clamped, forKey: Keys.textPreviewByteLimit)
         }
     }
 

@@ -7,6 +7,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var spaceMonitor: Any?
     var mouseDownMonitor: Any?
     let quickLookPanel = QuickLookPanelController()
+    let textPreviewPanel = TextPreviewPanelController()
     weak var appState: AppState?
     private var typeAheadBuffer: String = ""
     private var typeAheadTimer: Timer?
@@ -157,12 +158,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     }
                     return nil // consume space so List doesn't scroll/deselect
+                } else if event.keyCode == 33 || event.keyCode == 30 {
+                    // `[` (33) or `]` (30) → toggle the plain-text preview
+                    // panel for the current selection. While it's open the
+                    // arrow keys move the selection and it auto-updates.
+                    if !event.isARepeat, let delegate = AppDelegate.shared {
+                        if delegate.textPreviewPanel.isVisible {
+                            delegate.textPreviewPanel.close()
+                        } else if let url = delegate.appState?.activeExplorer.selectedFile?.url {
+                            delegate.textPreviewPanel.togglePreview(for: url)
+                        }
+                    }
+                    return nil
                 } else if event.keyCode == 53 {
-                    // Escape → close Quick Look preview if visible
-                    if let delegate = AppDelegate.shared,
-                       delegate.quickLookPanel.isVisible {
-                        delegate.quickLookPanel.close()
-                        return nil
+                    // Escape → close text preview / Quick Look preview if visible
+                    if let delegate = AppDelegate.shared {
+                        if delegate.textPreviewPanel.isVisible {
+                            delegate.textPreviewPanel.close()
+                            return nil
+                        }
+                        if delegate.quickLookPanel.isVisible {
+                            delegate.quickLookPanel.close()
+                            return nil
+                        }
                     }
                 } else if event.keyCode == 8, event.modifierFlags.contains(.command) {
                     // Cmd+C → Copy selected files
@@ -354,6 +372,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func updateQuickLookIfVisible(url: URL) {
         if quickLookPanel.isVisible {
             quickLookPanel.updatePreview(for: url)
+        }
+    }
+
+    func updateTextPreviewIfVisible(url: URL) {
+        if textPreviewPanel.isVisible {
+            textPreviewPanel.updatePreview(for: url)
         }
     }
 

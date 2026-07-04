@@ -30,6 +30,7 @@ struct GeneralSettingsTab: View {
     @State private var rememberLastLocation: Bool = SettingsManager.shared.rememberLastLocation
     @State private var showFileExtensions: Bool = SettingsManager.shared.showFileExtensions
     @State private var autoPreviewInterval: Double = SettingsManager.shared.autoPreviewInterval
+    @State private var textPreviewLimitKB: Double = Double(SettingsManager.shared.textPreviewByteLimit / 1024)
     @State private var thumbnailCacheBytes: Int64?
     @State private var isClearingCache: Bool = false
     @State private var cacheSizeRefreshTask: Task<Void, Never>?
@@ -89,6 +90,43 @@ struct GeneralSettingsTab: View {
                     SettingsManager.shared.autoPreviewInterval = clamped
                 }
                 Text("Seconds between slides when Auto Preview is running through a folder or a multi-selection of files. Type any value (minimum \(String(format: "%.2f", SettingsManager.autoPreviewIntervalMin))s).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Text Preview") {
+                HStack {
+                    Text("Read limit")
+                    Spacer()
+                    TextField(
+                        "",
+                        value: $textPreviewLimitKB,
+                        format: .number.precision(.fractionLength(0))
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .frame(width: 80)
+                    Text("KB")
+                        .foregroundStyle(.secondary)
+                    Stepper(
+                        "",
+                        value: $textPreviewLimitKB,
+                        in: Double(SettingsManager.textPreviewByteLimitMin / 1024)...Double(SettingsManager.textPreviewByteLimitMax / 1024),
+                        step: 64
+                    )
+                    .labelsHidden()
+                }
+                .onChange(of: textPreviewLimitKB) { _, newValue in
+                    let minKB = Double(SettingsManager.textPreviewByteLimitMin / 1024)
+                    let maxKB = Double(SettingsManager.textPreviewByteLimitMax / 1024)
+                    let clamped = min(max(newValue, minKB), maxKB)
+                    if clamped != newValue {
+                        textPreviewLimitKB = clamped
+                    }
+                    SettingsManager.shared.textPreviewByteLimit = Int(clamped) * 1024
+                }
+                Text("Press [ or ] to open the plain-text preview for any file. Only the first \(Int(textPreviewLimitKB)) KB are read so large files open instantly. While the window is open, use the arrow keys to browse files.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
