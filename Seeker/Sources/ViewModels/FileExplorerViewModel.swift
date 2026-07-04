@@ -1003,6 +1003,24 @@ class FileExplorerViewModel: Identifiable {
         pasteFiles(forceMove: true)
     }
 
+    /// Directory that a paste should drop into. When a single item is
+    /// selected the target follows the selection so pasting feels natural
+    /// in the expandable list/tree view:
+    ///   - a selected folder → paste *into* that folder
+    ///   - a selected file   → paste into the folder that contains it
+    /// Any other case (no selection, or a multi-selection spanning
+    /// different folders) falls back to the pane's current directory.
+    private func pasteDestination() -> URL {
+        let selection = effectiveSelection
+        guard selection.count == 1, let item = selection.first else {
+            return currentURL
+        }
+        if item.isDirectory && !item.isPackage {
+            return item.url
+        }
+        return item.url.deletingLastPathComponent()
+    }
+
     private func pasteFiles(forceMove: Bool) {
         let urls: [URL]
         if !Self.clipboard.isEmpty {
@@ -1015,7 +1033,20 @@ class FileExplorerViewModel: Identifiable {
         }
 
         let shouldMove = forceMove || Self.clipboardIsCut
-        let dest = currentURL
+        var dest = pasteDestination()
+
+        // Never drop items into themselves or one of their own descendants
+        // (e.g. folder A is on the clipboard *and* selected). That's an
+        // invalid move and a pathological copy, so fall back to the pane's
+        // current directory.
+        let standardizedDest = dest.standardizedFileURL
+        let landsInSource = urls.contains { src in
+            let s = src.standardizedFileURL
+            return standardizedDest == s || standardizedDest.path.hasPrefix(s.path + "/")
+        }
+        if landsInSource {
+            dest = currentURL
+        }
 
         if shouldMove {
             Self.clipboard = []
