@@ -10,6 +10,7 @@ struct FileInfoView: View {
     @State private var previewImage: NSImage?
     @State private var imageMeta: ImageMetadata?
     @State private var permissions: Permissions?
+    @State private var attrError: String?
     @State private var multiSelectionTotalSize: Int64?
     @State private var multiSelectionSizeTask: Task<Void, Never>?
     @State private var folderSize: Int64?
@@ -622,27 +623,88 @@ struct FileInfoView: View {
     // MARK: - Permissions
 
     private struct Permissions: Equatable {
-        var readable: Bool
-        var writable: Bool
-        var executable: Bool
+        /// POSIX permission bits masked to 0o777 (owner/group/other rwx).
+        var mode: mode_t
+        var isHidden: Bool
+        var isLocked: Bool
     }
 
     private nonisolated static func computePermissions(at url: URL) -> Permissions {
         let fm = FileManager.default
         let path = url.path
-        return Permissions(
-            readable: fm.isReadableFile(atPath: path),
-            writable: fm.isWritableFile(atPath: path),
-            executable: fm.isExecutableFile(atPath: path)
+        let attrs = try? fm.attributesOfItem(atPath: path)
+        let mode = (attrs?[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
+        let locked = (attrs?[.immutable] as? NSNumber)?.boolValue ?? false
+        let hidden = (try? url.resourceValues(forKeys: [.isHiddenKey]))?.isHidden ?? false
+        return Permissions(mode: mode & 0o777, isHidden: hidden, isLocked: locked)
+    }
+
+    /// Writes the desired attributes to disk. Runs off the main actor.
+    /// The user-immutable ("Locked") flag is cleared first so the other
+    /// changes can be applied, then re-set last if requested.
+    /// Returns a localized error string on failure, `nil` on success.
+    private nonisolated static func writeAttributes(_ p: Permissions, at url: URL) -> String? {
+        let fm = FileManager.default
+        let path = url.path
+        do {
+            try fm.setAttributes([.immutable: false], ofItemAtPath: path)
+            try fm.setAttributes([.posixPermissions: NSNumber(value: p.mode & 0o777)], ofItemAtPath: path)
+            var mutableURL = url
+            var rv = URLResourceValues()
+            rv.isHidden = p.isHidden
+            try mutableURL.setResourceValues(rv)
+            if p.isLocked {
+                try fm.setAttributes([.immutable: true], ofItemAtPath: path)
+            }
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Optimistically updates the UI, writes the change to disk off-main,
+    /// then re-reads the real on-disk state (reverting the UI on failure).
+    private func applyAttributes(_ new: Permissions, to file: FileItem) {
+        let url = file.url
+        permissions = new
+        attrError = nil
+        Task { @MainActor in
+            let err = await Task.detached(priority: .userInitiated) {
+                Self.writeAttributes(new, at: url)
+            }.value
+            let actual = await Task.detached(priority: .userInitiated) {
+                Self.computePermissions(at: url)
+            }.value
+            guard selectedFile?.id == file.id else { return }
+            attrError = err
+            permissions = actual
+        }
+    }
+
+    private func bitBinding(_ file: FileItem, _ mask: mode_t) -> Binding<Bool> {
+        Binding(
+            get: { ((permissions?.mode ?? 0) & mask) != 0 },
+            set: { on in
+                guard var p = permissions else { return }
+                if on { p.mode |= mask } else { p.mode &= ~mask }
+                applyAttributes(p, to: file)
+            }
+        )
+    }
+
+    private func flagBinding(_ file: FileItem, _ keyPath: WritableKeyPath<Permissions, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { permissions?[keyPath: keyPath] ?? false },
+            set: { on in
+                guard var p = permissions else { return }
+                p[keyPath: keyPath] = on
+                applyAttributes(p, to: file)
+            }
         )
     }
 
     private func permissionsSection(_ file: FileItem) -> some View {
-        // Use cached values populated by the async .task; default to false
-        // until the first compute completes (typically within a frame).
-        let p = permissions ?? Permissions(readable: false, writable: false, executable: false)
-
-        return VStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Permissions")
                     .font(.system(size: 10, weight: .medium))
@@ -650,25 +712,65 @@ struct FileInfoView: View {
                 Spacer()
             }
 
-            HStack(spacing: 8) {
-                permBadge("R", active: p.readable)
-                permBadge("W", active: p.writable)
-                permBadge("X", active: p.executable)
-                Spacer()
+            // Column headers
+            HStack(spacing: 0) {
+                Text("")
+                    .frame(width: 48, alignment: .leading)
+                ForEach(["R", "W", "X"], id: \.self) { h in
+                    Text(h)
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .frame(width: 26)
+                }
+                Spacer(minLength: 0)
+            }
+
+            permRow(file, "Owner", read: 0o400, write: 0o200, exec: 0o100)
+            permRow(file, "Group", read: 0o040, write: 0o020, exec: 0o010)
+            permRow(file, "Other", read: 0o004, write: 0o002, exec: 0o001)
+
+            Divider()
+                .padding(.vertical, 2)
+
+            Toggle(isOn: flagBinding(file, \.isHidden)) {
+                Text("Hidden")
+                    .font(.system(size: 10))
+            }
+            .toggleStyle(.checkbox)
+            .controlSize(.mini)
+
+            Toggle(isOn: flagBinding(file, \.isLocked)) {
+                Text("Locked")
+                    .font(.system(size: 10))
+            }
+            .toggleStyle(.checkbox)
+            .controlSize(.mini)
+
+            if let attrError {
+                Text(attrError)
+                    .font(.system(size: 9))
+                    .foregroundColor(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, 12)
     }
 
-    private func permBadge(_ letter: String, active: Bool) -> some View {
-        Text(letter)
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
-            .foregroundColor(active ? .white : .secondary.opacity(0.5))
-            .frame(width: 22, height: 18)
-            .background(
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(active ? Color.accentColor.opacity(0.8) : Color.primary.opacity(0.06))
-            )
+    private func permRow(_ file: FileItem, _ label: String, read: mode_t, write: mode_t, exec: mode_t) -> some View {
+        HStack(spacing: 0) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(.primary.opacity(0.8))
+                .frame(width: 48, alignment: .leading)
+            ForEach([read, write, exec], id: \.self) { mask in
+                Toggle("", isOn: bitBinding(file, mask))
+                    .labelsHidden()
+                    .toggleStyle(.checkbox)
+                    .controlSize(.mini)
+                    .frame(width: 26)
+            }
+            Spacer(minLength: 0)
+        }
     }
 
     // MARK: - Helpers
