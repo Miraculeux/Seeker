@@ -12,9 +12,10 @@ import ImageIO
 ///    (falling back to the file's creation date) and is formatted with a
 ///    user-supplied pattern.
 ///
-/// The file extension is always preserved for the Sequence and EXIF
-/// modes; Find & Replace operates on the whole file name so it can touch
-/// the extension if the user really wants to.
+/// The file extension is always preserved in every mode: Sequence and
+/// EXIF build a fresh name and re-append the extension, and Find & Replace
+/// only operates on the name portion without the extension so the suffix
+/// is never matched or altered.
 @MainActor @Observable
 final class BatchRenamer {
     enum Mode: String, CaseIterable, Identifiable {
@@ -181,20 +182,113 @@ final class BatchRenamer {
     // MARK: - Name builders
 
     private func findReplaceName(for url: URL) -> String {
-        let name = url.lastPathComponent
-        guard !find.isEmpty else { return name }
+        let fullName = url.lastPathComponent
+        guard !find.isEmpty else { return fullName }
+        // Operate only on the name without its extension so the suffix
+        // (e.g. ".mp4") is never matched or altered by the find pattern.
+        let ext = url.pathExtension
+        let base = ext.isEmpty ? fullName : String(fullName.dropLast(ext.count + 1))
+        let newBase: String
         if useRegex {
             let options: NSRegularExpression.Options = ignoreCase ? [.caseInsensitive] : []
             guard let re = try? NSRegularExpression(pattern: find, options: options) else {
-                return name
+                return fullName
             }
-            let range = NSRange(name.startIndex..., in: name)
-            return re.stringByReplacingMatches(in: name, options: [], range: range, withTemplate: replacement)
+            let range = NSRange(base.startIndex..., in: base)
+            let matches = re.matches(in: base, options: [], range: range)
+            if matches.isEmpty {
+                newBase = base
+            } else {
+                // Custom replacement so the template can zero-pad capture
+                // groups via `${n:0Wd}` (e.g. `${1:02d}` -> "01"), which
+                // NSRegularExpression's built-in template can't do.
+                var out = ""
+                var lastEnd = base.startIndex
+                for m in matches {
+                    guard let r = Range(m.range, in: base) else { continue }
+                    out += base[lastEnd..<r.lowerBound]
+                    out += Self.expandTemplate(replacement, match: m, in: base)
+                    lastEnd = r.upperBound
+                }
+                out += base[lastEnd...]
+                newBase = out
+            }
         } else {
             let options: String.CompareOptions = ignoreCase ? [.caseInsensitive] : []
-            return name.replacingOccurrences(of: find, with: replacement, options: options)
+            newBase = base.replacingOccurrences(of: find, with: replacement, options: options)
         }
+        return ext.isEmpty ? newBase : "\(newBase).\(ext)"
     }
+
+    /// Expands a Find & Replace template against a single regex match.
+    ///
+    /// Supported tokens:
+    /// - `$0`…`$N` / `${N}` — the captured text of group *N*.
+    /// - `${N:0Wd}` — group *N* zero-padded to width *W* (e.g. `${1:02d}`).
+    /// - `${N:Wd}` / `${N:W}` — group *N* space-padded to width *W*.
+    /// - `$$` — a literal `$`.
+    nonisolated static func expandTemplate(_ template: String, match: NSTextCheckingResult, in source: String) -> String {
+        func group(_ n: Int) -> String {
+            guard n >= 0, n < match.numberOfRanges else { return "" }
+            let r = match.range(at: n)
+            guard r.location != NSNotFound, let sr = Range(r, in: source) else { return "" }
+            return String(source[sr])
+        }
+
+        let chars = Array(template)
+        var result = ""
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            guard c == "$", i + 1 < chars.count else {
+                result.append(c)
+                i += 1
+                continue
+            }
+            let next = chars[i + 1]
+            if next == "$" {
+                result.append("$")
+                i += 2
+            } else if next == "{" {
+                if let close = chars[(i + 2)...].firstIndex(of: "}") {
+                    let inner = String(chars[(i + 2)..<close])
+                    result.append(expandGroupSpec(inner, group: group))
+                    i = close + 1
+                } else {
+                    result.append(c)
+                    i += 1
+                }
+            } else if next.isNumber {
+                var j = i + 1
+                var num = ""
+                while j < chars.count, chars[j].isNumber {
+                    num.append(chars[j])
+                    j += 1
+                }
+                if let n = Int(num) { result.append(group(n)) }
+                i = j
+            } else {
+                result.append(c)
+                i += 1
+            }
+        }
+        return result
+    }
+
+    /// Expands the inside of a `${…}` token, e.g. `"1"` or `"1:02d"`.
+    private nonisolated static func expandGroupSpec(_ spec: String, group: (Int) -> String) -> String {
+        let parts = spec.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        guard let n = Int(parts[0].trimmingCharacters(in: .whitespaces)) else { return "" }
+        let value = group(n)
+        guard parts.count == 2 else { return value }
+        let format = parts[1]
+        let zeroFill = format.hasPrefix("0")
+        let widthDigits = format.filter(\.isNumber)
+        guard let width = Int(widthDigits), value.count < width else { return value }
+        let pad = String(repeating: zeroFill ? "0" : " ", count: width - value.count)
+        return pad + value
+    }
+
 
     private func sequenceName(for url: URL, index: Int, width: Int) -> String {
         let ext = url.pathExtension

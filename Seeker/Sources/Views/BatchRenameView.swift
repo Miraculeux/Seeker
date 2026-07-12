@@ -103,6 +103,13 @@ struct BatchRenameView: View {
             }
             .toggleStyle(.checkbox)
             .font(.system(size: 11))
+
+            if renamer.useRegex {
+                Text("Use $1, $2… for capture groups. Zero-pad with ${1:02d} (e.g. \"1\" → \"01\").")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
