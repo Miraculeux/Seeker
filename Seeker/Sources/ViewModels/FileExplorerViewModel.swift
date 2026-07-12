@@ -828,6 +828,9 @@ class FileExplorerViewModel: Identifiable {
             navigateTo(item.url)
         } else if canDecompress(item) {
             decompressAndOpen(item)
+        } else if let appURL = SettingsManager.shared.defaultApp(forExtension: item.url.pathExtension) {
+            // User configured an "Always Open With" app for this extension.
+            NSWorkspace.shared.open([item.url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
         } else {
             NSWorkspace.shared.open(item.url)
         }

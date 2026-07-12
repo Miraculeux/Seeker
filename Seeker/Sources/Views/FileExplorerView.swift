@@ -438,10 +438,16 @@ struct FileContentView: View {
         return false
     }
 
+    /// Persists `appURL` as the always-open-with app for `ext` and opens
+    /// `fileURL` with it immediately so the choice takes effect at once.
+    private func setDefaultApp(_ appURL: URL, forExtension ext: String, openNow fileURL: URL) {
+        SettingsManager.shared.setDefaultApp(appURL, forExtension: ext)
+        NSWorkspace.shared.open([fileURL], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+    }
+
     @ViewBuilder
     private func fileContextMenu(for file: FileItem) -> some View {
         Button("Open") { viewModel.openItem(file) }
-
         if !file.isDirectory || file.isPackage {
             let appURLs = OpenWithAppsCache.apps(for: file.url)
             if !appURLs.isEmpty {
@@ -459,6 +465,44 @@ struct FileContentView: View {
                         panel.allowsMultipleSelection = false
                         if panel.runModal() == .OK, let appURL = panel.url {
                             NSWorkspace.shared.open([file.url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+                        }
+                    }
+                }
+
+                // "Always Open With": persist a per-extension default app so
+                // future opens (double-click / Enter / Open) use it. Only
+                // meaningful for files that have an extension.
+                let ext = file.url.pathExtension
+                if !ext.isEmpty {
+                    let currentDefault = SettingsManager.shared.defaultApp(forExtension: ext)
+                    Menu("Always Open With") {
+                        ForEach(appURLs, id: \.self) { appURL in
+                            let isCurrent = currentDefault?.standardizedFileURL == appURL.standardizedFileURL
+                            Button {
+                                setDefaultApp(appURL, forExtension: ext, openNow: file.url)
+                            } label: {
+                                if isCurrent {
+                                    Label(FileManager.default.displayName(atPath: appURL.path), systemImage: "checkmark")
+                                } else {
+                                    Text(FileManager.default.displayName(atPath: appURL.path))
+                                }
+                            }
+                        }
+                        Divider()
+                        Button("Other…") {
+                            let panel = NSOpenPanel()
+                            panel.allowedContentTypes = [.application]
+                            panel.directoryURL = URL(fileURLWithPath: "/Applications")
+                            panel.allowsMultipleSelection = false
+                            if panel.runModal() == .OK, let appURL = panel.url {
+                                setDefaultApp(appURL, forExtension: ext, openNow: file.url)
+                            }
+                        }
+                        if currentDefault != nil {
+                            Divider()
+                            Button("Remove Default for .\(ext.lowercased())") {
+                                SettingsManager.shared.setDefaultApp(nil, forExtension: ext)
+                            }
                         }
                     }
                 }

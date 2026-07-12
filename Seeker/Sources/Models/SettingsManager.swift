@@ -189,8 +189,8 @@ final class SettingsManager {
         static let userFavorites = "userFavoritePaths"
         static let autoPreviewInterval = "autoPreviewInterval"
         static let textPreviewByteLimit = "textPreviewByteLimit"
+        static let defaultAppsByExtension = "defaultAppsByExtension"
     }
-
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
     /// iconSizeMax] on read so a corrupted/legacy value can't escape the
     /// supported range. Upper bound matches Finder's icon-view slider.
@@ -249,6 +249,53 @@ final class SettingsManager {
             let clamped = min(max(newValue, Self.textPreviewByteLimitMin), Self.textPreviewByteLimitMax)
             defaults.set(clamped, forKey: Keys.textPreviewByteLimit)
         }
+    }
+
+    // MARK: - Default "Always Open With" Apps
+
+    /// Maps a lowercase file extension (e.g. `"mov"`) to the file-system
+    /// path of the application that should always open files of that type
+    /// **from within Seeker**. This does not change the system-wide default
+    /// handler; it only affects how Seeker launches files.
+    var defaultAppPathsByExtension: [String: String] {
+        get { defaults.dictionary(forKey: Keys.defaultAppsByExtension) as? [String: String] ?? [:] }
+        set {
+            if newValue.isEmpty {
+                defaults.removeObject(forKey: Keys.defaultAppsByExtension)
+            } else {
+                defaults.set(newValue, forKey: Keys.defaultAppsByExtension)
+            }
+        }
+    }
+
+    /// Returns the app URL configured to always open files with the given
+    /// extension, or `nil` when no mapping exists or the app no longer
+    /// exists on disk (stale mappings are pruned lazily on read).
+    func defaultApp(forExtension ext: String) -> URL? {
+        let key = ext.lowercased()
+        guard !key.isEmpty, let path = defaultAppPathsByExtension[key] else { return nil }
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: path) else {
+            var map = defaultAppPathsByExtension
+            map.removeValue(forKey: key)
+            defaultAppPathsByExtension = map
+            return nil
+        }
+        return url
+    }
+
+    /// Sets (or clears, when `appURL` is `nil`) the always-open-with app for
+    /// the given file extension.
+    func setDefaultApp(_ appURL: URL?, forExtension ext: String) {
+        let key = ext.lowercased()
+        guard !key.isEmpty else { return }
+        var map = defaultAppPathsByExtension
+        if let appURL {
+            map[key] = appURL.path
+        } else {
+            map.removeValue(forKey: key)
+        }
+        defaultAppPathsByExtension = map
     }
 
     var rememberLastLocation: Bool {

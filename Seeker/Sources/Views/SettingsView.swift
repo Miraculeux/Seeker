@@ -14,6 +14,11 @@ struct SettingsView: View {
                     Label("Columns", systemImage: "tablecells")
                 }
 
+            FileTypesSettingsTab()
+                .tabItem {
+                    Label("File Types", systemImage: "doc.badge.gearshape")
+                }
+
             ShortcutsSettingsTab()
                 .tabItem {
                     Label("Shortcuts", systemImage: "keyboard")
@@ -267,10 +272,92 @@ struct ColumnsSettingsTab: View {
     }
 }
 
+// MARK: - File Types Settings
+
+/// Lets the user review and remove the per-extension "Always Open With"
+/// mappings configured from the file context menu, and add new ones.
+struct FileTypesSettingsTab: View {
+    @State private var mappings: [Mapping] = FileTypesSettingsTab.loadMappings()
+
+    private struct Mapping: Identifiable {
+        var id: String { ext }
+        let ext: String
+        let appPath: String
+        var appName: String { FileManager.default.displayName(atPath: appPath) }
+        var appExists: Bool { FileManager.default.fileExists(atPath: appPath) }
+    }
+
+    var body: some View {
+        Form {
+            Section("Always Open With") {
+                if mappings.isEmpty {
+                    Text("No file types configured. Right-click a file and choose “Always Open With” to set a default app for that file type.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(mappings, id: \.ext) { mapping in
+                        HStack(spacing: 10) {
+                            Image(nsImage: NSWorkspace.shared.icon(forFile: mapping.appPath))
+                                .resizable()
+                                .frame(width: 18, height: 18)
+                            Text(".\(mapping.ext)")
+                                .font(.system(.body, design: .monospaced))
+                                .frame(width: 70, alignment: .leading)
+                            Text(mapping.appName)
+                                .foregroundStyle(mapping.appExists ? Color.primary : Color.red)
+                            Spacer()
+                            Button {
+                                changeApp(for: mapping.ext)
+                            } label: {
+                                Image(systemName: "pencil")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Change app")
+                            Button {
+                                SettingsManager.shared.setDefaultApp(nil, forExtension: mapping.ext)
+                                reload()
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Remove")
+                        }
+                    }
+                }
+
+                Text("These defaults control how Seeker opens files. They do not change your system-wide default applications.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func changeApp(for ext: String) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let appURL = panel.url {
+            SettingsManager.shared.setDefaultApp(appURL, forExtension: ext)
+            reload()
+        }
+    }
+
+    private func reload() {
+        mappings = Self.loadMappings()
+    }
+
+    private static func loadMappings() -> [Mapping] {
+        SettingsManager.shared.defaultAppPathsByExtension
+            .map { Mapping(ext: $0.key, appPath: $0.value) }
+            .sorted { $0.ext < $1.ext }
+    }
+}
+
 // MARK: - Shortcuts Settings
 
-struct ShortcutsSettingsTab: View {
-    @State private var shortcuts: [ShortcutAction: KeyShortcut] = {
+struct ShortcutsSettingsTab: View {    @State private var shortcuts: [ShortcutAction: KeyShortcut] = {
         var map: [ShortcutAction: KeyShortcut] = [:]
         for action in ShortcutAction.allCases {
             map[action] = SettingsManager.shared.shortcut(for: action)
