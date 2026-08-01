@@ -323,18 +323,29 @@ class AppState {
             rightPane.activeTab.navigateTo(rightURL)
         }
         if settings.rememberLastLocation {
-            if let raw = settings.lastLeftPaneViewMode,
+            let store = DirectoryViewStateStore.shared
+            // A directory's own saved view state (per-folder) takes
+            // precedence over the global last-used pane view mode, and we
+            // apply the global mode without re-recording it so an
+            // uncustomised folder stays uncustomised.
+            if !(settings.rememberViewPerFolder
+                 && store.state(for: leftPane.activeTab.currentURL) != nil),
+               let raw = settings.lastLeftPaneViewMode,
                let mode = FileExplorerViewModel.ViewMode(rawValue: raw) {
-                leftPane.activeTab.viewMode = mode
+                leftPane.activeTab.applyViewModeWithoutPersisting(mode)
             }
-            if let raw = settings.lastRightPaneViewMode,
+            if !(settings.rememberViewPerFolder
+                 && store.state(for: rightPane.activeTab.currentURL) != nil),
+               let raw = settings.lastRightPaneViewMode,
                let mode = FileExplorerViewModel.ViewMode(rawValue: raw) {
-                rightPane.activeTab.viewMode = mode
+                rightPane.activeTab.applyViewModeWithoutPersisting(mode)
             }
         }
     }
 
     func saveCurrentLocations() {
+        // Persist any pending per-directory view state before quitting.
+        DirectoryViewStateStore.shared.flushNow()
         let settings = SettingsManager.shared
         guard settings.rememberLastLocation else { return }
         settings.saveLocations(

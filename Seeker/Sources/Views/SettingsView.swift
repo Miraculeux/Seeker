@@ -34,6 +34,14 @@ struct GeneralSettingsTab: View {
     @Environment(AppState.self) private var appState
     @State private var rememberLastLocation: Bool = SettingsManager.shared.rememberLastLocation
     @State private var showFileExtensions: Bool = SettingsManager.shared.showFileExtensions
+    @State private var rememberViewPerFolder: Bool = SettingsManager.shared.rememberViewPerFolder
+    @State private var perFolderCount: Int = DirectoryViewStateStore.shared.count
+    @State private var defaultSortOrder: FileExplorerViewModel.SortOrder =
+        FileExplorerViewModel.SortOrder(rawValue: SettingsManager.shared.defaultSortOrder) ?? .name
+    @State private var defaultSortAscending: Bool = SettingsManager.shared.defaultSortAscending
+    @State private var defaultViewMode: FileExplorerViewModel.ViewMode =
+        FileExplorerViewModel.ViewMode(rawValue: SettingsManager.shared.defaultViewMode) ?? .list
+    @State private var defaultShowHiddenFiles: Bool = SettingsManager.shared.defaultShowHiddenFiles
     @State private var autoPreviewInterval: Double = SettingsManager.shared.autoPreviewInterval
     @State private var textPreviewLimitKB: Double = Double(SettingsManager.shared.textPreviewByteLimit / 1024)
     @State private var thumbnailCacheBytes: Int64?
@@ -48,6 +56,57 @@ struct GeneralSettingsTab: View {
                         SettingsManager.shared.rememberLastLocation = newValue
                     }
                 Text("When enabled, Seeker will restore the folder locations of both explorer panels on next launch.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Folder View Settings") {
+                Toggle("Remember view settings per folder", isOn: $rememberViewPerFolder)
+                    .onChange(of: rememberViewPerFolder) { _, newValue in
+                        SettingsManager.shared.rememberViewPerFolder = newValue
+                    }
+                Picker("Default sort by", selection: $defaultSortOrder) {
+                    ForEach(FileExplorerViewModel.SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                .onChange(of: defaultSortOrder) { _, newValue in
+                    SettingsManager.shared.defaultSortOrder = newValue.rawValue
+                }
+                Picker("Default order", selection: $defaultSortAscending) {
+                    Text("Ascending").tag(true)
+                    Text("Descending").tag(false)
+                }
+                .onChange(of: defaultSortAscending) { _, newValue in
+                    SettingsManager.shared.defaultSortAscending = newValue
+                }
+                Picker("Default view", selection: $defaultViewMode) {
+                    ForEach(FileExplorerViewModel.ViewMode.allCases, id: \.self) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .onChange(of: defaultViewMode) { _, newValue in
+                    SettingsManager.shared.defaultViewMode = newValue.rawValue
+                }
+                Toggle("Show hidden files by default", isOn: $defaultShowHiddenFiles)
+                    .onChange(of: defaultShowHiddenFiles) { _, newValue in
+                        SettingsManager.shared.defaultShowHiddenFiles = newValue
+                    }
+                HStack {
+                    Text(perFolderCount == 0
+                         ? "No folders customised yet."
+                         : "^[\(perFolderCount) folder](inflect: true) customised.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reset All") {
+                        DirectoryViewStateStore.shared.removeAll()
+                        perFolderCount = DirectoryViewStateStore.shared.count
+                    }
+                    .controlSize(.small)
+                    .disabled(perFolderCount == 0)
+                }
+                Text("Folders you customise remember their own sort order, view mode and hidden-file visibility; every other folder uses the defaults above. Settings are stored in a single file under Application Support that you can delete at any time.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

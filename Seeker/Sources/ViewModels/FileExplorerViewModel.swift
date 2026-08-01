@@ -150,9 +150,15 @@ class FileExplorerViewModel: Identifiable {
     }
     var pathHistory: [URL] = []
     var historyIndex: Int = -1
-    var sortOrder: SortOrder = .name
-    var sortAscending: Bool = true
-    var showHiddenFiles: Bool = false
+    var sortOrder: SortOrder = .name {
+        didSet { persistViewStateIfNeeded() }
+    }
+    var sortAscending: Bool = true {
+        didSet { persistViewStateIfNeeded() }
+    }
+    var showHiddenFiles: Bool = false {
+        didSet { persistViewStateIfNeeded() }
+    }
     var searchText: String = ""
     var isSearching: Bool = false
     var renamingFile: FileItem?
@@ -166,6 +172,7 @@ class FileExplorerViewModel: Identifiable {
             // flattened-tree representation would surface child rows
             // without any indentation cue, which is confusing.
             if oldValue != viewMode { rebuildVisibleFiles() }
+            persistViewStateIfNeeded()
         }
     }
     var undoStack: [UndoableAction] = []
@@ -334,6 +341,11 @@ class FileExplorerViewModel: Identifiable {
         childrenByParentID.removeAll()
         rowDepthByID.removeAll()
 
+        // Apply any per-directory saved view state (sort / view mode /
+        // hidden files) BEFORE loadFiles() so its enumeration sorts with
+        // the restored order in one pass rather than re-sorting after.
+        applySavedViewState(for: url)
+
         // Manage history (skip duplicate if navigating to same URL)
         if !isSameURL {
             if historyIndex < pathHistory.count - 1 {
@@ -347,6 +359,56 @@ class FileExplorerViewModel: Identifiable {
 
         // Notify so AppState can persist location
         NotificationCenter.default.post(name: .explorerDidNavigate, object: nil)
+    }
+
+    /// When true, mutations to the sort / view-mode / hidden-file state are
+    /// NOT written back to `DirectoryViewStateStore`. Set while restoring a
+    /// directory's saved state (or applying the launch-time global view
+    /// mode) so restoring doesn't immediately re-record the same values.
+    @ObservationIgnored private var suppressViewStatePersist = false
+
+    /// Record the current directory's sort / view-mode / hidden-file state.
+    /// No-op while the per-folder feature is disabled or during restore.
+    /// A folder matching the defaults drops its entry instead of storing a
+    /// redundant one.
+    private func persistViewStateIfNeeded() {
+        guard !suppressViewStatePersist,
+              SettingsManager.shared.rememberViewPerFolder else { return }
+        let state = DirectoryViewState(
+            sortOrder: sortOrder.rawValue,
+            sortAscending: sortAscending,
+            viewMode: viewMode.rawValue,
+            showHiddenFiles: showHiddenFiles
+        )
+        if state == DirectoryViewState.appDefault {
+            DirectoryViewStateStore.shared.removeState(for: currentURL)
+        } else {
+            DirectoryViewStateStore.shared.setState(state, for: currentURL)
+        }
+    }
+
+    /// Apply a directory's saved view state, falling back to the app defaults
+    /// so an uncustomised folder resets instead of inheriting the settings of
+    /// the folder we just came from.
+    private func applySavedViewState(for url: URL) {
+        guard SettingsManager.shared.rememberViewPerFolder else { return }
+        let state = DirectoryViewStateStore.shared.state(for: url)
+            ?? DirectoryViewState.appDefault
+        suppressViewStatePersist = true
+        defer { suppressViewStatePersist = false }
+        if let order = SortOrder(rawValue: state.sortOrder) { sortOrder = order }
+        sortAscending = state.sortAscending
+        showHiddenFiles = state.showHiddenFiles
+        if let mode = ViewMode(rawValue: state.viewMode) { viewMode = mode }
+    }
+
+    /// Set the view mode without recording it as this directory's saved
+    /// per-folder state. Used by launch restore of the global last-used
+    /// pane view mode so it doesn't overwrite a directory's own record.
+    func applyViewModeWithoutPersisting(_ mode: ViewMode) {
+        suppressViewStatePersist = true
+        defer { suppressViewStatePersist = false }
+        viewMode = mode
     }
 
     func loadFiles() {

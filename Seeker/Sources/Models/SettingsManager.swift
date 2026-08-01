@@ -190,6 +190,11 @@ final class SettingsManager {
         static let autoPreviewInterval = "autoPreviewInterval"
         static let textPreviewByteLimit = "textPreviewByteLimit"
         static let defaultAppsByExtension = "defaultAppsByExtension"
+        static let rememberViewPerFolder = "rememberViewPerFolder"
+        static let defaultSortOrder = "defaultSortOrder"
+        static let defaultSortAscending = "defaultSortAscending"
+        static let defaultViewMode = "defaultViewMode"
+        static let defaultShowHiddenFiles = "defaultShowHiddenFiles"
     }
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
     /// iconSizeMax] on read so a corrupted/legacy value can't escape the
@@ -301,6 +306,39 @@ final class SettingsManager {
     var rememberLastLocation: Bool {
         get { defaults.bool(forKey: Keys.rememberLastLocation) }
         set { defaults.set(newValue, forKey: Keys.rememberLastLocation) }
+    }
+
+    /// When enabled, each directory remembers its own sort order, sort
+    /// direction, view mode and hidden-file visibility via
+    /// `DirectoryViewStateStore`. Defaults to on.
+    var rememberViewPerFolder: Bool {
+        get { defaults.object(forKey: Keys.rememberViewPerFolder) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Keys.rememberViewPerFolder) }
+    }
+
+    // MARK: - Default Folder View
+
+    /// Settings applied to folders the user hasn't customised. Stored as raw
+    /// values because the `SortOrder` / `ViewMode` enums live in the view
+    /// model layer.
+    var defaultSortOrder: String {
+        get { defaults.string(forKey: Keys.defaultSortOrder) ?? "Name" }
+        set { defaults.set(newValue, forKey: Keys.defaultSortOrder) }
+    }
+
+    var defaultSortAscending: Bool {
+        get { defaults.object(forKey: Keys.defaultSortAscending) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Keys.defaultSortAscending) }
+    }
+
+    var defaultViewMode: String {
+        get { defaults.string(forKey: Keys.defaultViewMode) ?? "List" }
+        set { defaults.set(newValue, forKey: Keys.defaultViewMode) }
+    }
+
+    var defaultShowHiddenFiles: Bool {
+        get { defaults.bool(forKey: Keys.defaultShowHiddenFiles) }
+        set { defaults.set(newValue, forKey: Keys.defaultShowHiddenFiles) }
     }
 
     var showFileExtensions: Bool {
