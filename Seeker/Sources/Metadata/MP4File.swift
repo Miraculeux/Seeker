@@ -458,7 +458,10 @@ struct MP4File {
         for _ in 0..<count {
             guard off + 8 <= end else { return }
             let cur = Int64(bitPattern: data.subdata(in: off..<off+8).beUInt64)
-            let new = UInt64(bitPattern: cur + delta)
+            // A crafted offset near Int64.max would trap on plain addition.
+            let (sum, overflow) = cur.addingReportingOverflow(delta)
+            guard !overflow else { return }
+            let new = UInt64(bitPattern: sum)
             data.replaceSubrange(off..<off+8, with: new.beBytes)
             off += 8
         }
@@ -541,6 +544,11 @@ fileprivate struct Atom {
 
 fileprivate enum AtomParser {
 
+    /// Maximum container nesting honoured while parsing. Real files stay in
+    /// single digits; the cap stops crafted files from recursing until the
+    /// stack overflows.
+    static let maxNestingDepth = 32
+
     /// Container types whose children we recurse into when reading.
     static let containers: Set<String> = [
         "moov", "trak", "mdia", "minf", "stbl", "udta", "meta", "ilst",
@@ -551,7 +559,13 @@ fileprivate enum AtomParser {
     ]
 
     /// Parse sibling atoms from a file handle in [start, end).
-    static func parseSiblings(handle: FileHandle, start: UInt64, end: UInt64) throws -> [Atom] {
+    ///
+    /// `depth` guards against files whose container atoms nest arbitrarily
+    /// deep — each level is only 8 bytes, so an unbounded parser would blow
+    /// the stack on a small crafted file.
+    static func parseSiblings(handle: FileHandle, start: UInt64, end: UInt64,
+                              depth: Int = 0) throws -> [Atom] {
+        guard depth < maxNestingDepth else { return [] }
         var out: [Atom] = []
         var p = start
         while p + 8 <= end {
@@ -567,14 +581,19 @@ fileprivate enum AtomParser {
             } else if size == 0 {
                 size = end - p
             }
-            guard size >= headerLen, p + size <= end else { break }
+            // Subtract rather than add: `p + size` overflows (and traps) when
+            // a crafted 64-bit extended size is near UInt64.max.
+            guard size >= headerLen, size <= end - p else { break }
             let atomEnd = p + size
 
             var children: [Atom] = []
             if containers.contains(type) {
                 var childStart = p + headerLen
                 if type == "meta" { childStart += 4 } // full box
-                children = try parseSiblings(handle: handle, start: childStart, end: atomEnd)
+                if childStart <= atomEnd {
+                    children = try parseSiblings(handle: handle, start: childStart,
+                                                 end: atomEnd, depth: depth + 1)
+                }
             }
             out.append(Atom(type: type, start: p, end: atomEnd, children: children, inMemory: nil))
             p = atomEnd
@@ -594,12 +613,14 @@ fileprivate enum AtomParser {
             var size = size32
             var headerLen = 8
             if size32 == 1, p + 16 <= end {
-                size = Int(data.subdata(in: p+8..<p+16).beUInt64)
+                // A 64-bit size above Int.max would trap on conversion.
+                guard let wide = Int(exactly: data.subdata(in: p+8..<p+16).beUInt64) else { break }
+                size = wide
                 headerLen = 16
             } else if size32 == 0 {
                 size = end - p
             }
-            if size < headerLen || p + size > end { break }
+            if size < headerLen || size > end - p { break }
             let atomEnd = p + size
             // Slice for this atom (full bytes including header).
             let slice = data.subdata(in: p..<atomEnd)
