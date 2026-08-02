@@ -58,18 +58,21 @@ enum FileItemCache {
     /// and SwiftUI body reads happen on the main actor.
     nonisolated(unsafe) private static var _showFileExtensions: Bool =
         UserDefaults.standard.object(forKey: "showFileExtensions") as? Bool ?? false
-    nonisolated(unsafe) private static var _observerInstalled: Bool = false
-    static var showFileExtensions: Bool {
-        if !_observerInstalled {
-            _observerInstalled = true
-            NotificationCenter.default.addObserver(
-                forName: UserDefaults.didChangeNotification,
-                object: nil, queue: .main
-            ) { _ in
-                _showFileExtensions =
-                    UserDefaults.standard.object(forKey: "showFileExtensions") as? Bool ?? false
-            }
+    /// Installed exactly once: `static let` initialisation is run under
+    /// `swift_once`, unlike the previous check-then-set flag which could
+    /// register twice if two threads raced the first read. Intentionally
+    /// never removed — the cache lives for the process lifetime.
+    private static let extensionObserver: Void = {
+        NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil, queue: .main
+        ) { _ in
+            _showFileExtensions =
+                UserDefaults.standard.object(forKey: "showFileExtensions") as? Bool ?? false
         }
+    }()
+    static var showFileExtensions: Bool {
+        _ = extensionObserver
         return _showFileExtensions
     }
 }

@@ -146,9 +146,12 @@ final class FileSearcher {
     ) -> [Result] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        // Match indexed text content, scoped to the root. Escape quotes in
-        // the query to keep the predicate well-formed.
-        let escaped = query.replacingOccurrences(of: "\"", with: "\\\"")
+        // Match indexed text content, scoped to the root. Backslashes must be
+        // escaped before quotes, otherwise a query ending in one escapes the
+        // closing quote and the predicate is rejected.
+        let escaped = query
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         process.arguments = ["-onlyin", root.path, "kMDItemTextContent == \"*\(escaped)*\"cd"]
 
         let pipe = Pipe()

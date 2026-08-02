@@ -2,6 +2,23 @@ import Foundation
 import Observation
 import AppKit
 
+/// Collects URLs from the directory-enumerator error handler, which is an
+/// escaping closure and so can't capture a local `var`.
+private final class URLBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [URL] = []
+
+    func append(_ url: URL) {
+        lock.lock(); defer { lock.unlock() }
+        storage.append(url)
+    }
+
+    var values: [URL] {
+        lock.lock(); defer { lock.unlock() }
+        return storage
+    }
+}
+
 @MainActor @Observable
 class FileOperation: Identifiable {
     let id = UUID()
@@ -28,6 +45,10 @@ class FileOperation: Identifiable {
     var dismissalScheduled: Bool = false
     /// True while this operation is waiting its turn in the serial queue.
     var isQueued: Bool = true
+    /// Items the recursive walk could not read (permissions, vanished
+    /// files). They are absent from the copy, so the user has to be told
+    /// rather than seeing a plain "finished".
+    var skippedItems: [URL] = []
     /// Completion handler invoked on the main actor when the operation
     /// finishes. Stored so the queue pump can call it.
     @ObservationIgnored var onComplete: (@MainActor (FileOperation) -> Void)?
@@ -250,6 +271,17 @@ class FileOperationManager {
             let target = destination.appendingPathComponent(source.lastPathComponent)
             let sameDir = source.deletingLastPathComponent().standardizedFileURL.path == destStd
 
+            // Copying/moving a folder inside itself would recurse into the
+            // copy being written; `moveItem` also fails with an opaque error.
+            if Self.isSelfOrDescendant(destination, of: source) {
+                let alert = NSAlert()
+                alert.messageText = "You can\u{2019}t \(kind == .move ? "move" : "copy") \u{201C}\(source.lastPathComponent)\u{201D} into itself."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+                return nil
+            }
+
             guard fm.fileExists(atPath: target.path) else {
                 plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: false))
                 continue
@@ -291,6 +323,16 @@ class FileOperationManager {
 
     /// Set by `promptConflict` to communicate the "Apply to all" checkbox.
     private var lastPromptApplyToAll = false
+
+    /// True when `destination` is `source` itself or lives underneath it.
+    /// Compares path components so `/a/bc` isn't treated as being inside
+    /// `/a/b`.
+    private nonisolated static func isSelfOrDescendant(_ destination: URL, of source: URL) -> Bool {
+        let src = source.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let dst = destination.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        guard dst.count >= src.count else { return false }
+        return Array(dst.prefix(src.count)) == src
+    }
 
     private func promptConflict(name: String, kind: FileOperation.Kind, hasMore: Bool) -> ConflictChoice {
         let alert = NSAlert()
@@ -341,9 +383,16 @@ class FileOperationManager {
             // For an explicit "Replace", remove the existing destination
             // first so move/copy land on a clean path.
             if item.replace {
-                try? await Task.detached(priority: .userInitiated) {
-                    try FileManager.default.removeItem(at: destURL)
-                }.value
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        try FileManager.default.removeItem(at: destURL)
+                    }.value
+                } catch {
+                    // Continuing would copy onto the surviving item and, for
+                    // a shorter source, leave the old file's tail behind.
+                    op.error = "Couldn\u{2019}t replace \u{201C}\(destURL.lastPathComponent)\u{201D}: \(error.localizedDescription)"
+                    break
+                }
             }
 
             do {
@@ -370,19 +419,32 @@ class FileOperationManager {
             }
         }
 
+        // A finished-but-incomplete copy must not look like a clean success.
+        if op.error == nil, !op.skippedItems.isEmpty {
+            let names = op.skippedItems.prefix(3).map(\.lastPathComponent).joined(separator: ", ")
+            let extra = op.skippedItems.count > 3 ? " and \(op.skippedItems.count - 3) more" : ""
+            op.error = "Skipped \(op.skippedItems.count) unreadable item\(op.skippedItems.count == 1 ? "" : "s"): \(names)\(extra)"
+        }
+
         op.isFinished = true
     }
 
-    /// Build a flat list of (source, destination, size) for all files under a tree.
-    private nonisolated func buildCopyManifest(source: URL, destination: URL) -> [(src: URL, dst: URL, size: Int64)] {
+    /// Build a flat list of (source, destination, size) for all files under a tree,
+    /// plus any entries the walk could not read.
+    private nonisolated func buildCopyManifest(source: URL, destination: URL)
+        -> (pairs: [(src: URL, dst: URL, size: Int64)], skipped: [URL]) {
         let fm = FileManager.default
         var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else { return [] }
+        guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else { return ([], [source]) }
 
         if isDir.boolValue {
             var pairs: [(URL, URL, Int64)] = []
+            let skipped = URLBox()
             if let enumerator = fm.enumerator(at: source, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
-                                               options: [], errorHandler: nil) {
+                                               options: [], errorHandler: { url, _ in
+                                                   skipped.append(url)
+                                                   return true   // keep walking the rest of the tree
+                                               }) {
                 for case let fileURL as URL in enumerator {
                     let rv = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
                     if rv?.isDirectory == true { continue }
@@ -392,15 +454,16 @@ class FileOperationManager {
                     pairs.append((fileURL, destFile, size))
                 }
             }
-            return pairs
+            return (pairs, skipped.values)
         } else {
             let size = Int64((try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
-            return [(source, destination, size)]
+            return ([(source, destination, size)], [])
         }
     }
 
     private func copyWithProgress(from source: URL, to destination: URL, operation: FileOperation) async throws {
-        let manifest = buildCopyManifest(source: source, destination: destination)
+        let (manifest, skipped) = buildCopyManifest(source: source, destination: destination)
+        operation.skippedItems.append(contentsOf: skipped)
 
         for (src, dst, size) in manifest {
             guard !operation.isCancelled else { throw CancellationError() }
@@ -501,6 +564,10 @@ class FileOperationManager {
             throw CocoaError(.fileReadUnknown)
         }
         let fileSize = Int64(st.st_size)
+        // Discard anything already at the destination: the write loop only
+        // fills [0, fileSize), so a pre-existing longer file would keep its
+        // tail and silently produce a corrupt copy.
+        _ = ftruncate(dstFD, 0)
         // st_blocks counts 512-byte units actually allocated. A file using
         // noticeably fewer blocks than its logical length is sparse.
         let allocatedBytes = Int64(st.st_blocks) * 512

@@ -187,9 +187,10 @@ class FileExplorerViewModel: Identifiable {
 
     var canUndo: Bool { !undoStack.isEmpty }
 
-    // Clipboard for copy/cut operations
-    static nonisolated(unsafe) var clipboard: [URL] = []
-    static nonisolated(unsafe) var clipboardIsCut: Bool = false
+    // Clipboard for copy/cut operations. Main-actor isolated (like the rest
+    // of this type) so the compiler enforces single-threaded access.
+    static var clipboard: [URL] = []
+    static var clipboardIsCut: Bool = false
 
     enum ViewMode: String, CaseIterable {
         case list = "List"
