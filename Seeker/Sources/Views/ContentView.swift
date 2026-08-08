@@ -110,6 +110,12 @@ struct ContentView: View {
                 appState.fileSearchRoot = nil
             }
         }
+        .onChange(of: appState.similarImageRequest) { _, newValue in
+            if let request = newValue {
+                openWindow(id: "similar-images", value: request)
+                appState.similarImageRequest = nil
+            }
+        }
         .onChange(of: appState.folderSyncRoots) { _, newValue in
             if let dirs = newValue, dirs.count == 2 {
                 openWindow(id: "folder-sync", value: dirs)
@@ -223,6 +229,14 @@ struct ContentView: View {
                         appState.openSearch()
                     }
                     .keyboardShortcut("f", modifiers: .command)
+
+                    ToolbarBtn(
+                        icon: "photo.stack",
+                        tip: "Find Visually Similar Images"
+                    ) {
+                        appState.openSimilarImageSearch()
+                    }
+                    .disabled(!appState.activeExplorer.canOpenSimilarImageSearch)
 
                     ToolbarBtn(
                         icon: "doc.on.doc",

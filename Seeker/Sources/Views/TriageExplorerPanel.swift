@@ -31,6 +31,7 @@ struct TriageExplorerPanel: View {
     /// Optional secondary label per file (fixed-list mode), e.g. a
     /// relative subpath shown under the name to disambiguate folders.
     var subtitles: [URL: String]? = nil
+    var allowsIconView: Bool = false
     /// Invoked after a file is successfully moved to the Trash.
     var onDeleted: ((URL) -> Void)? = nil
     /// Invoked after an operation that may have changed the set of files
@@ -60,6 +61,10 @@ struct TriageExplorerPanel: View {
     /// The window hosting this panel, captured so we can tell whether
     /// the app-wide ⌘⌫ menu shortcut was meant for us (i.e. we're key).
     @State private var hostWindow: NSWindow?
+    @State private var showsIcons = true
+    @State private var iconSize: CGFloat = 128
+    @State private var iconPinchBase: CGFloat?
+    @State private var renameText = ""
 
     /// Whether this panel shows a fixed list instead of a browsable dir.
     private var isFixed: Bool { fixedURLs != nil }
@@ -94,6 +99,8 @@ struct TriageExplorerPanel: View {
             Divider()
             if items.isEmpty {
                 emptyBody
+            } else if isFixed, allowsIconView, showsIcons {
+                iconGridBody
             } else {
                 listBody
             }
@@ -424,6 +431,60 @@ struct TriageExplorerPanel: View {
         }
     }
 
+    private var iconGridBody: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: iconSize + 42, maximum: iconSize + 62), spacing: 8)],
+                spacing: 8
+            ) {
+                ForEach(items) { file in
+                    FileIconCell(
+                        file: file,
+                        iconSize: iconSize,
+                        isLiveZooming: false,
+                        isSelected: selection.contains(file.url),
+                        isRenaming: false,
+                        renameText: $renameText,
+                        onCommitRename: {},
+                        onCancelRename: {}
+                    )
+                    .equatable()
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { open(file) }
+                    .simultaneousGesture(TapGesture(count: 1).onEnded {
+                        selectRow(file)
+                    })
+                }
+            }
+            .padding(12)
+        }
+        .focusable()
+        .focused($listFocused)
+        .onKeyPress(.space) {
+            guard primaryURL != nil else { return .ignored }
+            previewActive()
+            return .handled
+        }
+        .gesture(
+            MagnifyGesture()
+                .onChanged { value in
+                    if iconPinchBase == nil { iconPinchBase = iconSize }
+                    let base = iconPinchBase ?? iconSize
+                    iconSize = min(max(base * value.magnification, 32), 256)
+                }
+                .onEnded { _ in
+                    iconPinchBase = nil
+                    iconSize = nearestIconSize(to: iconSize)
+                }
+        )
+    }
+
+    private func nearestIconSize(to size: CGFloat) -> CGFloat {
+        FileExplorerViewModel.iconZoomSteps
+            .filter { $0 >= 32 && $0 <= 256 }
+            .min(by: { abs($0 - size) < abs($1 - size) }) ?? size
+    }
+
     /// Selects every visible file. Anchored on the first item so a
     /// following ⇧-click extends from a sensible point.
     private func selectAllItems() {
@@ -584,6 +645,28 @@ struct TriageExplorerPanel: View {
                     .monospacedDigit()
                     .fixedSize()
                     .padding(.leading, 4)
+            }
+
+            if isFixed, allowsIconView {
+                Spacer(minLength: 8)
+                Picker("", selection: $showsIcons) {
+                    Image(systemName: "list.bullet").tag(false)
+                    Image(systemName: "square.grid.2x2").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.mini)
+                .frame(width: 58)
+                .help("List or Icons")
+
+                if showsIcons {
+                    Image(systemName: "photo")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                    Slider(value: $iconSize, in: 32...256, step: 8)
+                        .controlSize(.mini)
+                        .frame(width: 100)
+                        .help("Icon Size")
+                }
             }
             }
             .padding(.horizontal, 8)

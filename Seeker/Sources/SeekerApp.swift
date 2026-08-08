@@ -19,10 +19,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     static func isHelperWindow(_ window: NSWindow?) -> Bool {
         guard let window else { return false }
         let id = window.identifier?.rawValue ?? ""
-        if id.contains("duplicate-finder") || id.contains("directory-compare") {
+        if id.contains("duplicate-finder") || id.contains("directory-compare")
+            || id.contains("similar-images") {
             return true
         }
         return window.title == "Find Duplicates" || window.title == "Compare Folders"
+            || window.title == "Similar Images"
     }
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
@@ -558,6 +560,14 @@ struct SeekerApp: App {
         WindowGroup("Search", id: "file-search", for: URL.self) { $root in
             if let root {
                 FileSearchView(root: root)
+                    .environment(appState)
+            }
+        }
+        .windowResizability(.contentMinSize)
+
+        WindowGroup("Similar Images", id: "similar-images", for: SimilarImageSearchRequest.self) { $request in
+            if let request {
+                SimilarImageSearchView(request: request)
                     .environment(appState)
             }
         }

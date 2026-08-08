@@ -284,6 +284,12 @@ struct FileItem: Identifiable, Hashable {
         !isDirectory && FileItem.editableImageExtensions.contains(url.pathExtension.lowercased())
     }
 
+    var isImage: Bool {
+        guard !isDirectory,
+              let type = UTType(filenameExtension: url.pathExtension) else { return false }
+        return type.conforms(to: .image)
+    }
+
     /// True if Seeker has a native parser/writer for this file's audio or
     /// video tag metadata (see `MediaMetadataService`).
     var isEditableMedia: Bool {

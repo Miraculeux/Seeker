@@ -62,6 +62,20 @@ class AppState {
     /// directory to search under.
     var fileSearchRoot: URL?
 
+    var similarImageRequest: SimilarImageSearchRequest?
+
+    func openSimilarImageSearch() {
+        let active = activeExplorer
+        guard active.canOpenSimilarImageSearch, let reference = active.selectedFile?.url else {
+            NSSound.beep()
+            return
+        }
+        similarImageRequest = SimilarImageSearchRequest(
+            referenceURL: reference,
+            targetDirectory: active.currentURL
+        )
+    }
+
     /// Opens the recursive search window rooted at the active pane's
     /// current directory (or a single selected sub-folder if there is one).
     func openSearch() {

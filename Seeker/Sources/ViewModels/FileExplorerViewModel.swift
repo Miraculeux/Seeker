@@ -1368,6 +1368,10 @@ class FileExplorerViewModel: Identifiable {
         !selectedFileIDs.isEmpty || selectedFile != nil
     }
 
+    var canOpenSimilarImageSearch: Bool {
+        selectedFileIDs.count == 1 && selectedFile?.isImage == true
+    }
+
     /// O(1) for the selection-empty case, otherwise scans the cached
     /// `selectedFiles` set. Toolbar predicates read this every body
     /// invocation so it intentionally avoids the `Array(selectedFiles)`
