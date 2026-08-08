@@ -108,6 +108,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // Space / ⌘⌫ / arrows from them, or it would act on the
                 // main window's selection instead of the helper window's.
                 if AppDelegate.isHelperWindow(event.window) {
+                    // Floating preview panels are shared with the main
+                    // window. Close them here before returning helper-window
+                    // events, so Escape works without clicking the panel.
+                    if event.keyCode == 53, let delegate = AppDelegate.shared {
+                        if delegate.textPreviewPanel.isVisible {
+                            delegate.textPreviewPanel.close()
+                            return nil
+                        }
+                        if delegate.quickLookPanel.isVisible {
+                            delegate.quickLookPanel.close()
+                            return nil
+                        }
+                    }
                     // ⌘A would otherwise be grabbed by the auto Edit-menu
                     // "Select All" key-equivalent (which targets the
                     // native table, not the panel's custom selection).

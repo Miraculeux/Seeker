@@ -32,6 +32,10 @@ struct TriageExplorerPanel: View {
     /// relative subpath shown under the name to disambiguate folders.
     var subtitles: [URL: String]? = nil
     var allowsIconView: Bool = false
+    var usesFloatingQuickLook: Bool = false
+    var similarityThreshold: Binding<Double>? = nil
+    var similarityTotalCount: Int? = nil
+    var footerStatusText: String? = nil
     /// Invoked after a file is successfully moved to the Trash.
     var onDeleted: ((URL) -> Void)? = nil
     /// Invoked after an operation that may have changed the set of files
@@ -64,6 +68,7 @@ struct TriageExplorerPanel: View {
     @State private var showsIcons = true
     @State private var iconSize: CGFloat = 128
     @State private var iconPinchBase: CGFloat?
+    @State private var iconGridColumnCount = 1
     @State private var renameText = ""
 
     /// Whether this panel shows a fixed list instead of a browsable dir.
@@ -90,11 +95,14 @@ struct TriageExplorerPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             if isFixed {
-                fixedHeader
+                if footerStatusText == nil {
+                    fixedHeader
+                    Divider()
+                }
             } else {
                 pathBar
+                Divider()
             }
-            Divider()
             actionBar
             Divider()
             if items.isEmpty {
@@ -103,6 +111,19 @@ struct TriageExplorerPanel: View {
                 iconGridBody
             } else {
                 listBody
+            }
+            if let footerStatusText {
+                Divider()
+                HStack {
+                    Text(footerStatusText)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.025))
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
@@ -117,6 +138,10 @@ struct TriageExplorerPanel: View {
         }
         .onChange(of: targetURL) { _, _ in if !isFixed { syncToTarget() } }
         .onChange(of: fixedURLs) { _, _ in rebuildFixed() }
+        .onChange(of: anchorURL) { _, url in
+            guard usesFloatingQuickLook, let url else { return }
+            AppDelegate.shared?.updateQuickLookIfVisible(url: url)
+        }
         // ⌘⌫ is an app-wide menu shortcut owned by the main window, so it
         // can't reach our List's `.onKeyPress`. The menu command posts
         // this when a helper window is key; act only if that's us.
@@ -219,6 +244,10 @@ struct TriageExplorerPanel: View {
 
     private func previewActive() {
         guard let url = primaryURL else { return }
+        if usesFloatingQuickLook {
+            AppDelegate.shared?.quickLookPanel.togglePreview(for: url)
+            return
+        }
         if showPreview {
             showPreview = false
         } else {
@@ -426,57 +455,134 @@ struct TriageExplorerPanel: View {
                 deleteActive()
                 return .handled
             }
+            .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                let delta = press.key == .upArrow ? -1 : 1
+                guard moveLinearSelection(by: delta) else { return .ignored }
+                if let anchorURL,
+                   let selected = items.first(where: { $0.url == anchorURL }) {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        proxy.scrollTo(selected.id, anchor: .center)
+                    }
+                }
+                return .handled
+            }
             .onChange(of: targetURL) { _, _ in if !isFixed { scrollToTarget(proxy) } }
             .onChange(of: vm.files) { _, _ in if !isFixed { scrollToTarget(proxy) } }
         }
     }
 
     private var iconGridBody: some View {
-        ScrollView {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: iconSize + 42, maximum: iconSize + 62), spacing: 8)],
-                spacing: 8
-            ) {
-                ForEach(items) { file in
-                    FileIconCell(
-                        file: file,
-                        iconSize: iconSize,
-                        isLiveZooming: false,
-                        isSelected: selection.contains(file.url),
-                        isRenaming: false,
-                        renameText: $renameText,
-                        onCommitRename: {},
-                        onCancelRename: {}
-                    )
-                    .equatable()
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { open(file) }
-                    .simultaneousGesture(TapGesture(count: 1).onEnded {
-                        selectRow(file)
-                    })
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: iconSize + 42, maximum: iconSize + 62), spacing: 8)],
+                    spacing: 8
+                ) {
+                    ForEach(items) { file in
+                        FileIconCell(
+                            file: file,
+                            iconSize: iconSize,
+                            isLiveZooming: false,
+                            isSelected: selection.contains(file.url),
+                            isRenaming: false,
+                            renameText: $renameText,
+                            onCommitRename: {},
+                            onCancelRename: {}
+                        )
+                        .equatable()
+                        .id(file.id)
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { open(file) }
+                        .simultaneousGesture(TapGesture(count: 1).onEnded {
+                            selectRow(file)
+                        })
+                    }
                 }
+                .padding(12)
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear
+                            .onAppear { updateIconGridColumnCount(width: geometry.size.width) }
+                            .onChange(of: geometry.size.width) { _, width in
+                                updateIconGridColumnCount(width: width)
+                            }
+                            .onChange(of: iconSize) { _, _ in
+                                updateIconGridColumnCount(width: geometry.size.width)
+                            }
+                    }
+                )
             }
-            .padding(12)
-        }
-        .focusable()
-        .focused($listFocused)
-        .onKeyPress(.space) {
-            guard primaryURL != nil else { return .ignored }
-            previewActive()
-            return .handled
-        }
-        .gesture(
-            MagnifyGesture()
-                .onChanged { value in
-                    if iconPinchBase == nil { iconPinchBase = iconSize }
-                    let base = iconPinchBase ?? iconSize
-                    iconSize = min(max(base * value.magnification, 32), 256)
+            .focusable()
+            .focused($listFocused)
+            .onKeyPress(.space) {
+                guard primaryURL != nil else { return .ignored }
+                previewActive()
+                return .handled
+            }
+            .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { press in
+                guard moveIconSelection(for: press.key) else { return .ignored }
+                if let anchorURL,
+                   let selected = items.first(where: { $0.url == anchorURL }) {
+                    withAnimation(.easeInOut(duration: 0.12)) {
+                        proxy.scrollTo(selected.id, anchor: .center)
+                    }
                 }
-                .onEnded { _ in
-                    iconPinchBase = nil
-                    iconSize = nearestIconSize(to: iconSize)
-                }
-        )
+                return .handled
+            }
+            .gesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        if iconPinchBase == nil { iconPinchBase = iconSize }
+                        let base = iconPinchBase ?? iconSize
+                        iconSize = min(max(base * value.magnification, 32), 256)
+                    }
+                    .onEnded { _ in
+                        iconPinchBase = nil
+                        iconSize = nearestIconSize(to: iconSize)
+                    }
+            )
+        }
+    }
+
+    private func updateIconGridColumnCount(width: CGFloat) {
+        let cellWidth = iconSize + 42
+        let availableWidth = max(0, width - 24)
+        iconGridColumnCount = max(1, Int((availableWidth + 8) / (cellWidth + 8)))
+    }
+
+    private func moveIconSelection(for key: KeyEquivalent) -> Bool {
+        guard !items.isEmpty else { return false }
+        let currentIndex = anchorURL.flatMap(indexOf) ?? -1
+        let delta: Int
+        switch key {
+        case .leftArrow: delta = -1
+        case .rightArrow: delta = 1
+        case .upArrow: delta = -iconGridColumnCount
+        case .downArrow: delta = iconGridColumnCount
+        default: return false
+        }
+        let nextIndex: Int
+        if currentIndex < 0 {
+            nextIndex = 0
+        } else {
+            nextIndex = min(max(currentIndex + delta, 0), items.count - 1)
+        }
+        let url = items[nextIndex].url
+        selection = [url]
+        anchorURL = url
+        return true
+    }
+
+    private func moveLinearSelection(by delta: Int) -> Bool {
+        guard !items.isEmpty else { return false }
+        let currentIndex = anchorURL.flatMap(indexOf) ?? -1
+        let nextIndex = currentIndex < 0
+            ? 0
+            : min(max(currentIndex + delta, 0), items.count - 1)
+        let url = items[nextIndex].url
+        selection = [url]
+        anchorURL = url
+        return true
     }
 
     private func nearestIconSize(to size: CGFloat) -> CGFloat {
@@ -666,6 +772,32 @@ struct TriageExplorerPanel: View {
                         .controlSize(.mini)
                         .frame(width: 100)
                         .help("Icon Size")
+                }
+            }
+
+            if let threshold = similarityThreshold {
+                Divider()
+                    .frame(height: 16)
+                    .padding(.horizontal, 6)
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Text("Minimum similarity")
+                    .font(.system(size: 10, weight: .medium))
+                    .fixedSize()
+                Slider(value: threshold, in: 0.4...0.95, step: 0.01)
+                    .controlSize(.mini)
+                    .frame(width: 150)
+                Text("\(Int((threshold.wrappedValue * 100).rounded()))%")
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+                    .frame(width: 34, alignment: .trailing)
+                if let total = similarityTotalCount {
+                    Text("\(items.count) of \(total) images")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                        .fixedSize()
                 }
             }
             }

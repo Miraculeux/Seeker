@@ -8,6 +8,12 @@ struct SimilarImageSearchRequest: Codable, Hashable {
 }
 
 struct SimilarImageSearchView: View {
+    private struct ScoredResult: Identifiable {
+        let url: URL
+        let match: SimilarImageFinder.Match
+        var id: URL { url }
+    }
+
     enum Status: Equatable {
         case ready
         case comparing(total: Int)
@@ -18,8 +24,9 @@ struct SimilarImageSearchView: View {
     let referenceURL: URL
     @State private var targetDirectory: URL
     @State private var status: Status = .ready
-    @State private var resultURLs: [URL] = []
-    @State private var distances: [URL: Float] = [:]
+    @State private var scoredResults: [ScoredResult] = []
+    @State private var excludedURLs: Set<URL> = []
+    @State private var minimumSimilarity = 0.65
     @State private var workTask: Task<Void, Never>?
 
     init(request: SimilarImageSearchRequest) {
@@ -82,7 +89,7 @@ struct SimilarImageSearchView: View {
             Button {
                 compare()
             } label: {
-                Label(status == .done ? "Compare Again" : "Compare", systemImage: "photo.stack")
+                Label(status == .done ? "Find Again" : "Find", systemImage: "photo.stack")
             }
             .buttonStyle(.borderedProminent)
             .disabled(isComparing)
@@ -114,7 +121,7 @@ struct SimilarImageSearchView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .done:
-            if resultURLs.isEmpty {
+            if scoredResults.isEmpty {
                 placeholder(
                     icon: "photo.badge.exclamationmark",
                     title: "No comparable images found",
@@ -122,11 +129,14 @@ struct SimilarImageSearchView: View {
                 )
             } else {
                 TriageExplorerPanel(
-                    fixedURLs: resultURLs,
-                    headerTitle: "\(resultURLs.count) images, most similar first",
-                    emptyMessage: "No comparable images found",
-                    subtitles: distanceSubtitles,
+                    fixedURLs: filteredResults.map(\.url),
+                    emptyMessage: "No images meet the threshold",
+                    subtitles: scoreSubtitles,
                     allowsIconView: true,
+                    usesFloatingQuickLook: true,
+                    similarityThreshold: $minimumSimilarity,
+                    similarityTotalCount: scoredResults.count,
+                    footerStatusText: "\(filteredResults.count) images, most similar first",
                     onDeleted: removeResult
                 )
             }
@@ -135,9 +145,23 @@ struct SimilarImageSearchView: View {
         }
     }
 
-    private var distanceSubtitles: [URL: String] {
-        Dictionary(uniqueKeysWithValues: distances.map { url, distance in
-            (url, String(format: "Visual distance %.3f", distance))
+    private var filteredResults: [ScoredResult] {
+        scoredResults.filter {
+            Double($0.match.similarity) >= minimumSimilarity
+                && !excludedURLs.contains($0.url)
+        }
+    }
+
+    private var scoreSubtitles: [URL: String] {
+        Dictionary(uniqueKeysWithValues: filteredResults.map { result in
+            let match = result.match
+            return (result.url, String(
+                format: "%.0f%% · Vision %.0f%% · pHash %.0f%% · Shape %.0f%%",
+                match.similarity * 100,
+                match.visionSimilarity * 100,
+                match.pHashSimilarity * 100,
+                match.aspectSimilarity * 100
+            ))
         })
     }
 
@@ -173,15 +197,15 @@ struct SimilarImageSearchView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         cancelComparison()
         targetDirectory = url
-        resultURLs = []
-        distances = [:]
+        scoredResults = []
+        excludedURLs = []
         status = .ready
     }
 
     private func compare() {
         cancelComparison()
-        resultURLs = []
-        distances = [:]
+        scoredResults = []
+        excludedURLs = []
         status = .comparing(total: 0)
         let reference = referenceURL
         let directory = targetDirectory
@@ -198,7 +222,7 @@ struct SimilarImageSearchView: View {
             status = .comparing(total: candidates.count)
             do {
                 let comparisonTask = Task.detached(priority: .userInitiated) {
-                    try SimilarImageFinder.findSimilar(to: reference, among: candidates)
+                    try await SimilarImageFinder.findSimilar(to: reference, among: candidates)
                 }
                 let matches = try await withTaskCancellationHandler {
                     try await comparisonTask.value
@@ -207,13 +231,10 @@ struct SimilarImageSearchView: View {
                 }
                 guard !Task.isCancelled else { return }
                 let candidateByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0.url) })
-                resultURLs = matches.map { match in
-                    candidateByID[match.id]!
-                }
-                distances = Dictionary(uniqueKeysWithValues: matches.compactMap { match in
+                scoredResults = matches.compactMap { match in
                     guard let url = candidateByID[match.id] else { return nil }
-                    return (url, match.distance)
-                })
+                    return ScoredResult(url: url, match: match)
+                }
                 status = .done
             } catch {
                 guard !Task.isCancelled else { return }
@@ -230,8 +251,7 @@ struct SimilarImageSearchView: View {
     }
 
     private func removeResult(_ url: URL) {
-        resultURLs.removeAll { $0.standardizedFileURL == url.standardizedFileURL }
-        distances.removeValue(forKey: url)
+        excludedURLs.insert(url)
     }
 
     private nonisolated static func imageCandidates(in directory: URL) -> [SimilarImageCandidate] {
