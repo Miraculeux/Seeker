@@ -116,6 +116,12 @@ struct ContentView: View {
                 appState.similarImageRequest = nil
             }
         }
+        .onChange(of: appState.semanticSearchRequest) { _, newValue in
+            if let request = newValue {
+                openWindow(id: "semantic-search", value: request)
+                appState.semanticSearchRequest = nil
+            }
+        }
         .onChange(of: appState.folderSyncRoots) { _, newValue in
             if let dirs = newValue, dirs.count == 2 {
                 openWindow(id: "folder-sync", value: dirs)
@@ -237,6 +243,13 @@ struct ContentView: View {
                         appState.openSimilarImageSearch()
                     }
                     .disabled(!appState.activeExplorer.canOpenSimilarImageSearch)
+
+                    ToolbarBtn(
+                        icon: "brain",
+                        tip: "Semantic Image Search"
+                    ) {
+                        appState.openSemanticSearch()
+                    }
 
                     ToolbarBtn(
                         icon: "doc.on.doc",

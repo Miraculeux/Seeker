@@ -33,6 +33,15 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - **Image metadata editor** — view and edit EXIF / IPTC fields; one-click "Strip GPS & Personal Info" for selected images
 - **Audio / video metadata editor** — read and write tags for MP3 (ID3v2), FLAC, M4A / MP4, DSF, DFF, AIFF, WAV, and Matroska / WebM containers, including cover art
 - **Duplicate finder** — content-hash based (xxHash3), with bulk move-to-trash
+- **Visual similarity search** — ranks nearby images with Vision, pHash, aspect ratio, and optional semantic embeddings
+- **Semantic image search** — finds images from an open-ended text description using an on-device Core ML model
+
+### Semantic Models
+- MobileCLIP-S2 Core ML FP16 is the fast default; MobileCLIP-S0 is available as a smaller option
+- Multilingual SigLIP 2 Base Core ML (8-bit, about 356 MB) provides direct Chinese and multilingual text search
+- Model downloads can use ModelScope (default), Hugging Face, or a custom mirror URL
+- Models run locally; the default storage is `~/Library/Application Support/com.marvel.Seeker/SemanticModels/`, and Settings → AI Models can select another folder
+- MobileCLIP-S2 requires about 200 MB to download; tokenizer assets use the official Hugging Face source when ModelScope is selected
 
 ### Specialised Conversions
 - **NCM dump** — decrypts NetEase Cloud Music `.ncm` files back to playable FLAC / MP3 with original tags and cover art (available from the file or folder context menu)

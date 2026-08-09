@@ -20,6 +20,7 @@ enum SimilarImageFinder {
         let visionSimilarity: Float
         let pHashSimilarity: Float
         let aspectSimilarity: Float
+        let semanticSimilarity: Float?
     }
 
     private struct ImageFingerprint: @unchecked Sendable {
@@ -41,7 +42,8 @@ enum SimilarImageFinder {
 
     static func findSimilar(
         to referenceURL: URL,
-        among candidates: [SimilarImageCandidate]
+        among candidates: [SimilarImageCandidate],
+        semanticSession: SemanticModelSession? = nil
     ) async throws -> [Match] {
         guard let reference = fingerprint(for: referenceURL) else {
             throw FinderError.unreadableReference
@@ -52,6 +54,7 @@ enum SimilarImageFinder {
         }
         let workerCount = min(maximumConcurrency, eligible.count)
         guard workerCount > 0 else { return [] }
+        let semanticReference = try semanticSession?.imageEmbedding(for: referenceURL)
 
         let matches = await withTaskGroup(of: [Match].self) { group in
             for workerIndex in 0..<workerCount {
@@ -59,7 +62,12 @@ enum SimilarImageFinder {
                     var workerMatches: [Match] = []
                     for index in stride(from: workerIndex, to: eligible.count, by: workerCount) {
                         if Task.isCancelled { break }
-                        if let match = score(candidate: eligible[index], against: reference) {
+                        if let match = score(
+                            candidate: eligible[index],
+                            against: reference,
+                            semanticSession: semanticSession,
+                            semanticReference: semanticReference
+                        ) {
                             workerMatches.append(match)
                         }
                     }
@@ -78,7 +86,9 @@ enum SimilarImageFinder {
 
     private static func score(
         candidate: SimilarImageCandidate,
-        against reference: ImageFingerprint
+        against reference: ImageFingerprint,
+        semanticSession: SemanticModelSession?,
+        semanticReference: [Float]?
     ) -> Match? {
         guard let candidateFingerprint = fingerprint(for: candidate.url) else { return nil }
         var visionDistance: Float = 0
@@ -92,15 +102,29 @@ enum SimilarImageFinder {
             let pHashSimilarity = 1 - Float(differingBits) / 63
             let aspectDelta = abs(log(reference.aspectRatio / candidateFingerprint.aspectRatio))
             let aspectSimilarity = Float(max(0, 1 - aspectDelta / log(2)))
-            let similarity = visionWeight * visionSimilarity
+            let visualSimilarity = visionWeight * visionSimilarity
                 + pHashWeight * pHashSimilarity
                 + aspectWeight * aspectSimilarity
+            let semanticSimilarity: Float?
+            if let semanticSession, let semanticReference,
+               let candidateEmbedding = try? semanticSession.imageEmbedding(for: candidate.url) {
+                semanticSimilarity = SemanticModelSession.cosineSimilarity(
+                    semanticReference,
+                    candidateEmbedding
+                )
+            } else {
+                semanticSimilarity = nil
+            }
+            let similarity = semanticSimilarity.map {
+                0.65 * visualSimilarity + 0.35 * max(0, $0)
+            } ?? visualSimilarity
             return Match(
                 id: candidate.id,
                 similarity: similarity,
                 visionSimilarity: visionSimilarity,
                 pHashSimilarity: pHashSimilarity,
-                aspectSimilarity: aspectSimilarity
+                aspectSimilarity: aspectSimilarity,
+                semanticSimilarity: semanticSimilarity
             )
         } catch {
             return nil

@@ -19,6 +19,11 @@ struct SettingsView: View {
                     Label("File Types", systemImage: "doc.badge.gearshape")
                 }
 
+            SemanticModelSettingsView()
+                .tabItem {
+                    Label("AI Models", systemImage: "brain")
+                }
+
             ShortcutsSettingsTab()
                 .tabItem {
                     Label("Shortcuts", systemImage: "keyboard")

@@ -63,6 +63,7 @@ class AppState {
     var fileSearchRoot: URL?
 
     var similarImageRequest: SimilarImageSearchRequest?
+    var semanticSearchRequest: SemanticSearchRequest?
 
     func openSimilarImageSearch() {
         let active = activeExplorer
@@ -74,6 +75,10 @@ class AppState {
             referenceURL: reference,
             targetDirectory: active.currentURL
         )
+    }
+
+    func openSemanticSearch() {
+        semanticSearchRequest = SemanticSearchRequest(targetDirectory: activeExplorer.currentURL)
     }
 
     /// Opens the recursive search window rooted at the active pane's

@@ -28,10 +28,22 @@ struct SimilarImageSearchView: View {
     @State private var excludedURLs: Set<URL> = []
     @State private var minimumSimilarity = 0.65
     @State private var workTask: Task<Void, Never>?
+    @State private var useSemanticModel: Bool
+    @State private var semanticModelID: String
+    @State private var modelManager = SemanticModelManager.shared
+    @State private var downloadSource = SettingsManager.shared.semanticDownloadSource
+    @State private var customDownloadURL = SettingsManager.shared.semanticCustomDownloadURL
 
     init(request: SimilarImageSearchRequest) {
         referenceURL = request.referenceURL
         _targetDirectory = State(initialValue: request.targetDirectory)
+        _useSemanticModel = State(initialValue: SettingsManager.shared.useSemanticImageComparison)
+        let savedModel = SemanticModelDescriptor.model(id: SettingsManager.shared.imageComparisonModelID)
+        _semanticModelID = State(initialValue:
+            savedModel.availability == .downloadable
+                ? savedModel.id
+                : SemanticModelDescriptor.defaultComparisonModel.id
+        )
     }
 
     var body: some View {
@@ -86,13 +98,68 @@ struct SimilarImageSearchView: View {
             }
             Spacer(minLength: 12)
             Button("Choose Folder...") { chooseTargetDirectory() }
+            Toggle("AI", isOn: $useSemanticModel)
+                .toggleStyle(.checkbox)
+                .onChange(of: useSemanticModel) { _, value in
+                    SettingsManager.shared.useSemanticImageComparison = value
+                }
+                .help("Include semantic similarity from the selected Core ML model")
+            if useSemanticModel {
+                Picker("", selection: $semanticModelID) {
+                    ForEach(SemanticModelDescriptor.all.filter { $0.availability == .downloadable }) { model in
+                        Text(model.displayName).tag(model.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 190)
+                .onChange(of: semanticModelID) { _, value in
+                    SettingsManager.shared.imageComparisonModelID = value
+                }
+                if !modelManager.isInstalled(selectedSemanticModel),
+                   selectedSemanticModel.availability == .downloadable {
+                    Picker("", selection: $downloadSource) {
+                        ForEach(SemanticModelDownloadSource.allCases) { source in
+                            Text(source.displayName).tag(source)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
+                    .onChange(of: downloadSource) { _, value in
+                        SettingsManager.shared.semanticDownloadSource = value
+                    }
+                    if downloadSource == .custom {
+                        TextField("Mirror URL", text: $customDownloadURL)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 150)
+                            .onChange(of: customDownloadURL) { _, value in
+                                SettingsManager.shared.semanticCustomDownloadURL = value
+                            }
+                    }
+                    if modelManager.activeModelID == selectedSemanticModel.id {
+                        switch modelManager.state {
+                        case .downloading, .compiling:
+                            ProgressView().controlSize(.small)
+                            Button("Cancel") { modelManager.cancelInstall() }
+                        case .failed(let message):
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.red)
+                                .help(message)
+                            downloadButton
+                        default:
+                            downloadButton
+                        }
+                    } else {
+                        downloadButton
+                    }
+                }
+            }
             Button {
                 compare()
             } label: {
                 Label(status == .done ? "Find Again" : "Find", systemImage: "photo.stack")
             }
             .buttonStyle(.borderedProminent)
-            .disabled(isComparing)
+            .disabled(isComparing || !semanticModelIsReady)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -161,8 +228,28 @@ struct SimilarImageSearchView: View {
                 match.visionSimilarity * 100,
                 match.pHashSimilarity * 100,
                 match.aspectSimilarity * 100
-            ))
+            ) + (match.semanticSimilarity.map {
+                String(format: " · AI %.0f%%", $0 * 100)
+            } ?? ""))
         })
+    }
+
+    private var selectedSemanticModel: SemanticModelDescriptor {
+        SemanticModelDescriptor.model(id: semanticModelID)
+    }
+
+    private var semanticModelIsReady: Bool {
+        !useSemanticModel || modelManager.isInstalled(selectedSemanticModel)
+    }
+
+    private var downloadButton: some View {
+        Button("Download") {
+            modelManager.install(
+                selectedSemanticModel,
+                source: downloadSource,
+                customURL: customDownloadURL
+            )
+        }
     }
 
     private var isComparing: Bool {
@@ -209,11 +296,18 @@ struct SimilarImageSearchView: View {
         status = .comparing(total: 0)
         let reference = referenceURL
         let directory = targetDirectory
+        let useSemantic = useSemanticModel
+        let model = selectedSemanticModel
 
         workTask = Task {
-            let candidates = await Task.detached(priority: .userInitiated) {
+            let scanTask = Task.detached(priority: .userInitiated) {
                 Self.imageCandidates(in: directory)
-            }.value
+            }
+            let candidates = await withTaskCancellationHandler {
+                await scanTask.value
+            } onCancel: {
+                scanTask.cancel()
+            }
             guard !Task.isCancelled else { return }
             guard !candidates.isEmpty else {
                 status = .done
@@ -222,7 +316,12 @@ struct SimilarImageSearchView: View {
             status = .comparing(total: candidates.count)
             do {
                 let comparisonTask = Task.detached(priority: .userInitiated) {
-                    try await SimilarImageFinder.findSimilar(to: reference, among: candidates)
+                    let session = useSemantic ? try SemanticModelSession(descriptor: model) : nil
+                    return try await SimilarImageFinder.findSimilar(
+                        to: reference,
+                        among: candidates,
+                        semanticSession: session
+                    )
                 }
                 let matches = try await withTaskCancellationHandler {
                     try await comparisonTask.value

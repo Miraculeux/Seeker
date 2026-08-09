@@ -195,6 +195,13 @@ final class SettingsManager {
         static let defaultSortAscending = "defaultSortAscending"
         static let defaultViewMode = "defaultViewMode"
         static let defaultShowHiddenFiles = "defaultShowHiddenFiles"
+        static let semanticModelID = "semanticModelID"
+        static let semanticSearchModelID = "semanticSearchModelID"
+        static let imageComparisonModelID = "imageComparisonModelID"
+        static let semanticDownloadSource = "semanticDownloadSource"
+        static let semanticCustomDownloadURL = "semanticCustomDownloadURL"
+        static let useSemanticImageComparison = "useSemanticImageComparison"
+        static let semanticModelStoragePath = SemanticModelStorage.settingsKey
     }
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
     /// iconSizeMax] on read so a corrupted/legacy value can't escape the
@@ -253,6 +260,62 @@ final class SettingsManager {
         set {
             let clamped = min(max(newValue, Self.textPreviewByteLimitMin), Self.textPreviewByteLimitMax)
             defaults.set(clamped, forKey: Keys.textPreviewByteLimit)
+        }
+    }
+
+    // MARK: - Semantic Models
+
+    var semanticModelID: String {
+        get { defaults.string(forKey: Keys.semanticModelID) ?? SemanticModelDescriptor.defaultModel.id }
+        set { defaults.set(newValue, forKey: Keys.semanticModelID) }
+    }
+
+    var semanticSearchModelID: String {
+        get {
+            defaults.string(forKey: Keys.semanticSearchModelID)
+                ?? defaults.string(forKey: Keys.semanticModelID)
+                ?? SemanticModelDescriptor.defaultSearchModel.id
+        }
+        set { defaults.set(newValue, forKey: Keys.semanticSearchModelID) }
+    }
+
+    var imageComparisonModelID: String {
+        get {
+            defaults.string(forKey: Keys.imageComparisonModelID)
+                ?? defaults.string(forKey: Keys.semanticModelID)
+                ?? SemanticModelDescriptor.defaultComparisonModel.id
+        }
+        set { defaults.set(newValue, forKey: Keys.imageComparisonModelID) }
+    }
+
+    var semanticDownloadSource: SemanticModelDownloadSource {
+        get {
+            guard let raw = defaults.string(forKey: Keys.semanticDownloadSource),
+                  let source = SemanticModelDownloadSource(rawValue: raw) else { return .modelScope }
+            return source
+        }
+        set { defaults.set(newValue.rawValue, forKey: Keys.semanticDownloadSource) }
+    }
+
+    var semanticCustomDownloadURL: String {
+        get { defaults.string(forKey: Keys.semanticCustomDownloadURL) ?? "" }
+        set { defaults.set(newValue, forKey: Keys.semanticCustomDownloadURL) }
+    }
+
+    var useSemanticImageComparison: Bool {
+        get { defaults.object(forKey: Keys.useSemanticImageComparison) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: Keys.useSemanticImageComparison) }
+    }
+
+    var semanticModelStoragePath: String {
+        get { defaults.string(forKey: Keys.semanticModelStoragePath) ?? "" }
+        set {
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                defaults.removeObject(forKey: Keys.semanticModelStoragePath)
+            } else {
+                defaults.set(trimmed, forKey: Keys.semanticModelStoragePath)
+            }
         }
     }
 

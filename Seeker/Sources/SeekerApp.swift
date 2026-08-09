@@ -20,11 +20,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let window else { return false }
         let id = window.identifier?.rawValue ?? ""
         if id.contains("duplicate-finder") || id.contains("directory-compare")
-            || id.contains("similar-images") {
+            || id.contains("similar-images") || id.contains("semantic-search") {
             return true
         }
         return window.title == "Find Duplicates" || window.title == "Compare Folders"
-            || window.title == "Similar Images"
+            || window.title == "Similar Images" || window.title == "Semantic Search"
     }
 
     nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
@@ -581,6 +581,14 @@ struct SeekerApp: App {
         WindowGroup("Similar Images", id: "similar-images", for: SimilarImageSearchRequest.self) { $request in
             if let request {
                 SimilarImageSearchView(request: request)
+                    .environment(appState)
+            }
+        }
+        .windowResizability(.contentMinSize)
+
+        WindowGroup("Semantic Search", id: "semantic-search", for: SemanticSearchRequest.self) { $request in
+            if let request {
+                SemanticSearchView(request: request)
                     .environment(appState)
             }
         }
