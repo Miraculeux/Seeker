@@ -77,6 +77,8 @@ struct SemanticModelDescriptor: Identifiable, Hashable, Sendable {
         all.first(where: { $0.id == id }) ?? defaultModel
     }
 
+    var cacheNamespace: String { "\(id):embedding-v1" }
+
     private static func mobileCLIPAssets(
         prefix: String,
         imageManifestHash: String,

@@ -35,6 +35,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - **Duplicate finder** — content-hash based (xxHash3), with bulk move-to-trash
 - **Visual similarity search** — ranks nearby images with Vision, pHash, aspect ratio, and optional semantic embeddings
 - **Semantic image search** — finds images from an open-ended text description using an on-device Core ML model
+- Semantic Search supports recursive folders, persistent embedding/OCR caches, OCR text matching, configurable relevance thresholds, and Top-K result limits
 
 ### Semantic Models
 - MobileCLIP-S2 Core ML FP16 is the fast default; MobileCLIP-S0 is available as a smaller option

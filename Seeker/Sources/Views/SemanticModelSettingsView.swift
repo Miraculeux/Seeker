@@ -9,6 +9,8 @@ struct SemanticModelSettingsView: View {
     @State private var customURL = SettingsManager.shared.semanticCustomDownloadURL
     @State private var storagePath = SettingsManager.shared.semanticModelStoragePath
     @State private var manager = SemanticModelManager.shared
+    @State private var semanticCacheBytes: Int64 = 0
+    @State private var isClearingSemanticCache = false
 
     private var selectedModel: SemanticModelDescriptor {
         SemanticModelDescriptor.model(id: selectedModelID)
@@ -87,6 +89,15 @@ struct SemanticModelSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Button {
+                        Task {
+                            semanticCacheBytes = await SemanticSearchCache.shared.currentSizeBytes()
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Refresh cache size")
                     Button("Reveal") {
                         NSWorkspace.shared.open(storageURL)
                     }
@@ -133,6 +144,36 @@ struct SemanticModelSettingsView: View {
                 }
             }
 
+            Section("Search Cache") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Image embeddings and recognized text")
+                        Text(ByteCountFormatter.string(fromByteCount: semanticCacheBytes, countStyle: .file))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Reveal") {
+                        NSWorkspace.shared.activateFileViewerSelecting([
+                            SemanticSearchCache.shared.databaseURL
+                        ])
+                    }
+                    .disabled(!FileManager.default.fileExists(atPath: SemanticSearchCache.shared.databaseURL.path))
+                    Button("Clear") {
+                        isClearingSemanticCache = true
+                        Task {
+                            await SemanticSearchCache.shared.removeAll()
+                            semanticCacheBytes = await SemanticSearchCache.shared.currentSizeBytes()
+                            isClearingSemanticCache = false
+                        }
+                    }
+                    .disabled(isClearingSemanticCache || semanticCacheBytes == 0)
+                }
+                Text("Cached entries are keyed by model, file size, and modification date. Changed files and model switches are reprocessed automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Text("Models run locally with Core ML and are not uploaded by Seeker.")
                     .font(.caption)
@@ -140,6 +181,9 @@ struct SemanticModelSettingsView: View {
             }
         }
         .padding(12)
+        .task {
+            semanticCacheBytes = await SemanticSearchCache.shared.currentSizeBytes()
+        }
     }
 
     @ViewBuilder

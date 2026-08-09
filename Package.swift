@@ -40,6 +40,7 @@ let package = Package(
                 .unsafeFlags(["-cross-module-optimization"], .when(configuration: .release))
             ],
             linkerSettings: [
+                .linkedLibrary("sqlite3"),
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",

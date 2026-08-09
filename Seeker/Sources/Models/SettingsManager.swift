@@ -202,6 +202,10 @@ final class SettingsManager {
         static let semanticCustomDownloadURL = "semanticCustomDownloadURL"
         static let useSemanticImageComparison = "useSemanticImageComparison"
         static let semanticModelStoragePath = SemanticModelStorage.settingsKey
+        static let semanticSearchSubfolders = "semanticSearchSubfolders"
+        static let semanticSearchOCR = "semanticSearchOCR"
+        static let semanticSearchMinimumRelevance = "semanticSearchMinimumRelevance"
+        static let semanticSearchResultLimit = "semanticSearchResultLimit"
     }
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
     /// iconSizeMax] on read so a corrupted/legacy value can't escape the
@@ -317,6 +321,32 @@ final class SettingsManager {
                 defaults.set(trimmed, forKey: Keys.semanticModelStoragePath)
             }
         }
+    }
+
+    var semanticSearchSubfolders: Bool {
+        get { defaults.object(forKey: Keys.semanticSearchSubfolders) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Keys.semanticSearchSubfolders) }
+    }
+
+    var semanticSearchOCR: Bool {
+        get { defaults.object(forKey: Keys.semanticSearchOCR) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Keys.semanticSearchOCR) }
+    }
+
+    var semanticSearchMinimumRelevance: Double {
+        get {
+            let value = defaults.object(forKey: Keys.semanticSearchMinimumRelevance) as? Double ?? 0.65
+            return min(max(value, 0.25), 0.95)
+        }
+        set { defaults.set(min(max(newValue, 0.25), 0.95), forKey: Keys.semanticSearchMinimumRelevance) }
+    }
+
+    var semanticSearchResultLimit: Int {
+        get {
+            let value = defaults.object(forKey: Keys.semanticSearchResultLimit) as? Int ?? 50
+            return [10, 25, 50, 100].contains(value) ? value : 50
+        }
+        set { defaults.set([10, 25, 50, 100].contains(newValue) ? newValue : 50, forKey: Keys.semanticSearchResultLimit) }
     }
 
     // MARK: - Default "Always Open With" Apps

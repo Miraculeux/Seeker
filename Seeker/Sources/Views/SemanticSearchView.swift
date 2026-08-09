@@ -13,6 +13,8 @@ struct SemanticSearchView: View {
         let similarity: Float
         let semanticSimilarity: Float
         let visionMatched: Bool
+        let ocrMatched: Bool
+        let relevance: Float
         var id: URL { url }
     }
 
@@ -36,6 +38,10 @@ struct SemanticSearchView: View {
     @State private var modelManager = SemanticModelManager.shared
     @State private var downloadSource = SettingsManager.shared.semanticDownloadSource
     @State private var customDownloadURL = SettingsManager.shared.semanticCustomDownloadURL
+    @State private var searchesSubfolders = SettingsManager.shared.semanticSearchSubfolders
+    @State private var usesOCR = SettingsManager.shared.semanticSearchOCR
+    @State private var minimumRelevance = SettingsManager.shared.semanticSearchMinimumRelevance
+    @State private var resultLimit = SettingsManager.shared.semanticSearchResultLimit
 
     init(request: SemanticSearchRequest) {
         _targetDirectory = State(initialValue: request.targetDirectory)
@@ -46,7 +52,9 @@ struct SemanticSearchView: View {
     }
 
     private var visibleResults: [Result] {
-        results.filter { !excludedURLs.contains($0.url) }
+        Array(results.lazy.filter {
+            !excludedURLs.contains($0.url) && $0.relevance >= Float(minimumRelevance)
+        }.prefix(resultLimit))
     }
 
     var body: some View {
@@ -54,6 +62,8 @@ struct SemanticSearchView: View {
             header
             Divider()
             searchBar
+            Divider()
+            optionsBar
             Divider()
             content
         }
@@ -146,6 +156,54 @@ struct SemanticSearchView: View {
         .background(Color.primary.opacity(0.02))
     }
 
+    private var optionsBar: some View {
+        HStack(spacing: 12) {
+            Toggle("Subfolders", isOn: $searchesSubfolders)
+                .toggleStyle(.checkbox)
+                .onChange(of: searchesSubfolders) { _, value in
+                    SettingsManager.shared.semanticSearchSubfolders = value
+                }
+            Toggle("OCR", isOn: $usesOCR)
+                .toggleStyle(.checkbox)
+                .onChange(of: usesOCR) { _, value in
+                    SettingsManager.shared.semanticSearchOCR = value
+                }
+                .help("Include text recognized inside screenshots and documents")
+            Divider().frame(height: 16)
+            Text("Minimum relevance")
+                .font(.system(size: 10, weight: .medium))
+            Slider(value: $minimumRelevance, in: 0.25...0.95, step: 0.05)
+                .controlSize(.mini)
+                .frame(width: 150)
+                .onChange(of: minimumRelevance) { _, value in
+                    SettingsManager.shared.semanticSearchMinimumRelevance = value
+                }
+            Text("\(Int((minimumRelevance * 100).rounded()))%")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .frame(width: 34, alignment: .trailing)
+            Picker("Top", selection: $resultLimit) {
+                ForEach([10, 25, 50, 100], id: \.self) { Text("Top \($0)").tag($0) }
+            }
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 80)
+            .onChange(of: resultLimit) { _, value in
+                SettingsManager.shared.semanticSearchResultLimit = value
+            }
+            if case .done = status {
+                Text("\(visibleResults.count) of \(results.count)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(Color.primary.opacity(0.015))
+    }
+
     @ViewBuilder
     private var content: some View {
         switch status {
@@ -174,7 +232,8 @@ struct SemanticSearchView: View {
                     emptyMessage: "No images found",
                     subtitles: Dictionary(uniqueKeysWithValues: visibleResults.map {
                         let vision = $0.visionMatched ? " · Vision person match" : ""
-                        return ($0.url, String(format: "Relevance %.1f%%%@", $0.similarity * 100, vision))
+                        let ocr = $0.ocrMatched ? " · OCR match" : ""
+                        return ($0.url, String(format: "Relevance %.0f%%%@%@", $0.relevance * 100, vision, ocr))
                     }),
                     allowsIconView: true,
                     usesFloatingQuickLook: true,
@@ -252,10 +311,12 @@ struct SemanticSearchView: View {
         status = .searching(total: 0)
         let directory = targetDirectory
         let model = selectedModel
+        let recursive = searchesSubfolders
+        let includeOCR = usesOCR
 
         searchTask = Task {
             let scanTask = Task.detached(priority: .userInitiated) {
-                Self.imageURLs(in: directory)
+                Self.imageURLs(in: directory, recursive: recursive)
             }
             let urls = await withTaskCancellationHandler {
                 await scanTask.value
@@ -263,6 +324,7 @@ struct SemanticSearchView: View {
                 scanTask.cancel()
             }
             guard !Task.isCancelled else { return }
+            await SemanticSearchCache.shared.pruneMissingEntries(maxChecks: 500)
             status = .searching(total: urls.count)
             do {
                 let rankingTask = Task.detached(priority: .userInitiated) {
@@ -275,7 +337,10 @@ struct SemanticSearchView: View {
                         urls,
                         queryEmbedding: queryEmbedding,
                         session: session,
-                        personIntent: Self.isPersonQuery(trimmedQuery)
+                        modelID: model.cacheNamespace,
+                        query: trimmedQuery,
+                        personIntent: Self.isPersonQuery(trimmedQuery),
+                        includeOCR: includeOCR
                     )
                 }
                 let found = try await withTaskCancellationHandler {
@@ -304,7 +369,10 @@ struct SemanticSearchView: View {
         _ urls: [URL],
         queryEmbedding: [Float],
         session: SemanticModelSession,
-        personIntent: Bool
+        modelID: String,
+        query: String,
+        personIntent: Bool,
+        includeOCR: Bool
     ) async throws -> [Result] {
         let workerCount = min(4, urls.count)
         guard workerCount > 0 else { return [] }
@@ -314,15 +382,36 @@ struct SemanticSearchView: View {
                     var matches: [Result] = []
                     for index in stride(from: worker, to: urls.count, by: workerCount) {
                         if Task.isCancelled { break }
-                        guard let embedding = try? session.imageEmbedding(for: urls[index]) else { continue }
+                        let url = urls[index]
+                        let cached = await SemanticSearchCache.shared.embedding(for: url, modelID: modelID)
+                        guard let embedding = cached ?? (try? session.imageEmbedding(for: url)) else { continue }
+                        if cached == nil {
+                            await SemanticSearchCache.shared.store(embedding: embedding, for: url, modelID: modelID)
+                        }
+                        if Task.isCancelled { break }
                         let semantic = SemanticModelSession.cosineSimilarity(queryEmbedding, embedding)
-                        let visionMatched = personIntent && Self.containsPerson(in: urls[index])
-                        let score = semantic + (visionMatched ? 0.15 : 0)
+                        let visionMatched = personIntent && Self.containsPerson(in: url)
+                        if Task.isCancelled { break }
+                        let ocrMatched: Bool
+                        if includeOCR {
+                            let cachedText = await SemanticSearchCache.shared.recognizedText(for: url)
+                            let freshText = cachedText == nil ? Self.recognizedText(in: url) : nil
+                            let text = cachedText ?? freshText ?? ""
+                            if cachedText == nil, let freshText {
+                                await SemanticSearchCache.shared.store(recognizedText: freshText, for: url)
+                            }
+                            ocrMatched = Self.text(text, matches: query)
+                        } else {
+                            ocrMatched = false
+                        }
+                        let score = semantic + (visionMatched ? 0.15 : 0) + (ocrMatched ? 0.20 : 0)
                         matches.append(Result(
-                            url: urls[index],
+                            url: url,
                             similarity: score,
                             semanticSimilarity: semantic,
-                            visionMatched: visionMatched
+                            visionMatched: visionMatched,
+                            ocrMatched: ocrMatched,
+                            relevance: 0
                         ))
                     }
                     return matches
@@ -332,18 +421,17 @@ struct SemanticSearchView: View {
             for await matches in group { combined.append(contentsOf: matches) }
             let sorted = combined.sorted { $0.similarity > $1.similarity }
             guard !sorted.isEmpty else { return [] }
-
-            let semanticScores = sorted.map(\.semanticSimilarity)
-            let mean = semanticScores.reduce(0, +) / Float(semanticScores.count)
-            let variance = semanticScores.reduce(0) { partial, value in
-                let delta = value - mean
-                return partial + delta * delta
-            } / Float(semanticScores.count)
-            let threshold = mean + 0.5 * sqrt(variance)
-            let filtered = sorted.filter {
-                $0.visionMatched || $0.semanticSimilarity >= threshold
+            let best = sorted[0].similarity
+            return sorted.map { result in
+                Result(
+                    url: result.url,
+                    similarity: result.similarity,
+                    semanticSimilarity: result.semanticSimilarity,
+                    visionMatched: result.visionMatched,
+                    ocrMatched: result.ocrMatched,
+                    relevance: exp((result.similarity - best) * 8)
+                )
             }
-            return Array((filtered.isEmpty ? sorted.prefix(1) : filtered.prefix(50)))
         }
     }
 
@@ -399,8 +487,59 @@ struct SemanticSearchView: View {
             || !(humanRequest.results?.isEmpty ?? true)
     }
 
-    private nonisolated static func imageURLs(in directory: URL) -> [URL] {
+    private nonisolated static func recognizedText(in url: URL) -> String? {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        do {
+            try VNImageRequestHandler(url: url).perform([request])
+            return request.results?.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ") ?? ""
+        } catch {
+            return nil
+        }
+    }
+
+    private nonisolated static func text(_ recognized: String, matches query: String) -> Bool {
+        let normalizedText = recognized.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        var searchableQuery = query
+        let stopPhrases = [
+            "图片", "照片", "查找", "寻找", "包含", "含有", "文字", "文本", "截图", "文档",
+            "里面", "中的", "的", "image", "photo", "find", "containing", "contains", "text", "screenshot", "document"
+        ]
+        for phrase in stopPhrases {
+            searchableQuery = searchableQuery.replacingOccurrences(
+                of: phrase,
+                with: " ",
+                options: .caseInsensitive
+            )
+        }
+        let terms = searchableQuery
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 2 }
+        return !terms.isEmpty && terms.allSatisfy { normalizedText.localizedCaseInsensitiveContains($0) }
+    }
+
+    private nonisolated static func imageURLs(in directory: URL, recursive: Bool) -> [URL] {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .contentTypeKey]
+        if recursive {
+            guard let enumerator = FileManager.default.enumerator(
+                at: directory,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles, .skipsPackageDescendants],
+                errorHandler: { _, _ in true }
+            ) else { return [] }
+            var images: [URL] = []
+            for case let url as URL in enumerator {
+                if Task.isCancelled { break }
+                guard let values = try? url.resourceValues(forKeys: keys),
+                      values.isRegularFile == true,
+                      values.contentType?.conforms(to: .image) == true else { continue }
+                images.append(url)
+            }
+            return images
+        }
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: Array(keys),
