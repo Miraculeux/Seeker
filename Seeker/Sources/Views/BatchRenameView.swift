@@ -27,6 +27,8 @@ struct BatchRenameView: View {
             Divider()
             modePicker
             Divider()
+            extensionFilter
+            Divider()
             options
                 .padding(14)
             Divider()
@@ -48,7 +50,7 @@ struct BatchRenameView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Batch Rename")
                     .font(.system(size: 13, weight: .semibold))
-                Text("\(renamer.urls.count) item\(renamer.urls.count == 1 ? "" : "s")")
+                Text(itemCountText)
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
@@ -72,6 +74,41 @@ struct BatchRenameView: View {
         .labelsHidden()
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
+    }
+
+    private var extensionFilter: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .foregroundColor(.secondary)
+            Text("Extension Filter")
+                .font(.system(size: 11))
+            TextField("All extensions (e.g. jpg, png)", text: Binding(
+                get: { renamer.extensionFilter },
+                set: { renamer.extensionFilter = $0; refresh() }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 11))
+            if !renamer.extensionFilter.isEmpty {
+                Button {
+                    renamer.extensionFilter = ""
+                    refresh()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .foregroundColor(.secondary)
+                .help("Clear Extension Filter")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    private var itemCountText: String {
+        let count = renamer.filteredURLs.count
+        let total = renamer.urls.count
+        let itemText = "\(count) item\(count == 1 ? "" : "s")"
+        return count == total ? itemText : "\(itemText) of \(total)"
     }
 
     // MARK: - Options per mode

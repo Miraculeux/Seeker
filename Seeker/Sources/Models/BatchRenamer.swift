@@ -45,6 +45,19 @@ final class BatchRenamer {
     let urls: [URL]
 
     var mode: Mode = .findReplace
+    var extensionFilter = ""
+
+    var filteredURLs: [URL] {
+        let extensions = Set(extensionFilter
+            .components(separatedBy: CharacterSet(charactersIn: ",; "))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { $0.hasPrefix("*.") ? String($0.dropFirst(2)) : $0 }
+            .map { $0.hasPrefix(".") ? String($0.dropFirst()) : $0 }
+            .map { $0.lowercased() })
+        guard !extensions.isEmpty else { return urls }
+        return urls.filter { extensions.contains($0.pathExtension.lowercased()) }
+    }
 
     // MARK: Find & Replace
     var find = ""
@@ -79,11 +92,11 @@ final class BatchRenamer {
     // MARK: - Date loading
 
     /// Reads EXIF/creation dates for all files off the main thread, then
-    /// caches them. Cheap to call repeatedly — it only loads once.
+    /// caches them. Cheap to call repeatedly — it only loads missing dates.
     func loadDatesIfNeeded() async {
-        guard sourceDates.isEmpty, !urls.isEmpty else { return }
+        let urls = filteredURLs.filter { sourceDates[$0] == nil }
+        guard !urls.isEmpty else { return }
         isLoadingDates = true
-        let urls = self.urls
         let dates = await Task.detached(priority: .userInitiated) { () -> [URL: Date] in
             var out: [URL: Date] = [:]
             for url in urls {
@@ -93,7 +106,7 @@ final class BatchRenamer {
             }
             return out
         }.value
-        sourceDates = dates
+        sourceDates.merge(dates) { _, new in new }
         isLoadingDates = false
     }
 
@@ -119,6 +132,7 @@ final class BatchRenamer {
     /// collision detection (duplicate targets, or a target that already
     /// exists on disk and isn't one of the renamed sources).
     func previews() -> [Preview] {
+        let urls = filteredURLs
         var rows: [Preview] = []
         rows.reserveCapacity(urls.count)
 
