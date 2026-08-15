@@ -1093,7 +1093,7 @@ struct FileInfoView: View {
         // and DSD rate. Same for FLAC, but FLAC also has AVAsset support
         // so we fall back to AV for the duration/tag pass below.
         if ext == "dsf" || ext == "dff" {
-            return nativeMediaInfo(for: file.url, ext: ext)
+            return await nativeMediaInfo(for: file.url, ext: ext)
         }
 
         let asset = AVURLAsset(url: file.url)
@@ -1240,7 +1240,7 @@ struct FileInfoView: View {
     /// Build a `MediaInfo` from the native parser for formats AVFoundation
     /// can't open (DSF, DFF). Uses `TechnicalInfoService` so we report the
     /// correct DSD rate, channel count, and bit depth.
-    private func nativeMediaInfo(for url: URL, ext: String) -> MediaInfo? {
+    private func nativeMediaInfo(for url: URL, ext: String) async -> MediaInfo? {
         let fileSize = (try? FileManager.default
             .attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
         let tech: MediaTechnicalInfo
@@ -1295,7 +1295,7 @@ struct FileInfoView: View {
                 : String(format: "%.0f kbps", br / 1000)
         }
         // Pull tags via the same service so DSF/DFF show TITLE/ARTIST/etc.
-        if let tags = try? MediaMetadataService.read(url) {
+        if let tags = try? await MediaMetadataService.read(url) {
             meta.title  = tags.first("TITLE")
             meta.artist = tags.first("ARTIST")
             meta.album  = tags.first("ALBUM")

@@ -61,7 +61,7 @@ struct MediaMetadataEditorSheet: View {
             footer
         }
         .frame(width: 620, height: 640)
-        .onAppear(perform: load)
+        .onAppear { load() }
     }
 
     // MARK: - Header / footer
@@ -284,14 +284,16 @@ struct MediaMetadataEditorSheet: View {
             return
         }
         guard let url = firstTarget else { return }
-        do {
-            let m = try MediaMetadataService.read(url)
-            meta = m
-            original = m
-        } catch {
-            errorMessage = "Failed to read tags: \(error.localizedDescription)"
-            meta = MediaMetadata()
-            original = MediaMetadata()
+        Task {
+            do {
+                let m = try await MediaMetadataService.read(url)
+                meta = m
+                original = m
+            } catch {
+                errorMessage = "Failed to read tags: \(error.localizedDescription)"
+                meta = MediaMetadata()
+                original = MediaMetadata()
+            }
         }
     }
 
@@ -337,7 +339,7 @@ struct MediaMetadataEditorSheet: View {
             var failures: [String] = []
             for url in urls {
                 do {
-                    var current = (try? MediaMetadataService.read(url)) ?? MediaMetadata()
+                    var current = (try? await MediaMetadataService.read(url)) ?? MediaMetadata()
                     for (key, value) in edits {
                         if let idx = current.tags.firstIndex(where: {
                             $0.key.caseInsensitiveCompare(key) == .orderedSame

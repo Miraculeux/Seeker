@@ -9,6 +9,19 @@ import AppKit
 ///  2. Remote URLs (`public.url` http/https) downloaded via URLSession.
 enum BrowserDropImporter {
 
+    private final class ImportResult: @unchecked Sendable {
+        private let lock = NSLock()
+        private var savedAny = false
+
+        func record(_ saved: Bool) {
+            lock.withLock { savedAny = savedAny || saved }
+        }
+
+        var hasSaved: Bool {
+            lock.withLock { savedAny }
+        }
+    }
+
     /// Type identifiers we'll try to pull data out of, in priority order.
     /// Concrete image formats first so we keep the original encoding; then
     /// `public.image` for generic images; finally `public.url` for remote
@@ -23,30 +36,29 @@ enum BrowserDropImporter {
     static func importProviders(
         _ providers: [NSItemProvider],
         into destDir: URL,
-        completion: @escaping () -> Void
+        completion: @escaping @MainActor @Sendable () -> Void
     ) {
         let group = DispatchGroup()
-        let savedLock = NSLock()
-        var savedAny = false
+        let result = ImportResult()
 
         for provider in providers {
             group.enter()
             save(provider: provider, into: destDir) { ok in
-                savedLock.lock()
-                savedAny = savedAny || ok
-                savedLock.unlock()
+                result.record(ok)
                 group.leave()
             }
         }
         group.notify(queue: .main) {
-            if savedAny { completion() }
+            Task { @MainActor in
+                if result.hasSaved { completion() }
+            }
         }
     }
 
     private static func save(
         provider: NSItemProvider,
         into destDir: URL,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping @Sendable (Bool) -> Void
     ) {
         let suggested = sanitizeName(provider.suggestedName)
 
@@ -92,7 +104,7 @@ enum BrowserDropImporter {
         url: URL,
         into destDir: URL,
         suggested: String?,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping @Sendable (Bool) -> Void
     ) {
         var request = URLRequest(url: url)
         // A real-looking UA + Referer to the image's own origin helps some

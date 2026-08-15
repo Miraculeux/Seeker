@@ -41,7 +41,7 @@ enum MediaMetadataService {
         readOnlyExtensions.contains(url.pathExtension.lowercased())
     }
 
-    static func read(_ url: URL) throws -> MediaMetadata {
+    static func read(_ url: URL) async throws -> MediaMetadata {
         switch url.pathExtension.lowercased() {
         case "flac":
             return mediaMetadata(fromFlac: try FlacFile.read(url))
@@ -83,7 +83,7 @@ enum MediaMetadataService {
             return mediaMetadata(fromID3Decoded: try DFFFile.read(url).decoded())
         default:
             if readOnlyExtensions.contains(url.pathExtension.lowercased()) {
-                return readAVAsset(url)
+                return await readAVAsset(url)
             }
             throw NSError(domain: "MediaMetadataService", code: 1,
                 userInfo: [NSLocalizedDescriptionKey:
@@ -233,20 +233,15 @@ enum MediaMetadataService {
     /// parser (e.g. WAV, AAC, OGG, OPUS, WMA, MPEG). Returns whatever
     /// `commonMetadata` + `metadata` expose, normalized to upper-case
     /// Vorbis-style keys so it round-trips through `MediaMetadata`.
-    private static func readAVAsset(_ url: URL) -> MediaMetadata {
+    private static func readAVAsset(_ url: URL) async -> MediaMetadata {
         let asset = AVURLAsset(url: url)
         var tags: [MediaMetadata.Tag] = []
         var cover: Data?
         var coverMime: String?
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var items: [AVMetadataItem] = []
-        asset.loadValuesAsynchronously(forKeys: ["commonMetadata", "metadata"]) {
-            items = asset.commonMetadata + asset.metadata
-            semaphore.signal()
-        }
-        // Bounded wait so we never block forever on a misbehaving file.
-        _ = semaphore.wait(timeout: .now() + 5)
+        let commonMetadata = (try? await asset.load(.commonMetadata)) ?? []
+        let formatMetadata = (try? await asset.load(.metadata)) ?? []
+        let items = commonMetadata + formatMetadata
 
         for item in items {
             let raw = (item.commonKey?.rawValue
@@ -254,13 +249,13 @@ enum MediaMetadataService {
                        ?? "").uppercased()
             if raw.isEmpty { continue }
             let key = mapAVKey(raw)
-            if let str = item.stringValue, !str.isEmpty {
+            if let str = try? await item.load(.stringValue), !str.isEmpty {
                 // Skip duplicate keys (commonMetadata + metadata often overlap).
                 if tags.contains(where: { $0.key == key && $0.value == str }) {
                     continue
                 }
                 tags.append(.init(key: key, value: str))
-            } else if let data = item.dataValue,
+            } else if let data = try? await item.load(.dataValue),
                       cover == nil,
                       raw.contains("ARTWORK") || raw.contains("COVER") || raw == "PIC" {
                 cover = data
