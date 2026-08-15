@@ -15,6 +15,7 @@ let package = Package(
             publicHeadersPath: "include",
             cSettings: [
                 .define("XXH_STATIC_LINKING_ONLY"),
+                .unsafeFlags(["-Werror"]),
                 // Release builds want aggressive vectorisation; xxHash is
                 // pure scalar/SIMD C with no UB and benefits substantially.
                 .unsafeFlags(["-O3"], .when(configuration: .release))
@@ -33,6 +34,7 @@ let package = Package(
                 .copy("../Resources/AppIcon.icns")
             ],
             swiftSettings: [
+                .unsafeFlags(["-warnings-as-errors"]),
                 // Cross-module optimization lets the optimizer inline
                 // across module boundaries in release builds. Negligible
                 // effect for a single-module app today, but future-proofs

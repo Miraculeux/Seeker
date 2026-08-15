@@ -1289,9 +1289,9 @@ private final class RightClickNSView: NSView {
 /// UTIs (`public.file-url`). Classic AppKit apps such as IINA register for the
 /// legacy `NSFilenamesPboardType` / `NSURL` drag types and never see the
 /// promise, so the drop is silently rejected. Starting a real
-/// `beginDraggingSession` with `NSURL` pasteboard writers eagerly publishes
-/// those legacy types (pointing at the ORIGINAL path — no cache copy), so
-/// every drop target works.
+/// `beginDraggingSession` with explicit file pasteboard writers eagerly
+/// publishes those legacy types (pointing at the ORIGINAL path — no cache
+/// copy), so every drop target works.
 struct FileDragCatcher: NSViewRepresentable {
     var isEnabled: Bool = true
     var chevronRange: ClosedRange<CGFloat>? = nil
@@ -1319,6 +1319,30 @@ struct FileDragCatcher: NSViewRepresentable {
     }
 }
 
+private final class FilePasteboardWriter: NSObject, NSPasteboardWriting {
+    private static let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    private let url: URL
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        [.fileURL, .URL, Self.filenamesType]
+    }
+
+    func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+        switch type {
+        case .fileURL, .URL:
+            return url.absoluteString
+        case Self.filenamesType:
+            return [url.path]
+        default:
+            return nil
+        }
+    }
+}
+
 private final class FileDragNSView: NSView, NSDraggingSource {
     var isDragEnabled = true
     var chevronRange: ClosedRange<CGFloat>?
@@ -1339,8 +1363,7 @@ private final class FileDragNSView: NSView, NSDraggingSource {
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
             // Leave control-click to the right-click catcher below us.
             if event.modifierFlags.contains(.control) { return nil }
-            let local = convert(point, from: superview)
-            return bounds.contains(local) ? self : nil
+            return bounds.contains(point) ? self : nil
         default:
             return nil
         }
@@ -1385,7 +1408,7 @@ private final class FileDragNSView: NSView, NSDraggingSource {
         let origin = convert(event.locationInWindow, from: nil)
         let iconSize = NSSize(width: 32, height: 32)
         let items: [NSDraggingItem] = urls.enumerated().map { index, url in
-            let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+            let item = NSDraggingItem(pasteboardWriter: FilePasteboardWriter(url: url))
             let icon = NSWorkspace.shared.icon(forFile: url.path)
             icon.size = iconSize
             let offset = CGFloat(index) * 6
@@ -1538,10 +1561,16 @@ private struct ColumnFileList: View {
                     }
                 }
                 .tag(file)
-                .onTapGesture {
-                    if NSApp.currentEvent?.clickCount ?? 1 >= 2 {
-                        onOpen(file)
-                    }
+                .overlay {
+                    FileDragCatcher(
+                        urls: { [file.url] },
+                        onClick: { _, _, clickCount in
+                            onSelect(file)
+                            if clickCount >= 2 {
+                                onOpen(file)
+                            }
+                        }
+                    )
                 }
             }
         }
