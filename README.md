@@ -38,8 +38,8 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - Semantic Search supports recursive folders, persistent embedding/OCR caches, OCR text matching, configurable relevance thresholds, and Top-K result limits
 
 ### Semantic Models
-- MobileCLIP-S2 Core ML FP16 is the fast default; MobileCLIP-S0 is available as a smaller option
-- Multilingual SigLIP 2 Base Core ML (8-bit, about 356 MB) provides direct Chinese and multilingual text search
+- Multilingual SigLIP 2 Base Core ML (8-bit, about 356 MB) is the recommended default for semantic search and optional image-comparison scoring
+- MobileCLIP-S2 is available as a faster English-optimized alternative; MobileCLIP-S0 is the smaller option
 - Model downloads can use ModelScope (default), Hugging Face, or a custom mirror URL
 - Models run locally; the default storage is `~/Library/Application Support/com.marvel.Seeker/SemanticModels/`, and Settings → AI Models can select another folder
 - MobileCLIP-S2 requires about 200 MB to download; tokenizer assets use the official Hugging Face source when ModelScope is selected

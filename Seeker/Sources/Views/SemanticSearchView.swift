@@ -218,7 +218,7 @@ struct SemanticSearchView: View {
                 placeholder(
                     icon: "text.magnifyingglass",
                     title: "Search by meaning",
-                    detail: "Try descriptions such as “jasmine flowers”, “a dog running”, or “海边日落”. English queries work best with MobileCLIP."
+                    detail: "Try descriptions such as “jasmine flowers”, “a dog running”, or “海边日落”. SigLIP 2 is recommended for multilingual queries."
                 )
             }
         case .searching(let total):

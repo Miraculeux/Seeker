@@ -37,7 +37,7 @@ struct SemanticModelDescriptor: Identifiable, Hashable, Sendable {
     static let mobileCLIPS2 = SemanticModelDescriptor(
         id: "mobileclip-s2-fp16",
         displayName: "MobileCLIP-S2 (Core ML FP16)",
-        detail: "Recommended · balanced accuracy and speed · English optimized",
+        detail: "Faster alternative · English optimized",
         imageSize: 256,
         availability: .downloadable,
         assets: Self.mobileCLIPAssets(
@@ -56,7 +56,7 @@ struct SemanticModelDescriptor: Identifiable, Hashable, Sendable {
     static let sigLIP2Base = SemanticModelDescriptor(
         id: "siglip2-base-patch16-256-coreml-int8",
         displayName: "SigLIP 2 Base Multilingual (Core ML 8-bit)",
-        detail: "Best for Chinese and multilingual search · about 356 MB",
+        detail: "Recommended for search and comparison · multilingual · about 356 MB",
         imageSize: 256,
         availability: .downloadable,
         assets: [
@@ -68,10 +68,10 @@ struct SemanticModelDescriptor: Identifiable, Hashable, Sendable {
         packageFormat: .compiledArchives
     )
 
-    static let all: [SemanticModelDescriptor] = [mobileCLIPS2, sigLIP2Base, mobileCLIPS0]
-    static let defaultModel = mobileCLIPS2
+    static let all: [SemanticModelDescriptor] = [sigLIP2Base, mobileCLIPS2, mobileCLIPS0]
+    static let defaultModel = sigLIP2Base
     static let defaultSearchModel = sigLIP2Base
-    static let defaultComparisonModel = mobileCLIPS2
+    static let defaultComparisonModel = sigLIP2Base
 
     static func model(id: String) -> SemanticModelDescriptor {
         all.first(where: { $0.id == id }) ?? defaultModel

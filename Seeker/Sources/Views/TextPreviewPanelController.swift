@@ -37,6 +37,11 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
         load(url: url)
     }
 
+    func isTextViewFirstResponder(in window: NSWindow?) -> Bool {
+        guard let panel, let textView, window === panel else { return false }
+        return panel.firstResponder === textView
+    }
+
     // MARK: Text loading
 
     /// Read up to the configured byte limit and decode into text. Returns
@@ -109,11 +114,12 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
         if panel == nil {
             let p = NSPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
-                styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .utilityWindow],
+                styleMask: [.titled, .closable, .resizable, .utilityWindow],
                 backing: .buffered,
                 defer: false
             )
             p.isFloatingPanel = true
+            p.becomesKeyOnlyIfNeeded = false
             p.level = .floating
             p.hidesOnDeactivate = false
             p.isReleasedWhenClosed = false

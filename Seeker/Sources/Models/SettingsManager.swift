@@ -277,7 +277,6 @@ final class SettingsManager {
     var semanticSearchModelID: String {
         get {
             defaults.string(forKey: Keys.semanticSearchModelID)
-                ?? defaults.string(forKey: Keys.semanticModelID)
                 ?? SemanticModelDescriptor.defaultSearchModel.id
         }
         set { defaults.set(newValue, forKey: Keys.semanticSearchModelID) }
@@ -286,7 +285,6 @@ final class SettingsManager {
     var imageComparisonModelID: String {
         get {
             defaults.string(forKey: Keys.imageComparisonModelID)
-                ?? defaults.string(forKey: Keys.semanticModelID)
                 ?? SemanticModelDescriptor.defaultComparisonModel.id
         }
         set { defaults.set(newValue, forKey: Keys.imageComparisonModelID) }

@@ -134,6 +134,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return event
                 }
 
+                // Once the user clicks into the text preview, let its native
+                // NSTextView handle selection, copy, Select All and navigation.
+                if let delegate = AppDelegate.shared,
+                   delegate.textPreviewPanel.isTextViewFirstResponder(in: event.window) {
+                    if event.keyCode == 53 {
+                        delegate.textPreviewPanel.close()
+                        return nil
+                    }
+                    return event
+                }
+
                 // Check if a shortcut recorder is active — forward event and consume
                 if ShortcutRecorderNSView.isRecordingShortcut {
                     ShortcutRecorderNSView.activeRecorder?.keyDown(with: event)

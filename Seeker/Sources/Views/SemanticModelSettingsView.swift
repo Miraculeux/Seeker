@@ -41,7 +41,7 @@ struct SemanticModelSettingsView: View {
                 .onChange(of: comparisonModelID) { _, value in
                     SettingsManager.shared.imageComparisonModelID = value
                 }
-                Text("SigLIP 2 is recommended for Chinese and multilingual text search. MobileCLIP-S2 is faster for optional image-comparison scoring.")
+                Text("SigLIP 2 is the recommended default for both semantic search and optional image-comparison scoring. MobileCLIP remains available when speed or a smaller model is preferred.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
