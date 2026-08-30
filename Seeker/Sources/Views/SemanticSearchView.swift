@@ -5,6 +5,7 @@ import Vision
 
 struct SemanticSearchRequest: Codable, Hashable {
     let targetDirectory: URL
+    var sourceWindowID: UUID? = nil
 }
 
 struct SemanticSearchView: View {

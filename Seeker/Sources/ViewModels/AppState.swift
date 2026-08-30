@@ -4,6 +4,8 @@ import AppKit
 
 @MainActor @Observable
 class AppState {
+    let windowID = UUID()
+
     // Panel visibility
     var showFavorites: Bool = SettingsManager.shared.showFavorites {
         didSet { SettingsManager.shared.showFavorites = showFavorites }
@@ -73,12 +75,16 @@ class AppState {
         }
         similarImageRequest = SimilarImageSearchRequest(
             referenceURL: reference,
-            targetDirectory: active.currentURL
+            targetDirectory: active.currentURL,
+            sourceWindowID: windowID
         )
     }
 
     func openSemanticSearch() {
-        semanticSearchRequest = SemanticSearchRequest(targetDirectory: activeExplorer.currentURL)
+        semanticSearchRequest = SemanticSearchRequest(
+            targetDirectory: activeExplorer.currentURL,
+            sourceWindowID: windowID
+        )
     }
 
     /// Opens the recursive search window rooted at the active pane's

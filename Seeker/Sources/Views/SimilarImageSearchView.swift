@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct SimilarImageSearchRequest: Codable, Hashable {
     let referenceURL: URL
     let targetDirectory: URL
+    var sourceWindowID: UUID? = nil
 }
 
 struct SimilarImageSearchView: View {

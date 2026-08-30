@@ -11,6 +11,8 @@ import AppKit
 /// Trash. Deleting calls `onDeleted` so the host view can update its own
 /// model (duplicate groups / difference lists) without a full re-scan.
 struct TriageExplorerPanel: View {
+    @Environment(AppState.self) private var appState
+
     /// The file the left-hand list asked to focus. Drives navigation and
     /// highlight, and is the fallback target for actions when the user
     /// hasn't clicked a different row inside this panel. Browse mode only.
@@ -140,7 +142,7 @@ struct TriageExplorerPanel: View {
         .onChange(of: fixedURLs) { _, _ in rebuildFixed() }
         .onChange(of: anchorURL) { _, url in
             guard usesFloatingQuickLook, let url else { return }
-            AppDelegate.shared?.updateQuickLookIfVisible(url: url)
+            AppDelegate.shared?.updateQuickLookIfVisible(url: url, appState: appState)
         }
         // ⌘⌫ is an app-wide menu shortcut owned by the main window, so it
         // can't reach our List's `.onKeyPress`. The menu command posts
@@ -245,7 +247,7 @@ struct TriageExplorerPanel: View {
     private func previewActive() {
         guard let url = primaryURL else { return }
         if usesFloatingQuickLook {
-            AppDelegate.shared?.quickLookPanel.togglePreview(for: url)
+            AppDelegate.shared?.toggleQuickLookPreview(for: url, appState: appState)
             return
         }
         if showPreview {

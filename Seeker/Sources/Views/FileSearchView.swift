@@ -7,6 +7,8 @@ import AppKit
 /// active pane.
 struct FileSearchView: View {
     @Environment(AppState.self) var appState
+    @Environment(\.openWindow) private var openWindow
+    private let sourceWindowID: UUID?
     @Environment(\.dismiss) private var dismiss
     @State private var searcher: FileSearcher
     @State private var selection: URL?
@@ -14,7 +16,8 @@ struct FileSearchView: View {
     @State private var showPreview = false
     @FocusState private var queryFocused: Bool
 
-    init(root: URL) {
+    init(root: URL, sourceWindowID: UUID? = nil) {
+        self.sourceWindowID = sourceWindowID
         _searcher = State(initialValue: FileSearcher(root: root))
     }
 
@@ -275,12 +278,13 @@ struct FileSearchView: View {
     /// Navigates the main window's active pane to the file's parent folder
     /// and selects it, then brings the main window forward.
     private func revealInPane(_ url: URL) {
-        let explorer = appState.activeExplorer
-        explorer.revealAndSelect(url)
-        if let mainWin = NSApp.windows.first(where: {
-            $0.identifier?.rawValue != "file-search" && $0.contentViewController != nil
-        }) {
+        let sourceState = MainWindowRegistry.shared.appState(for: sourceWindowID) ?? appState
+        if let mainWin = MainWindowRegistry.shared.window(for: sourceState) {
+            sourceState.activeExplorer.revealAndSelect(url)
             mainWin.makeKeyAndOrderFront(nil)
+        } else {
+            MainWindowRegistry.shared.queueReveal(url)
+            openWindow(id: "main")
         }
     }
 }

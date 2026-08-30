@@ -8,8 +8,9 @@ import AppKit
 /// in the embedded explorer on the right, where it can be previewed,
 /// opened, or moved to the Trash.
 struct DirectoryCompareView: View {
-    @Environment(AppState.self) var appState
+    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var comparer: DirectoryComparer
 
     init(dirA: URL, dirB: URL) {
@@ -94,7 +95,10 @@ struct DirectoryCompareView: View {
             .help("Compare entire folder trees by relative path")
 
             Button {
-                appState.folderSyncRoots = [comparer.dirA, comparer.dirB]
+                openWindow(id: "folder-sync", value: FolderSyncWindowRequest(
+                    directories: [comparer.dirA, comparer.dirB],
+                    sourceWindowID: appState.windowID
+                ))
             } label: {
                 Label("Sync\u{2026}", systemImage: "arrow.triangle.2.circlepath")
                     .font(.system(size: 11))

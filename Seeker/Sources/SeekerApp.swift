@@ -1,6 +1,171 @@
 import SwiftUI
 import AppKit
 
+private struct SeekerAppStateFocusedKey: FocusedValueKey {
+    typealias Value = AppState
+}
+
+private extension FocusedValues {
+    var seekerAppState: AppState? {
+        get { self[SeekerAppStateFocusedKey.self] }
+        set { self[SeekerAppStateFocusedKey.self] = newValue }
+    }
+}
+
+struct DuplicateFinderWindowRequest: Codable, Hashable {
+    let rootURLs: [URL]
+    let sourceWindowID: UUID
+}
+
+struct DirectoryCompareWindowRequest: Codable, Hashable {
+    let directories: [URL]
+    let sourceWindowID: UUID
+}
+
+struct FileSearchWindowRequest: Codable, Hashable {
+    let root: URL
+    let sourceWindowID: UUID
+}
+
+struct FolderSyncWindowRequest: Codable, Hashable {
+    let directories: [URL]
+    let sourceWindowID: UUID
+}
+
+@MainActor
+final class MainWindowRegistry {
+    static let shared = MainWindowRegistry()
+
+    private final class Entry {
+        weak var window: NSWindow?
+        weak var appState: AppState?
+
+        init(window: NSWindow, appState: AppState) {
+            self.window = window
+            self.appState = appState
+        }
+    }
+
+    private var entries: [ObjectIdentifier: Entry] = [:]
+    private(set) weak var mostRecentAppState: AppState?
+    private var pendingRevealURL: URL?
+
+    func register(window: NSWindow, appState: AppState) {
+        entries[ObjectIdentifier(window)] = Entry(window: window, appState: appState)
+        mostRecentAppState = appState
+    }
+
+    func unregister(window: NSWindow, appState: AppState) {
+        let key = ObjectIdentifier(window)
+        guard entries[key]?.appState === appState else { return }
+        entries.removeValue(forKey: key)
+        if mostRecentAppState === appState {
+            mostRecentAppState = entries.values.compactMap(\.appState).last
+        }
+    }
+
+    func appState(for window: NSWindow?) -> AppState? {
+        guard let window else { return nil }
+        if let state = entries[ObjectIdentifier(window)]?.appState { return state }
+        if let parent = window.sheetParent {
+            return entries[ObjectIdentifier(parent)]?.appState
+        }
+        return nil
+    }
+
+    func window(for appState: AppState) -> NSWindow? {
+        entries.values.first(where: { $0.appState === appState })?.window
+    }
+
+    func appState(for windowID: UUID?) -> AppState? {
+        guard let windowID else { return nil }
+        return entries.values.compactMap(\.appState).first { $0.windowID == windowID }
+    }
+
+    func queueReveal(_ url: URL) {
+        pendingRevealURL = url
+    }
+
+    func consumePendingReveal() -> URL? {
+        defer { pendingRevealURL = nil }
+        return pendingRevealURL
+    }
+
+    func markActive(window: NSWindow) {
+        if let state = appState(for: window) { mostRecentAppState = state }
+        pruneReleasedEntries()
+    }
+
+    private func pruneReleasedEntries() {
+        entries = entries.filter { $0.value.window != nil && $0.value.appState != nil }
+    }
+}
+
+private struct MainWindowRegistrationView: NSViewRepresentable {
+    let appState: AppState
+
+    func makeNSView(context: Context) -> RegistrationView {
+        RegistrationView(appState: appState)
+    }
+
+    func updateNSView(_ nsView: RegistrationView, context: Context) {
+        nsView.appState = appState
+        nsView.registerCurrentWindow()
+    }
+
+    static func dismantleNSView(_ nsView: RegistrationView, coordinator: ()) {
+        nsView.unregisterCurrentWindow()
+    }
+
+    final class RegistrationView: NSView {
+        weak var appState: AppState?
+        private weak var registeredWindow: NSWindow?
+        private var activationObserver: NSObjectProtocol?
+
+        init(appState: AppState) {
+            self.appState = appState
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            registerCurrentWindow()
+        }
+
+        func registerCurrentWindow() {
+            guard let window, let appState else { return }
+            if registeredWindow !== window {
+                unregisterCurrentWindow()
+                registeredWindow = window
+                MainWindowRegistry.shared.register(window: window, appState: appState)
+                activationObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didBecomeKeyNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak window] _ in
+                    MainActor.assumeIsolated {
+                        if let window { MainWindowRegistry.shared.markActive(window: window) }
+                    }
+                }
+            }
+        }
+
+        func unregisterCurrentWindow() {
+            if let activationObserver {
+                NotificationCenter.default.removeObserver(activationObserver)
+                self.activationObserver = nil
+            }
+            if let registeredWindow, let appState {
+                MainWindowRegistry.shared.unregister(window: registeredWindow, appState: appState)
+            }
+            registeredWindow = nil
+        }
+
+    }
+}
+
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate?
@@ -8,15 +173,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var mouseDownMonitor: Any?
     let quickLookPanel = QuickLookPanelController()
     let textPreviewPanel = TextPreviewPanelController()
-    weak var appState: AppState?
+    private weak var quickLookAppState: AppState?
+    private weak var textPreviewAppState: AppState?
     private var typeAheadBuffer: String = ""
     private var typeAheadTimer: Timer?
+    private var typeAheadWindowID: ObjectIdentifier?
 
     /// True if `window` is one of the standalone helper windows (duplicate
     /// finder / folder compare). Those windows handle their own keyboard
     /// shortcuts, so app-wide handlers must not act on the main window's
     /// state when one of them is key.
     static func isHelperWindow(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        let id = window.identifier?.rawValue ?? ""
+        if id.contains("duplicate-finder") || id.contains("directory-compare")
+            || id.contains("file-search") || id.contains("similar-images")
+            || id.contains("semantic-search") || id.contains("folder-sync") {
+            return true
+        }
+        return window.title == "Find Duplicates" || window.title == "Compare Folders"
+            || window.title == "Search" || window.title == "Similar Images"
+            || window.title == "Semantic Search" || window.title == "Sync Folders"
+    }
+
+    static func isTriageWindow(_ window: NSWindow?) -> Bool {
         guard let window else { return false }
         let id = window.identifier?.rawValue ?? ""
         if id.contains("duplicate-finder") || id.contains("directory-compare")
@@ -87,8 +267,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // produced a duplicate UserDefaults write on every quit.
     }
 
-    func installSpaceMonitor(appState: AppState) {
-        self.appState = appState
+    func installSpaceMonitor() {
         AppDelegate.shared = self
 
         if spaceMonitor == nil {
@@ -125,7 +304,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     // "Select All" key-equivalent (which targets the
                     // native table, not the panel's custom selection).
                     // Consume it here and tell the panel to select all.
-                    if event.keyCode == 0, event.modifierFlags.contains(.command),
+                          if AppDelegate.isTriageWindow(event.window), event.keyCode == 0,
+                              event.modifierFlags.contains(.command),
                        !event.modifierFlags.contains(.option),
                        !event.modifierFlags.contains(.control) {
                         NotificationCenter.default.post(name: .triageSelectAllRequested, object: nil)
@@ -171,6 +351,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     return event
                 }
 
+                guard let state = MainWindowRegistry.shared.appState(for: event.window) else {
+                    return event
+                }
+
                 if event.keyCode == 49, !event.isARepeat {
                     // Space → Quick Look (or pause/resume if a slideshow
                     // is currently running in the Quick Look panel).
@@ -179,8 +363,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             delegate.quickLookPanel.toggleAutoPreviewPaused()
                             return nil
                         }
-                        if let url = delegate.appState?.activeExplorer.selectedFile?.url {
-                            delegate.quickLookPanel.togglePreview(for: url)
+                        if let url = state.activeExplorer.selectedFile?.url {
+                            delegate.toggleQuickLookPreview(for: url, appState: state)
                         }
                     }
                     return nil // consume space so List doesn't scroll/deselect
@@ -191,7 +375,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if !event.isARepeat, let delegate = AppDelegate.shared {
                         if delegate.textPreviewPanel.isVisible {
                             delegate.textPreviewPanel.close()
-                        } else if let url = delegate.appState?.activeExplorer.selectedFile?.url {
+                        } else if let url = state.activeExplorer.selectedFile?.url {
+                            delegate.textPreviewAppState = state
                             delegate.textPreviewPanel.togglePreview(for: url)
                         }
                     }
@@ -210,50 +395,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 } else if event.keyCode == 8, event.modifierFlags.contains(.command) {
                     // Cmd+C → Copy selected files
-                    if let delegate = AppDelegate.shared {
-                        delegate.appState?.activeExplorer.copySelected()
-                    }
+                    state.activeExplorer.copySelected()
                     return nil
                 } else if event.keyCode == 7, event.modifierFlags.contains(.command) {
                     // Cmd+X → Cut selected files
-                    if let delegate = AppDelegate.shared {
-                        delegate.appState?.activeExplorer.cutSelected()
-                    }
+                    state.activeExplorer.cutSelected()
                     return nil
                 } else if event.keyCode == 9, event.modifierFlags.contains(.command), event.modifierFlags.contains(.option) {
                     // Cmd+Option+V → Move (paste as move)
-                    if let delegate = AppDelegate.shared {
-                        delegate.appState?.activeExplorer.pasteMoving()
-                    }
+                    state.activeExplorer.pasteMoving()
                     return nil
                 } else if event.keyCode == 9, event.modifierFlags.contains(.command) {
                     // Cmd+V → Paste files
-                    if let delegate = AppDelegate.shared {
-                        delegate.appState?.activeExplorer.paste()
-                    }
+                    state.activeExplorer.paste()
                     return nil
                 } else if event.keyCode == 0, event.modifierFlags.contains(.command) {
                     // Cmd+A → Select all files
-                    if let delegate = AppDelegate.shared {
-                        delegate.appState?.activeExplorer.selectAll()
-                    }
+                    state.activeExplorer.selectAll()
                     return nil
                 } else if event.keyCode == 6, event.modifierFlags.contains(.command) {
                     // Cmd+Z → Undo last file operation
-                    if let delegate = AppDelegate.shared {
-                        delegate.appState?.activeExplorer.undo()
-                    }
+                    state.activeExplorer.undo()
                     return nil
                 } else if (event.keyCode == 124 || event.keyCode == 123), event.modifierFlags.contains(.command) {
                     // Cmd+Right / Cmd+Left → Switch active pane
-                    if let delegate = AppDelegate.shared, let state = delegate.appState, state.showDualPane {
+                    if state.showDualPane {
                         state.activePane = (event.keyCode == 124) ? .right : .left
                     }
                     return nil
                 } else if event.keyCode == 125 || event.keyCode == 126 || event.keyCode == 123 || event.keyCode == 124 {
                     // Arrow keys: Down(125) Up(126) Left(123) Right(124)
-                    if let delegate = AppDelegate.shared,
-                       let vm = delegate.appState?.activeExplorer {
+                    let vm = state.activeExplorer
                         let files = vm.files
                         guard !files.isEmpty else { return event }
                         let currentIndex = files.firstIndex(where: { $0 == vm.selectedFile })
@@ -332,14 +504,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                             vm.selectionAnchor = newFile
                             vm.selectedFileIDs = [newFile.id]
                         }
-                    }
                     return nil // consume arrow keys
                 }
 
                 // Handle configurable shortcuts from Settings
-                if let matched = Self.matchConfiguredShortcut(event: event),
-                   let delegate = AppDelegate.shared,
-                   let state = delegate.appState {
+                if let matched = Self.matchConfiguredShortcut(event: event) {
                     Self.executeShortcutAction(matched, appState: state)
                     return nil
                 }
@@ -350,8 +519,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                    let chars = event.characters, !chars.isEmpty,
                    let scalar = chars.unicodeScalars.first,
                    CharacterSet.alphanumerics.union(.punctuationCharacters).union(.symbols).contains(scalar),
-                   let delegate = AppDelegate.shared,
-                   let vm = delegate.appState?.activeExplorer {
+                   let delegate = AppDelegate.shared {
+                    let vm = state.activeExplorer
+                    if let window = event.window {
+                        let windowID = ObjectIdentifier(window)
+                        if delegate.typeAheadWindowID != windowID {
+                            delegate.typeAheadBuffer = ""
+                            delegate.typeAheadWindowID = windowID
+                        }
+                    }
                     delegate.typeAheadBuffer += chars
                     delegate.typeAheadTimer?.invalidate()
                     delegate.typeAheadTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: false) { _ in
@@ -374,9 +550,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if mouseDownMonitor == nil {
             // MouseDown → detect which pane was clicked to set activePane
             mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
-                guard let delegate = AppDelegate.shared,
-                      let state = delegate.appState,
-                      let window = event.window else {
+                                guard let window = event.window,
+                                            let state = MainWindowRegistry.shared.appState(for: window) else {
                     return event
                 }
                 let windowPoint = event.locationInWindow
@@ -395,14 +570,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func updateQuickLookIfVisible(url: URL) {
-        if quickLookPanel.isVisible {
+    func toggleQuickLookPreview(for url: URL, appState: AppState) {
+        quickLookAppState = appState
+        quickLookPanel.togglePreview(for: url)
+    }
+
+    func startAutoPreview(urls: [URL], interval: TimeInterval, appState: AppState) {
+        quickLookAppState = appState
+        quickLookPanel.startAutoPreview(urls: urls, interval: interval)
+    }
+
+    func showTextPreview(for url: URL, appState: AppState) {
+        textPreviewAppState = appState
+        if textPreviewPanel.isVisible {
+            textPreviewPanel.updatePreview(for: url)
+        } else {
+            textPreviewPanel.togglePreview(for: url)
+        }
+    }
+
+    func updateQuickLookIfVisible(url: URL, appState: AppState) {
+        if quickLookPanel.isVisible, quickLookAppState === appState {
             quickLookPanel.updatePreview(for: url)
         }
     }
 
-    func updateTextPreviewIfVisible(url: URL) {
-        if textPreviewPanel.isVisible {
+    func updateTextPreviewIfVisible(url: URL, appState: AppState) {
+        if textPreviewPanel.isVisible, textPreviewAppState === appState {
             textPreviewPanel.updatePreview(for: url)
         }
     }
@@ -512,11 +706,122 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private struct MainWindowRoot: View {
+    @Environment(\.openWindow) private var openWindow
+    @State private var appState = AppState()
+    @SceneStorage("mainWindow.leftPath") private var savedLeftPath = ""
+    @SceneStorage("mainWindow.rightPath") private var savedRightPath = ""
+    @SceneStorage("mainWindow.leftViewMode") private var savedLeftViewMode = ""
+    @SceneStorage("mainWindow.rightViewMode") private var savedRightViewMode = ""
+    @State private var didRestore = false
+    @State private var shortcutVersion = 0
+
+    let appDelegate: AppDelegate
+
+    var body: some View {
+        ContentView()
+            .environment(appState)
+            .focusedSceneValue(\.seekerAppState, appState)
+            .background(MainWindowRegistrationView(appState: appState))
+            .onAppear {
+                appDelegate.installSpaceMonitor()
+                restoreLocationsOnce()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+                saveSceneLocations()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                saveSceneLocations()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .explorerDidNavigate)) { _ in
+                saveSceneLocations()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .shortcutsChanged)) { _ in
+                shortcutVersion += 1
+            }
+            .onOpenURL { url in
+                appState.handleIncomingURL(url)
+            }
+    }
+
+    private func restoreLocationsOnce() {
+        guard !didRestore else { return }
+        didRestore = true
+        if !savedLeftPath.isEmpty || !savedRightPath.isEmpty {
+            if !savedLeftPath.isEmpty {
+                appState.leftPane.activeTab.navigateTo(URL(fileURLWithPath: savedLeftPath))
+            }
+            if !savedRightPath.isEmpty {
+                appState.rightPane.activeTab.navigateTo(URL(fileURLWithPath: savedRightPath))
+            }
+            if let mode = FileExplorerViewModel.ViewMode(rawValue: savedLeftViewMode) {
+                appState.leftPane.activeTab.applyViewModeWithoutPersisting(mode)
+            }
+            if let mode = FileExplorerViewModel.ViewMode(rawValue: savedRightViewMode) {
+                appState.rightPane.activeTab.applyViewModeWithoutPersisting(mode)
+            }
+        } else {
+            appState.restoreLastLocations()
+        }
+        if let url = MainWindowRegistry.shared.consumePendingReveal() {
+            appState.activeExplorer.revealAndSelect(url)
+        }
+        saveSceneLocations()
+    }
+
+    private func saveSceneLocations() {
+        savedLeftPath = appState.leftPane.activeTab.currentURL.path
+        savedRightPath = appState.rightPane.activeTab.currentURL.path
+        savedLeftViewMode = appState.leftPane.activeTab.viewMode.rawValue
+        savedRightViewMode = appState.rightPane.activeTab.viewMode.rawValue
+        if MainWindowRegistry.shared.mostRecentAppState === appState {
+            appState.saveCurrentLocations()
+        } else {
+            DirectoryViewStateStore.shared.flushNow()
+        }
+    }
+}
+
+private struct HelperWindowRoot<Content: View>: View {
+    @State private var sourceAppState: AppState
+    private let content: (AppState) -> Content
+
+    init(
+        sourceWindowID: UUID?,
+        fallback: AppState,
+        @ViewBuilder content: @escaping (AppState) -> Content
+    ) {
+        _sourceAppState = State(initialValue:
+            MainWindowRegistry.shared.appState(for: sourceWindowID)
+                ?? MainWindowRegistry.shared.mostRecentAppState
+                ?? fallback
+        )
+        self.content = content
+    }
+
+    var body: some View {
+        content(sourceAppState)
+            .environment(sourceAppState)
+            .focusedSceneValue(\.seekerAppState, sourceAppState)
+    }
+}
+
 @main
 struct SeekerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @FocusedValue(\.seekerAppState) private var focusedAppState
     @State private var appState = AppState()
-    @State private var shortcutVersion = 0
+
+    private var mainWindowCommandsEnabled: Bool {
+        !AppDelegate.isHelperWindow(NSApp.keyWindow)
+    }
+
+    private var activeAppState: AppState {
+        focusedAppState
+            ?? MainWindowRegistry.shared.appState(for: NSApp.keyWindow)
+            ?? MainWindowRegistry.shared.mostRecentAppState
+            ?? appState
+    }
 
     init() {
         // Show .help(...) tooltips after 500ms instead of macOS default (~2s).
@@ -528,33 +833,8 @@ struct SeekerApp: App {
     }
 
     var body: some Scene {
-        // Use `Window` (singleton) rather than `WindowGroup` so that
-        // incoming `seeker://` URLs from "Reveal in Seeker" cannot spawn
-        // additional windows. The app shares one AppState and one global
-        // key-event monitor, so a second window would route its keystrokes
-        // back into the first window's active pane.
-        Window("Seeker", id: "main") {
-            ContentView()
-                .environment(appState)
-                .onAppear {
-                    appDelegate.installSpaceMonitor(appState: appState)
-                    appState.restoreLastLocations()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
-                    appState.saveCurrentLocations()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    appState.saveCurrentLocations()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .explorerDidNavigate)) { _ in
-                    appState.saveCurrentLocations()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: .shortcutsChanged)) { _ in
-                    shortcutVersion += 1
-                }
-                .onOpenURL { url in
-                    appState.handleIncomingURL(url)
-                }
+        WindowGroup("Seeker", id: "main") {
+            MainWindowRoot(appDelegate: appDelegate)
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 1200, height: 700)
@@ -562,105 +842,116 @@ struct SeekerApp: App {
         // Standalone duplicate-finder window. Non-modal so the user can
         // click "Open in new tab" on a row, switch to the main window,
         // inspect the file, and come back to keep triaging.
-        WindowGroup("Find Duplicates", id: "duplicate-finder", for: [URL].self) { $rootURLs in
-            DuplicateFinderView(rootURLs: rootURLs.flatMap { $0.isEmpty ? nil : $0 }
-                ?? [appState.activeExplorer.currentURL])
-                .environment(appState)
+        WindowGroup("Find Duplicates", id: "duplicate-finder", for: DuplicateFinderWindowRequest.self) { $request in
+            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+                DuplicateFinderView(rootURLs: request.flatMap { $0.rootURLs.isEmpty ? nil : $0.rootURLs }
+                    ?? [source.activeExplorer.currentURL])
+            }
         }
         .windowResizability(.contentMinSize)
 
         // Standalone folder-compare window. Two directories diffed by
         // file name; lives in its own window like the duplicate finder.
-        WindowGroup("Compare Folders", id: "directory-compare", for: [URL].self) { $dirs in
-            if let dirs, dirs.count == 2 {
-                DirectoryCompareView(dirA: dirs[0], dirB: dirs[1])
-                    .environment(appState)
-            } else if let pair = appState.resolveDirectoryPair() {
-                DirectoryCompareView(dirA: pair.0, dirB: pair.1)
-                    .environment(appState)
-            } else {
-                ContentUnavailableView(
-                    "Choose Two Folders",
-                    systemImage: "folder.badge.questionmark",
-                    description: Text("Open two different folders in the panes, then create this window again.")
-                )
-                .frame(minWidth: 640, minHeight: 420)
+        WindowGroup("Compare Folders", id: "directory-compare", for: DirectoryCompareWindowRequest.self) { $request in
+            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+                let dirs = request?.directories
+                if let dirs, dirs.count == 2 {
+                    DirectoryCompareView(dirA: dirs[0], dirB: dirs[1])
+                } else if let pair = source.resolveDirectoryPair() {
+                    DirectoryCompareView(dirA: pair.0, dirB: pair.1)
+                } else {
+                    ContentUnavailableView(
+                        "Choose Two Folders",
+                        systemImage: "folder.badge.questionmark",
+                        description: Text("Open two different folders in the panes, then create this window again.")
+                    )
+                    .frame(minWidth: 640, minHeight: 420)
+                }
             }
         }
         .windowResizability(.contentMinSize)
 
         // Standalone recursive search window.
-        WindowGroup("Search", id: "file-search", for: URL.self) { $root in
-            FileSearchView(root: root ?? appState.activeExplorer.currentURL)
-                .environment(appState)
+        WindowGroup("Search", id: "file-search", for: FileSearchWindowRequest.self) { $request in
+            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+                FileSearchView(
+                    root: request?.root ?? source.activeExplorer.currentURL,
+                    sourceWindowID: request?.sourceWindowID
+                )
+            }
         }
         .windowResizability(.contentMinSize)
 
         WindowGroup("Similar Images", id: "similar-images", for: SimilarImageSearchRequest.self) { $request in
-            if let request {
-                SimilarImageSearchView(request: request)
-                    .environment(appState)
-            } else if appState.activeExplorer.canOpenSimilarImageSearch,
-                      let referenceURL = appState.activeExplorer.selectedFile?.url {
-                SimilarImageSearchView(request: SimilarImageSearchRequest(
-                    referenceURL: referenceURL,
-                    targetDirectory: appState.activeExplorer.currentURL
-                ))
-                .environment(appState)
-            } else {
-                ContentUnavailableView(
-                    "Select an Image",
-                    systemImage: "photo.badge.magnifyingglass",
-                    description: Text("Select an image in the main window, then create this window again.")
-                )
-                .frame(minWidth: 640, minHeight: 420)
+            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+                if let request {
+                    SimilarImageSearchView(request: request)
+                } else if source.activeExplorer.canOpenSimilarImageSearch,
+                          let referenceURL = source.activeExplorer.selectedFile?.url {
+                    SimilarImageSearchView(request: SimilarImageSearchRequest(
+                        referenceURL: referenceURL,
+                        targetDirectory: source.activeExplorer.currentURL
+                    ))
+                } else {
+                    ContentUnavailableView(
+                        "Select an Image",
+                        systemImage: "photo.badge.magnifyingglass",
+                        description: Text("Select an image in the main window, then create this window again.")
+                    )
+                    .frame(minWidth: 640, minHeight: 420)
+                }
             }
         }
         .windowResizability(.contentMinSize)
 
         WindowGroup("Semantic Search", id: "semantic-search", for: SemanticSearchRequest.self) { $request in
-            SemanticSearchView(request: request ?? SemanticSearchRequest(
-                targetDirectory: appState.activeExplorer.currentURL
-            ))
-            .environment(appState)
+            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+                SemanticSearchView(request: request ?? SemanticSearchRequest(
+                    targetDirectory: source.activeExplorer.currentURL
+                ))
+            }
         }
         .windowResizability(.contentMinSize)
 
         // Standalone folder-sync window.
-        WindowGroup("Sync Folders", id: "folder-sync", for: [URL].self) { $dirs in
-            if let dirs, dirs.count == 2 {
-                FolderSyncView(rootA: dirs[0], rootB: dirs[1])
-                    .environment(appState)
-            } else if let pair = appState.resolveDirectoryPair() {
-                FolderSyncView(rootA: pair.0, rootB: pair.1)
-                    .environment(appState)
-            } else {
-                ContentUnavailableView(
-                    "Choose Two Folders",
-                    systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
-                    description: Text("Open two different folders in the panes, then create this window again.")
-                )
-                .frame(minWidth: 640, minHeight: 420)
+        WindowGroup("Sync Folders", id: "folder-sync", for: FolderSyncWindowRequest.self) { $request in
+            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+                let dirs = request?.directories
+                if let dirs, dirs.count == 2 {
+                    FolderSyncView(rootA: dirs[0], rootB: dirs[1])
+                } else if let pair = source.resolveDirectoryPair() {
+                    FolderSyncView(rootA: pair.0, rootB: pair.1)
+                } else {
+                    ContentUnavailableView(
+                        "Choose Two Folders",
+                        systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
+                        description: Text("Open two different folders in the panes, then create this window again.")
+                    )
+                    .frame(minWidth: 640, minHeight: 420)
+                }
             }
         }
         .windowResizability(.contentMinSize)
         .commands {
             // MARK: - View Menu
             CommandGroup(after: .sidebar) {
+                let appState = activeAppState
                 Button("Toggle Favorites Sidebar") {
                     withAnimation { appState.showFavorites.toggle() }
                 }
                 .shortcut(for: .toggleFavorites)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Toggle Dual Pane") {
                     withAnimation { appState.showDualPane.toggle() }
                 }
                 .shortcut(for: .toggleDualPane)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Swap Panes") {
                     appState.swapPanes()
                 }
-                .disabled(!appState.showDualPane)
+                .disabled(!mainWindowCommandsEnabled || !appState.showDualPane)
 
                 Divider()
 
@@ -668,16 +959,19 @@ struct SeekerApp: App {
                     appState.activeExplorer.viewMode = .list
                 }
                 .shortcut(for: .listView)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Icon View") {
                     appState.activeExplorer.viewMode = .icons
                 }
                 .shortcut(for: .iconView)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Column View") {
                     appState.activeExplorer.viewMode = .columns
                 }
                 .shortcut(for: .columnView)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Divider()
 
@@ -685,19 +979,19 @@ struct SeekerApp: App {
                     appState.activeExplorer.zoomIconsIn()
                 }
                 .keyboardShortcut("+", modifiers: .command)
-                .disabled(appState.activeExplorer.viewMode != .icons)
+                .disabled(!mainWindowCommandsEnabled || appState.activeExplorer.viewMode != .icons)
 
                 Button("Zoom Out") {
                     appState.activeExplorer.zoomIconsOut()
                 }
                 .keyboardShortcut("-", modifiers: .command)
-                .disabled(appState.activeExplorer.viewMode != .icons)
+                .disabled(!mainWindowCommandsEnabled || appState.activeExplorer.viewMode != .icons)
 
                 Button("Actual Size") {
                     appState.activeExplorer.resetIconZoom()
                 }
                 .keyboardShortcut("0", modifiers: .command)
-                .disabled(appState.activeExplorer.viewMode != .icons)
+                .disabled(!mainWindowCommandsEnabled || appState.activeExplorer.viewMode != .icons)
 
                 Divider()
 
@@ -706,10 +1000,12 @@ struct SeekerApp: App {
                     appState.activeExplorer.loadFiles()
                 }
                 .shortcut(for: .toggleHiddenFiles)
+                .disabled(!mainWindowCommandsEnabled)
             }
 
             // MARK: - File Operations (Edit menu)
             CommandGroup(after: .pasteboard) {
+                let appState = activeAppState
                 Divider()
 
                 Button("Open") {
@@ -718,16 +1014,19 @@ struct SeekerApp: App {
                     }
                 }
                 .shortcut(for: .openFile)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("New Folder") {
                     appState.activeExplorer.createNewFolder()
                 }
                 .shortcut(for: .newFolder)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("New File") {
                     appState.activeExplorer.createNewFile()
                 }
                 .shortcut(for: .newFile)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Divider()
 
@@ -743,6 +1042,8 @@ struct SeekerApp: App {
                     }
                 }
                 .shortcut(for: .moveToTrash)
+                .disabled(AppDelegate.isHelperWindow(NSApp.keyWindow)
+                    && !AppDelegate.isTriageWindow(NSApp.keyWindow))
 
                 Button("Delete Immediately\u{2026}") {
                     // Permanent delete bypasses the Trash. Only meaningful
@@ -753,17 +1054,20 @@ struct SeekerApp: App {
                     }
                 }
                 .keyboardShortcut(.delete, modifiers: [.command, .option])
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Rename") {
                     if let file = appState.activeExplorer.selectedFile {
                         appState.activeExplorer.beginRename(file)
                     }
                 }
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Batch Rename\u{2026}") {
                     appState.openBatchRename()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(!mainWindowCommandsEnabled)
 
                 Divider()
 
@@ -771,29 +1075,35 @@ struct SeekerApp: App {
                     appState.copyToOtherPane()
                 }
                 .shortcut(for: .copyToOtherPane)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Move to Other Pane") {
                     appState.moveToOtherPane()
                 }
                 .shortcut(for: .moveToOtherPane)
+                .disabled(!mainWindowCommandsEnabled)
             }
 
             // MARK: - Go Menu
             CommandMenu("Go") {
+                let appState = activeAppState
                 Button("Back") {
                     appState.activeExplorer.goBack()
                 }
                 .shortcut(for: .goBack)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Forward") {
                     appState.activeExplorer.goForward()
                 }
                 .shortcut(for: .goForward)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Enclosing Folder") {
                     appState.activeExplorer.goUp()
                 }
                 .shortcut(for: .enclosingFolder)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Divider()
 
@@ -803,27 +1113,32 @@ struct SeekerApp: App {
                     )
                 }
                 .shortcut(for: .goHome)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Desktop") {
                     let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
                     appState.activeExplorer.navigateTo(url)
                 }
                 .shortcut(for: .goDesktop)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Downloads") {
                     let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
                     appState.activeExplorer.navigateTo(url)
                 }
                 .shortcut(for: .goDownloads)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Documents") {
                     let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
                     appState.activeExplorer.navigateTo(url)
                 }
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Applications") {
                     appState.activeExplorer.navigateTo(URL(fileURLWithPath: "/Applications"))
                 }
+                .disabled(!mainWindowCommandsEnabled)
 
                 Divider()
 
@@ -831,35 +1146,41 @@ struct SeekerApp: App {
                     appState.requestEditPath()
                 }
                 .shortcut(for: .goToFolder)
+                .disabled(!mainWindowCommandsEnabled)
             }
 
             // MARK: - Tabs
             CommandMenu("Tab") {
+                let appState = activeAppState
                 Button("New Tab") {
                     let pane = appState.activePane == .left ? appState.leftPane : appState.rightPane
                     pane.addTab()
                 }
                 .shortcut(for: .newTab)
+                .disabled(!mainWindowCommandsEnabled)
 
                 Button("Close Tab") {
                     let pane = appState.activePane == .left ? appState.leftPane : appState.rightPane
                     pane.closeTab(at: pane.activeTabIndex)
                 }
                 .shortcut(for: .closeTab)
+                .disabled(!mainWindowCommandsEnabled)
             }
 
             // MARK: - Refresh
             CommandGroup(after: .toolbar) {
+                let appState = activeAppState
                 Button("Refresh") {
                     appState.activeExplorer.loadFiles()
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+                .disabled(!mainWindowCommandsEnabled)
             }
         }
 
         Settings {
             SettingsView()
-                .environment(appState)
+                .environment(activeAppState)
         }
     }
 }

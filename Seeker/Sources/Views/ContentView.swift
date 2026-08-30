@@ -93,20 +93,29 @@ struct ContentView: View {
             // Reset the trigger after dispatching so the same folders can
             // be re-opened later.
             if let urls = newValue, !urls.isEmpty {
-                openWindow(id: "duplicate-finder", value: urls)
+                openWindow(id: "duplicate-finder", value: DuplicateFinderWindowRequest(
+                    rootURLs: urls,
+                    sourceWindowID: appState.windowID
+                ))
                 appState.duplicateFinderRoots = nil
             }
         }
         .onChange(of: appState.directoryCompareTargets) { _, newValue in
             // The compare window is standalone like the duplicate finder.
             if let dirs = newValue, dirs.count == 2 {
-                openWindow(id: "directory-compare", value: dirs)
+                openWindow(id: "directory-compare", value: DirectoryCompareWindowRequest(
+                    directories: dirs,
+                    sourceWindowID: appState.windowID
+                ))
                 appState.directoryCompareTargets = nil
             }
         }
         .onChange(of: appState.fileSearchRoot) { _, newValue in
             if let root = newValue {
-                openWindow(id: "file-search", value: root)
+                openWindow(id: "file-search", value: FileSearchWindowRequest(
+                    root: root,
+                    sourceWindowID: appState.windowID
+                ))
                 appState.fileSearchRoot = nil
             }
         }
@@ -124,7 +133,10 @@ struct ContentView: View {
         }
         .onChange(of: appState.folderSyncRoots) { _, newValue in
             if let dirs = newValue, dirs.count == 2 {
-                openWindow(id: "folder-sync", value: dirs)
+                openWindow(id: "folder-sync", value: FolderSyncWindowRequest(
+                    directories: dirs,
+                    sourceWindowID: appState.windowID
+                ))
                 appState.folderSyncRoots = nil
             }
         }

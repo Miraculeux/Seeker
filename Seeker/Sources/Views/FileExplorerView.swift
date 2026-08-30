@@ -65,8 +65,8 @@ struct FileContentView: View {
         }
         .onChange(of: viewModel.selectedFileIDs) { _, _ in
             if let file = viewModel.selectedFile {
-                AppDelegate.shared?.updateQuickLookIfVisible(url: file.url)
-                AppDelegate.shared?.updateTextPreviewIfVisible(url: file.url)
+                AppDelegate.shared?.updateQuickLookIfVisible(url: file.url, appState: appState)
+                AppDelegate.shared?.updateTextPreviewIfVisible(url: file.url, appState: appState)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .columnSettingsChanged)) { _ in
@@ -519,13 +519,7 @@ struct FileContentView: View {
                 showQuickLook = true
             }
             Button("Quick Look As Text") {
-                if let delegate = AppDelegate.shared {
-                    if delegate.textPreviewPanel.isVisible {
-                        delegate.textPreviewPanel.updatePreview(for: file.url)
-                    } else {
-                        delegate.textPreviewPanel.togglePreview(for: file.url)
-                    }
-                }
+                AppDelegate.shared?.showTextPreview(for: file.url, appState: appState)
             }
         }
 
@@ -536,9 +530,10 @@ struct FileContentView: View {
             Button("Auto Preview") {
                 let autoFiles = autoPreviewURLs(forContext: file)
                 guard autoFiles.count >= 2 else { return }
-                AppDelegate.shared?.quickLookPanel.startAutoPreview(
+                AppDelegate.shared?.startAutoPreview(
                     urls: autoFiles,
-                    interval: SettingsManager.shared.autoPreviewInterval
+                    interval: SettingsManager.shared.autoPreviewInterval,
+                    appState: appState
                 )
             }
         }
@@ -666,9 +661,10 @@ struct FileContentView: View {
                 let folderAutoFiles = viewModel.files
                     .filter { !$0.isDirectory || $0.isPackage }
                     .map(\.url)
-                AppDelegate.shared?.quickLookPanel.startAutoPreview(
+                AppDelegate.shared?.startAutoPreview(
                     urls: folderAutoFiles,
-                    interval: SettingsManager.shared.autoPreviewInterval
+                    interval: SettingsManager.shared.autoPreviewInterval,
+                    appState: appState
                 )
             }
         }
