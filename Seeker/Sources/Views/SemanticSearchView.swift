@@ -1,11 +1,201 @@
 import SwiftUI
 import AppKit
+import Observation
 import UniformTypeIdentifiers
 import Vision
 
 struct SemanticSearchRequest: Codable, Hashable {
     let targetDirectory: URL
     var sourceWindowID: UUID? = nil
+}
+
+@MainActor @Observable
+private final class SemanticDirectoryTreeModel {
+    struct Row: Identifiable {
+        let item: FileItem
+        let depth: Int
+        var id: String { item.url.standardizedFileURL.path }
+    }
+
+    private let rootURL = URL(fileURLWithPath: "/", isDirectory: true)
+    private(set) var rows: [Row] = []
+    private(set) var expandedPaths: Set<String> = []
+    private(set) var loadingPaths: Set<String> = []
+    private var childrenByPath: [String: [FileItem]] = [:]
+
+    init() {
+        rows = [Row(item: FileItem(url: rootURL), depth: 0)]
+    }
+
+    func isExpanded(_ url: URL) -> Bool {
+        expandedPaths.contains(path(for: url))
+    }
+
+    func isLoading(_ url: URL) -> Bool {
+        loadingPaths.contains(path(for: url))
+    }
+
+    func toggle(_ url: URL) {
+        let directoryPath = path(for: url)
+        if expandedPaths.remove(directoryPath) != nil {
+            rebuildRows()
+        } else {
+            expandedPaths.insert(directoryPath)
+            Task { await loadChildrenIfNeeded(of: url) }
+            rebuildRows()
+        }
+    }
+
+    func reveal(_ url: URL) async {
+        let target = url.standardizedFileURL
+        for ancestor in ancestors(to: target).dropLast() {
+            expandedPaths.insert(path(for: ancestor))
+            await loadChildrenIfNeeded(of: ancestor)
+        }
+        rebuildRows()
+    }
+
+    private func loadChildrenIfNeeded(of directory: URL) async {
+        let directoryPath = path(for: directory)
+        guard childrenByPath[directoryPath] == nil,
+              !loadingPaths.contains(directoryPath) else { return }
+        loadingPaths.insert(directoryPath)
+        let children = await Task.detached(priority: .userInitiated) {
+            Self.directoryChildren(of: directory)
+        }.value
+        loadingPaths.remove(directoryPath)
+        childrenByPath[directoryPath] = children
+        rebuildRows()
+    }
+
+    private func rebuildRows() {
+        var result: [Row] = []
+        let root = FileItem(url: rootURL)
+
+        func append(_ item: FileItem, depth: Int) {
+            result.append(Row(item: item, depth: depth))
+            let itemPath = path(for: item.url)
+            guard expandedPaths.contains(itemPath),
+                  let children = childrenByPath[itemPath] else { return }
+            for child in children { append(child, depth: depth + 1) }
+        }
+
+        append(root, depth: 0)
+        rows = result
+    }
+
+    private func ancestors(to url: URL) -> [URL] {
+        let components = url.standardizedFileURL.pathComponents
+        var ancestors = [rootURL]
+        var current = rootURL
+        for component in components where component != "/" {
+            current.appendPathComponent(component, isDirectory: true)
+            ancestors.append(current)
+        }
+        return ancestors
+    }
+
+    private func path(for url: URL) -> String {
+        url.standardizedFileURL.path
+    }
+
+    private nonisolated static func directoryChildren(of directory: URL) -> [FileItem] {
+        let keys: Set<URLResourceKey> = [
+            .isDirectoryKey, .isPackageKey, .isHiddenKey, .localizedNameKey
+        ]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return urls.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  values.isDirectory == true,
+                  values.isPackage != true,
+                  values.isHidden != true else { return nil }
+            return FileItem(url: url, resourceValues: values)
+        }.sorted {
+            $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+        }
+    }
+}
+
+private struct SemanticDirectoryTree: View {
+    @Binding var selection: URL
+    let onSelect: (URL) -> Void
+    @State private var model = SemanticDirectoryTreeModel()
+    @State private var selectedPath: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 7) {
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(.secondary)
+                Text("Folders")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 38)
+            .background(Color.primary.opacity(0.04))
+
+            Divider()
+
+            List(selection: $selectedPath) {
+                ForEach(model.rows) { row in
+                    HStack(spacing: 4) {
+                        Color.clear.frame(width: CGFloat(row.depth) * 14, height: 1)
+                        Button {
+                            model.toggle(row.item.url)
+                        } label: {
+                            Group {
+                                if model.isLoading(row.item.url) {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: model.isExpanded(row.item.url)
+                                          ? "chevron.down" : "chevron.right")
+                                        .font(.system(size: 9, weight: .semibold))
+                                }
+                            }
+                            .frame(width: 14, height: 16)
+                        }
+                        .buttonStyle(.plain)
+
+                        Image(nsImage: row.item.nsIcon)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 16, height: 16)
+                        Text(row.id == "/"
+                             ? FileManager.default.displayName(atPath: "/")
+                             : row.item.displayName)
+                            .font(.system(size: 11))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                    .tag(row.id)
+                    .help(row.item.url.path)
+                }
+            }
+            .listStyle(.sidebar)
+            .onChange(of: selectedPath) { _, path in
+                guard let path else { return }
+                let url = URL(fileURLWithPath: path, isDirectory: true)
+                guard url.standardizedFileURL != selection.standardizedFileURL else { return }
+                onSelect(url)
+            }
+        }
+        .task {
+            selectedPath = selection.standardizedFileURL.path
+            await model.reveal(selection)
+        }
+        .onChange(of: selection) { _, url in
+            selectedPath = url.standardizedFileURL.path
+            Task { await model.reveal(url) }
+        }
+    }
 }
 
 struct SemanticSearchView: View {
@@ -59,16 +249,24 @@ struct SemanticSearchView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            searchBar
-            Divider()
-            optionsBar
-            Divider()
-            content
+        HSplitView {
+            SemanticDirectoryTree(selection: $targetDirectory) { directory in
+                selectDirectory(directory)
+            }
+            .frame(minWidth: 190, idealWidth: 240, maxWidth: 360)
+
+            VStack(spacing: 0) {
+                header
+                Divider()
+                searchBar
+                Divider()
+                optionsBar
+                Divider()
+                content
+            }
+            .frame(minWidth: 670, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 860, idealWidth: 1040, maxWidth: .infinity,
+        .frame(minWidth: 900, idealWidth: 1120, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
         .onDisappear { searchTask?.cancel() }
     }
@@ -99,13 +297,6 @@ struct SemanticSearchView: View {
             TextField("Describe the image to find", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { search() }
-            Button {
-                chooseDirectory()
-            } label: {
-                Label(targetDirectory.lastPathComponent, systemImage: "folder")
-                    .lineLimit(1)
-            }
-            .help(targetDirectory.path)
             Picker("", selection: $modelID) {
                 ForEach(SemanticModelDescriptor.all.filter { $0.availability == .downloadable }) { model in
                     Text(model.displayName).tag(model.id)
@@ -288,16 +479,11 @@ struct SemanticSearchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func chooseDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = targetDirectory
-        panel.prompt = "Choose"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+    private func selectDirectory(_ url: URL) {
+        let directory = url.standardizedFileURL
+        guard directory != targetDirectory.standardizedFileURL else { return }
         cancelSearch()
-        targetDirectory = url
+        targetDirectory = directory
         results = []
         excludedURLs = []
         status = .ready

@@ -322,7 +322,7 @@ final class SettingsManager {
     }
 
     var semanticSearchSubfolders: Bool {
-        get { defaults.object(forKey: Keys.semanticSearchSubfolders) as? Bool ?? true }
+        get { defaults.object(forKey: Keys.semanticSearchSubfolders) as? Bool ?? false }
         set { defaults.set(newValue, forKey: Keys.semanticSearchSubfolders) }
     }
 

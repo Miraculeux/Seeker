@@ -809,6 +809,7 @@ private struct HelperWindowRoot<Content: View>: View {
 @main
 struct SeekerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.seekerAppState) private var focusedAppState
     @State private var appState = AppState()
 
@@ -849,6 +850,7 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        .commandsRemoved()
 
         // Standalone folder-compare window. Two directories diffed by
         // file name; lives in its own window like the duplicate finder.
@@ -870,6 +872,7 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        .commandsRemoved()
 
         // Standalone recursive search window.
         WindowGroup("Search", id: "file-search", for: FileSearchWindowRequest.self) { $request in
@@ -881,6 +884,7 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        .commandsRemoved()
 
         WindowGroup("Similar Images", id: "similar-images", for: SimilarImageSearchRequest.self) { $request in
             HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
@@ -903,6 +907,7 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        .commandsRemoved()
 
         WindowGroup("Semantic Search", id: "semantic-search", for: SemanticSearchRequest.self) { $request in
             HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
@@ -912,6 +917,7 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        .commandsRemoved()
 
         // Standalone folder-sync window.
         WindowGroup("Sync Folders", id: "folder-sync", for: FolderSyncWindowRequest.self) { $request in
@@ -932,7 +938,49 @@ struct SeekerApp: App {
             }
         }
         .windowResizability(.contentMinSize)
+        .commandsRemoved()
         .commands {
+            // MARK: - File Menu Windows
+            CommandGroup(replacing: .newItem) {
+                let appState = activeAppState
+                Button("New Seeker Window") {
+                    openWindow(id: "main")
+                }
+                .keyboardShortcut("n", modifiers: .command)
+
+                Divider()
+
+                Button("Find Duplicates\u{2026}") {
+                    appState.openDuplicateFinder()
+                }
+                .disabled(!mainWindowCommandsEnabled)
+
+                Button("Compare Folders\u{2026}") {
+                    appState.openDirectoryCompare()
+                }
+                .disabled(!mainWindowCommandsEnabled || !appState.canCompareDirectories)
+
+                Button("Search\u{2026}") {
+                    appState.openSearch()
+                }
+                .disabled(!mainWindowCommandsEnabled)
+
+                Button("Find Similar Images\u{2026}") {
+                    appState.openSimilarImageSearch()
+                }
+                .disabled(!mainWindowCommandsEnabled || !appState.activeExplorer.canOpenSimilarImageSearch)
+
+                Button("Semantic Search\u{2026}") {
+                    appState.openSemanticSearch()
+                }
+                .disabled(!mainWindowCommandsEnabled)
+
+                Button("Sync Folders\u{2026}") {
+                    appState.openFolderSync()
+                }
+                .disabled(!mainWindowCommandsEnabled || !appState.canCompareDirectories)
+            }
+
             // MARK: - View Menu
             CommandGroup(after: .sidebar) {
                 let appState = activeAppState
