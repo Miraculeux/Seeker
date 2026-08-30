@@ -563,10 +563,9 @@ struct SeekerApp: App {
         // click "Open in new tab" on a row, switch to the main window,
         // inspect the file, and come back to keep triaging.
         WindowGroup("Find Duplicates", id: "duplicate-finder", for: [URL].self) { $rootURLs in
-            if let urls = rootURLs, !urls.isEmpty {
-                DuplicateFinderView(rootURLs: urls)
-                    .environment(appState)
-            }
+            DuplicateFinderView(rootURLs: rootURLs.flatMap { $0.isEmpty ? nil : $0 }
+                ?? [appState.activeExplorer.currentURL])
+                .environment(appState)
         }
         .windowResizability(.contentMinSize)
 
@@ -576,16 +575,24 @@ struct SeekerApp: App {
             if let dirs, dirs.count == 2 {
                 DirectoryCompareView(dirA: dirs[0], dirB: dirs[1])
                     .environment(appState)
+            } else if let pair = appState.resolveDirectoryPair() {
+                DirectoryCompareView(dirA: pair.0, dirB: pair.1)
+                    .environment(appState)
+            } else {
+                ContentUnavailableView(
+                    "Choose Two Folders",
+                    systemImage: "folder.badge.questionmark",
+                    description: Text("Open two different folders in the panes, then create this window again.")
+                )
+                .frame(minWidth: 640, minHeight: 420)
             }
         }
         .windowResizability(.contentMinSize)
 
         // Standalone recursive search window.
         WindowGroup("Search", id: "file-search", for: URL.self) { $root in
-            if let root {
-                FileSearchView(root: root)
-                    .environment(appState)
-            }
+            FileSearchView(root: root ?? appState.activeExplorer.currentURL)
+                .environment(appState)
         }
         .windowResizability(.contentMinSize)
 
@@ -593,15 +600,29 @@ struct SeekerApp: App {
             if let request {
                 SimilarImageSearchView(request: request)
                     .environment(appState)
+            } else if appState.activeExplorer.canOpenSimilarImageSearch,
+                      let referenceURL = appState.activeExplorer.selectedFile?.url {
+                SimilarImageSearchView(request: SimilarImageSearchRequest(
+                    referenceURL: referenceURL,
+                    targetDirectory: appState.activeExplorer.currentURL
+                ))
+                .environment(appState)
+            } else {
+                ContentUnavailableView(
+                    "Select an Image",
+                    systemImage: "photo.badge.magnifyingglass",
+                    description: Text("Select an image in the main window, then create this window again.")
+                )
+                .frame(minWidth: 640, minHeight: 420)
             }
         }
         .windowResizability(.contentMinSize)
 
         WindowGroup("Semantic Search", id: "semantic-search", for: SemanticSearchRequest.self) { $request in
-            if let request {
-                SemanticSearchView(request: request)
-                    .environment(appState)
-            }
+            SemanticSearchView(request: request ?? SemanticSearchRequest(
+                targetDirectory: appState.activeExplorer.currentURL
+            ))
+            .environment(appState)
         }
         .windowResizability(.contentMinSize)
 
@@ -610,6 +631,16 @@ struct SeekerApp: App {
             if let dirs, dirs.count == 2 {
                 FolderSyncView(rootA: dirs[0], rootB: dirs[1])
                     .environment(appState)
+            } else if let pair = appState.resolveDirectoryPair() {
+                FolderSyncView(rootA: pair.0, rootB: pair.1)
+                    .environment(appState)
+            } else {
+                ContentUnavailableView(
+                    "Choose Two Folders",
+                    systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
+                    description: Text("Open two different folders in the panes, then create this window again.")
+                )
+                .frame(minWidth: 640, minHeight: 420)
             }
         }
         .windowResizability(.contentMinSize)
