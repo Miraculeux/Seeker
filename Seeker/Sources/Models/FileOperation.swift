@@ -381,12 +381,20 @@ class FileOperationManager {
             op.currentFile = sourceURL.lastPathComponent
 
             // For an explicit "Replace", remove the existing destination
-            // first so move/copy land on a clean path.
+            // first, when present, so move/copy land on a clean path. Planned
+            // sync copies also use this flag for new files, whose destination
+            // does not exist yet.
             if item.replace {
                 do {
                     try await Task.detached(priority: .userInitiated) {
-                        try FileManager.default.removeItem(at: destURL)
+                        let fm = FileManager.default
+                        if fm.fileExists(atPath: destURL.path) {
+                            try fm.removeItem(at: destURL)
+                        }
                     }.value
+                } catch let error as CocoaError where error.code == .fileNoSuchFile {
+                    // The destination can disappear between the existence
+                    // check and removal; it is already safe to copy.
                 } catch {
                     // Continuing would copy onto the surviving item and, for
                     // a shorter source, leave the old file's tail behind.
