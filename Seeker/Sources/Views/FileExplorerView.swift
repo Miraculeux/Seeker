@@ -1401,6 +1401,22 @@ private final class FileDragNSView: NSView, NSDraggingSource {
 
     private func beginDrag(with event: NSEvent) {
         guard let urls = urlsProvider?(), !urls.isEmpty else { return }
+
+        // A maximized window covers every drop target. Restore it before the
+        // drag begins so files can be dropped directly into another app.
+        // Native full screen exits asynchronously into another Space, so the
+        // current mouse event cannot safely start a dragging session; the
+        // user's next drag starts normally after the transition completes.
+        if let window {
+            if window.styleMask.contains(.fullScreen) {
+                window.toggleFullScreen(nil)
+                return
+            }
+            if window.isZoomed {
+                window.zoom(nil)
+            }
+        }
+
         let origin = convert(event.locationInWindow, from: nil)
         let iconSize = NSSize(width: 32, height: 32)
         let items: [NSDraggingItem] = urls.enumerated().map { index, url in
