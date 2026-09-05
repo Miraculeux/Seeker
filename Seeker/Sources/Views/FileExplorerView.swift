@@ -532,6 +532,7 @@ struct FileContentView: View {
                 guard autoFiles.count >= 2 else { return }
                 AppDelegate.shared?.startAutoPreview(
                     urls: autoFiles,
+                    startingAt: viewModel.selectedFile?.url,
                     interval: SettingsManager.shared.autoPreviewInterval,
                     appState: appState
                 )
@@ -663,6 +664,7 @@ struct FileContentView: View {
                     .map(\.url)
                 AppDelegate.shared?.startAutoPreview(
                     urls: folderAutoFiles,
+                    startingAt: viewModel.selectedFile?.url,
                     interval: SettingsManager.shared.autoPreviewInterval,
                     appState: appState
                 )

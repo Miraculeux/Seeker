@@ -77,16 +77,17 @@ class QuickLookPanelController: NSObject, NSWindowDelegate {
     }
 
     /// Start an auto-advancing Quick Look slideshow over `urls`.
-    /// The first URL is shown immediately; subsequent URLs are shown
-    /// every `interval` seconds, looping back to the start. Stops if
-    /// the panel is closed or `stopAutoPreview()` is called.
-    func startAutoPreview(urls: [URL], interval: TimeInterval) {
+    /// `startURL` is shown immediately when it belongs to `urls`; otherwise
+    /// the first URL is shown. Subsequent URLs are shown every `interval`
+    /// seconds, looping back to the start. Stops if the panel is closed or
+    /// `stopAutoPreview()` is called.
+    func startAutoPreview(urls: [URL], startingAt startURL: URL? = nil, interval: TimeInterval) {
         stopAutoPreview()
-        guard let first = urls.first else { return }
+        guard !urls.isEmpty else { return }
         autoPreviewURLs = urls
-        autoPreviewIndex = 0
+        autoPreviewIndex = startURL.flatMap { urls.firstIndex(of: $0) } ?? 0
         autoPreviewInterval = max(0.1, interval)
-        show(url: first)
+        show(url: urls[autoPreviewIndex])
         guard urls.count > 1 else { return }
         isAutoPreviewing = true
         isAutoPreviewPaused = false

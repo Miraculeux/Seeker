@@ -237,6 +237,7 @@ struct PaneView: View {
                         } else {
                             panel.startAutoPreview(
                                 urls: autoPreviewItems,
+                                startingAt: pane.activeTab.selectedFile?.url,
                                 interval: SettingsManager.shared.autoPreviewInterval
                             )
                         }

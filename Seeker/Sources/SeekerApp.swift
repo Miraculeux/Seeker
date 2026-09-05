@@ -575,9 +575,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         quickLookPanel.togglePreview(for: url)
     }
 
-    func startAutoPreview(urls: [URL], interval: TimeInterval, appState: AppState) {
+    func startAutoPreview(urls: [URL], startingAt startURL: URL? = nil, interval: TimeInterval, appState: AppState) {
         quickLookAppState = appState
-        quickLookPanel.startAutoPreview(urls: urls, interval: interval)
+        quickLookPanel.startAutoPreview(urls: urls, startingAt: startURL, interval: interval)
     }
 
     func showTextPreview(for url: URL, appState: AppState) {
