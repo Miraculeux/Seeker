@@ -383,7 +383,8 @@ struct FileContentView: View {
     ///   visible order (excluding non-package folders).
     /// - If a single folder is clicked, enumerate its direct children
     ///   using this pane's current sort order and hidden-file setting.
-    /// - Otherwise returns an empty array (Auto Preview hidden from menu).
+    /// - If a single file is clicked, use all previewable items in the
+    ///   current listing so the slideshow can begin at that file.
     fileprivate func autoPreviewURLs(forContext file: FileItem) -> [URL] {
         let selectedIDs = viewModel.selectedFileIDs
         if selectedIDs.count >= 2 {
@@ -402,7 +403,10 @@ struct FileContentView: View {
                 .filter { !$0.isDirectory || $0.isPackage }
                 .map(\.url)
         }
-        return []
+            return viewModel.files.compactMap { item in
+                guard !item.isDirectory || item.isPackage else { return nil }
+                return item.url
+            }
     }
 
     /// Cheap predicate for whether the "Auto Preview" item should appear
@@ -423,7 +427,14 @@ struct FileContentView: View {
             }
             return false
         }
-        return file.isDirectory && !file.isPackage
+        if file.isDirectory && !file.isPackage { return true }
+
+        var matches = 0
+        for item in viewModel.files where !item.isDirectory || item.isPackage {
+            matches += 1
+            if matches >= 2 { return true }
+        }
+        return false
     }
 
     /// Cheap predicate for the directory-background "Auto Preview" menu
@@ -532,7 +543,7 @@ struct FileContentView: View {
                 guard autoFiles.count >= 2 else { return }
                 AppDelegate.shared?.startAutoPreview(
                     urls: autoFiles,
-                    startingAt: viewModel.selectedFile?.url,
+                    startingAt: file.url,
                     interval: SettingsManager.shared.autoPreviewInterval,
                     appState: appState
                 )
