@@ -275,8 +275,16 @@ struct SidebarRow: View {
         alert.informativeText = "All items in the Trash will be permanently deleted. This action cannot be undone."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Empty Trash")
+        alert.addButton(withTitle: "Force Empty")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            forceEmptyTrash()
+            return
+        }
+        guard response == .alertFirstButtonReturn else { return }
+
+        releasePreviewHandles()
 
         let script = """
             tell application "Finder"
@@ -290,15 +298,81 @@ struct SidebarRow: View {
                let errorMsg = errorInfo[NSAppleScript.errorMessage] as? String {
                 let errAlert = NSAlert()
                 errAlert.messageText = "Failed to Empty Trash"
-                errAlert.informativeText = errorMsg
+                errAlert.informativeText = "\(errorMsg)\n\nForce Empty will try direct deletion and diagnose any items that still cannot be removed."
                 errAlert.alertStyle = .warning
-                errAlert.runModal()
-            } else {
-                let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-                if appState.activeExplorer.currentURL == trashURL {
-                    appState.activeExplorer.loadFiles()
+                errAlert.addButton(withTitle: "Force Empty")
+                errAlert.addButton(withTitle: "Cancel")
+                if errAlert.runModal() == .alertFirstButtonReturn {
+                    forceEmptyTrash()
                 }
+            } else {
+                refreshTrashIfVisible()
             }
+        }
+    }
+
+    private func forceEmptyTrash() {
+        releasePreviewHandles()
+        Task {
+            let diagnostics = await Task.detached(priority: .userInitiated) { () -> [TrashDiagnostic] in
+                let fileManager = FileManager.default
+                return TrashDiagnostics.trashItemURLs().compactMap { url -> TrashDiagnostic? in
+                    do {
+                        try fileManager.removeItem(at: url)
+                        return nil
+                    } catch {
+                        return TrashDiagnostics.diagnose(url: url, error: error)
+                    }
+                }
+            }.value
+
+            refreshTrashIfVisible()
+            if !diagnostics.isEmpty {
+                showTrashDiagnostics(diagnostics)
+            }
+        }
+    }
+
+    private func releasePreviewHandles() {
+        AppDelegate.shared?.quickLookPanel.close()
+        AppDelegate.shared?.textPreviewPanel.close()
+    }
+
+    private func refreshTrashIfVisible() {
+        let trashURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        if appState.activeExplorer.currentURL == trashURL {
+            appState.activeExplorer.loadFiles()
+        }
+    }
+
+    private func showTrashDiagnostics(_ diagnostics: [TrashDiagnostic]) {
+        let shown = diagnostics.prefix(6).map(\.message)
+        var message = shown.joined(separator: "\n\n")
+        if diagnostics.count > shown.count {
+            message += "\n\n…and \(diagnostics.count - shown.count) more item(s)."
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Trash Couldn’t Be Fully Emptied"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+
+        if diagnostics.contains(where: \.offersDiskUtility) {
+            alert.addButton(withTitle: "Open Disk Utility")
+            alert.addButton(withTitle: "OK")
+            if alert.runModal() == .alertFirstButtonReturn {
+                let diskUtility = URL(fileURLWithPath: "/System/Applications/Utilities/Disk Utility.app")
+                NSWorkspace.shared.open(diskUtility)
+            }
+        } else if diagnostics.contains(where: \.offersFullDiskAccess) {
+            alert.addButton(withTitle: "Open Full Disk Access")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn,
+               let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                NSWorkspace.shared.open(url)
+            }
+        } else {
+            alert.runModal()
         }
     }
 }
