@@ -991,7 +991,9 @@ struct FileListRow: View, @MainActor Equatable {
                 altBackground
             }
             if hovering && !isSelected {
-                Color.primary.opacity(0.03)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.12))
+                    .padding(.horizontal, 2)
             }
             if isSelected {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
