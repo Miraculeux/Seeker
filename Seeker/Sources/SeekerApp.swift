@@ -721,6 +721,8 @@ private struct MainWindowRoot: View {
     var body: some View {
         ContentView()
             .environment(appState)
+            .environment(AppTheme.shared)
+            .appThemeRoot()
             .focusedSceneValue(\.seekerAppState, appState)
             .background(MainWindowRegistrationView(appState: appState))
             .onAppear {
@@ -802,6 +804,8 @@ private struct HelperWindowRoot<Content: View>: View {
     var body: some View {
         content(sourceAppState)
             .environment(sourceAppState)
+            .environment(AppTheme.shared)
+            .appThemeRoot()
             .focusedSceneValue(\.seekerAppState, sourceAppState)
     }
 }
@@ -1229,6 +1233,8 @@ struct SeekerApp: App {
         Settings {
             SettingsView()
                 .environment(activeAppState)
+                .environment(AppTheme.shared)
+                .appThemeRoot()
         }
     }
 }

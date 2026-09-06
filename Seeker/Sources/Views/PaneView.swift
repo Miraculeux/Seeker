@@ -4,6 +4,8 @@ import AppKit
 struct PaneView: View {
     var pane: PaneState
     @Environment(AppState.self) var appState
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     let side: AppState.PaneSide
     @FocusState private var isFilterFocused: Bool
 
@@ -38,19 +40,19 @@ struct PaneView: View {
             fileArea
             paneStatusBar
         }
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(paneBackground)
+        .clipShape(RoundedRectangle(cornerRadius: theme.isExplorer ? 0 : 8, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.isExplorer ? 0 : 8, style: .continuous)
                 .strokeBorder(
                     isActive
-                        ? Color.accentColor.opacity(0.5)
-                        : Color.primary.opacity(0.06),
-                    lineWidth: isActive ? 1.5 : 0.5
+                        ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).accent.opacity(theme.isExplorer ? 0.65 : 0.5)
+                        : ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).border,
+                    lineWidth: isActive ? (theme.isExplorer ? 1 : 1.5) : 0.5
                 )
         )
-        .shadow(color: .black.opacity(isActive ? 0.08 : 0.03), radius: isActive ? 8 : 3, y: 2)
-        .padding(4)
+        .shadow(color: .black.opacity(theme.isExplorer ? 0 : (isActive ? 0.08 : 0.03)), radius: isActive ? 8 : 3, y: 2)
+        .padding(theme.isExplorer ? 0 : 4)
         .background(
             GeometryReader { geo in
                 Color.clear
@@ -68,6 +70,15 @@ struct PaneView: View {
         .onChange(of: appState.pathEditRequestID) { _, _ in
             guard isActive else { return }
             beginEditingPath()
+        }
+    }
+
+    @ViewBuilder
+    private var paneBackground: some View {
+        if theme.isExplorer {
+            ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).contentBackground
+        } else {
+            Rectangle().fill(.ultraThinMaterial)
         }
     }
 
@@ -135,7 +146,9 @@ struct PaneView: View {
             .padding(.trailing, 8)
         }
         .frame(height: 34)
-        .background(Color.primary.opacity(0.02))
+        .background(theme.isExplorer
+            ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).chromeBackground
+            : Color.primary.opacity(0.02))
     }
 
     // MARK: - Pane Toolbar
@@ -159,7 +172,9 @@ struct PaneView: View {
                 }
             }
             .padding(2)
-            .background(Color.primary.opacity(0.04))
+            .background(theme.isExplorer
+                ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).controlBackground
+                : Color.primary.opacity(0.04))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
             // Path breadcrumb / editable path input.
@@ -287,7 +302,9 @@ struct PaneView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.015))
+        .background(theme.isExplorer
+            ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).chromeBackground
+            : Color.primary.opacity(0.015))
     }
 
     // MARK: - Path Bar (breadcrumb / editable input)
@@ -342,6 +359,17 @@ struct PaneView: View {
             .help("Edit path (⌘L)")
         }
         .frame(height: 22)
+        .padding(.horizontal, theme.isExplorer ? 5 : 0)
+        .background(theme.isExplorer
+            ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).controlBackground
+            : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: theme.isExplorer ? 3 : 0, style: .continuous))
+        .overlay {
+            if theme.isExplorer {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).border, lineWidth: 1)
+            }
+        }
         // Right-click anywhere in the breadcrumb to switch to text input,
         // matching common file-manager affordances.
         .contextMenu {
@@ -469,16 +497,11 @@ struct PaneView: View {
         return resolvedURL
     }
 
-    /// Tilde-aware presentation of a directory path used as the initial
-    /// text when entering edit mode.
+    /// Full directory path used as the initial text when entering edit mode.
+    /// Avoid abbreviating the home directory as `~`: in the compact address
+    /// field that glyph can resemble a dash and hides the current location.
     private func displayPath(for url: URL) -> String {
-        let path = url.path
-        let home = NSHomeDirectory()
-        if path == home { return "~" }
-        if path.hasPrefix(home + "/") {
-            return "~" + path.dropFirst(home.count)
-        }
-        return path
+        url.standardizedFileURL.path
     }
 
     // MARK: - File Area
@@ -529,18 +552,30 @@ struct PaneView: View {
 /// Leaf view for the bottom status strip. Conforms to `Equatable` so
 /// SwiftUI skips re-rendering the strip when nothing it actually depends
 /// on has changed.
-private struct PaneStatusBar: View, Equatable {
+private struct PaneStatusBar: View, @MainActor Equatable {
     let isActive: Bool
     let itemCount: Int
     let selectionName: String?
     let selectionSize: String?
     let freeSpace: String?
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
+
+    static func == (lhs: PaneStatusBar, rhs: PaneStatusBar) -> Bool {
+        lhs.isActive == rhs.isActive
+            && lhs.itemCount == rhs.itemCount
+            && lhs.selectionName == rhs.selectionName
+            && lhs.selectionSize == rhs.selectionSize
+            && lhs.freeSpace == rhs.freeSpace
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             HStack(spacing: 4) {
                 Circle()
-                    .fill(isActive ? Color.accentColor : Color.secondary.opacity(0.3))
+                    .fill(isActive
+                        ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).accent
+                        : Color.secondary.opacity(0.3))
                     .frame(width: 5, height: 5)
                 Text("\(itemCount) items")
                     .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -570,7 +605,9 @@ private struct PaneStatusBar: View, Equatable {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.02))
+        .background(theme.isExplorer
+            ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).chromeBackground
+            : Color.primary.opacity(0.02))
     }
 }
 
@@ -643,6 +680,8 @@ struct NavButton: View {
     let action: () -> Void
     let disabled: Bool
     @State private var hovering = false
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
@@ -650,7 +689,9 @@ struct NavButton: View {
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(disabled ? .secondary.opacity(0.25) : (hovering ? .primary : .secondary))
                 .frame(width: 24, height: 22)
-                .background(hovering && !disabled ? Color.primary.opacity(0.06) : Color.clear)
+                .background(hovering && !disabled
+                    ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).hover
+                    : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
         .buttonStyle(.borderless)
@@ -666,6 +707,8 @@ struct BreadcrumbButton: View {
     let isLast: Bool
     let action: () -> Void
     @State private var hovering = false
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: action) {
@@ -674,7 +717,9 @@ struct BreadcrumbButton: View {
                 .foregroundColor(isLast ? .primary : .secondary.opacity(0.7))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(hovering ? Color.primary.opacity(0.06) : Color.clear)
+                .background(hovering
+                    ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).hover
+                    : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
         .buttonStyle(.borderless)

@@ -4,6 +4,11 @@ import Carbon.HIToolbox
 struct SettingsView: View {
     var body: some View {
         TabView {
+            AppearanceSettingsTab()
+                .tabItem {
+                    Label("Appearance", systemImage: "paintbrush")
+                }
+
             GeneralSettingsTab()
                 .tabItem {
                     Label("General", systemImage: "gearshape")
@@ -30,6 +35,53 @@ struct SettingsView: View {
                 }
         }
         .frame(width: 520, height: 460)
+    }
+}
+
+// MARK: - Appearance Settings
+
+struct AppearanceSettingsTab: View {
+    @Environment(AppTheme.self) private var theme
+
+    var body: some View {
+        @Bindable var theme = theme
+        Form {
+            Section("Interface Style") {
+                Picker("Style", selection: $theme.interfaceStyle) {
+                    ForEach(InterfaceStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+
+                Text(theme.isExplorer
+                     ? "Uses a Windows 11 Explorer-inspired command bar, navigation chrome, sidebar and Details view while preserving native macOS behaviour."
+                     : "Uses Seeker’s native macOS visual style and controls.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Explorer Preview") {
+                HStack(spacing: 10) {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(theme.isExplorer
+                            ? Color(red: 0.96, green: 0.72, blue: 0.18)
+                            : Color.accentColor)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Documents")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("Date modified    Type    Size")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(10)
+                .background(theme.isExplorer ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
+                .clipShape(RoundedRectangle(cornerRadius: theme.isExplorer ? 4 : 8, style: .continuous))
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

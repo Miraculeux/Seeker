@@ -25,6 +25,8 @@ fileprivate func selectFilenameBasenameInFieldEditor(_ name: String) {
 struct FileContentView: View {
     @Bindable var viewModel: FileExplorerViewModel
     @Environment(AppState.self) var appState
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     let side: AppState.PaneSide
     @State private var quickLookURL: URL?
     @State private var showQuickLook = false
@@ -100,7 +102,7 @@ struct FileContentView: View {
                             isLoadingChildren: viewModel.isLoadingChildren(file),
                             visibleColumns: visibleColumns,
                             altBackground: altRowColor,
-                            alternating: !(viewModel.fileRowIndex(file).isMultiple(of: 2)),
+                            alternating: !theme.isExplorer && !(viewModel.fileRowIndex(file).isMultiple(of: 2)),
                             renameText: $viewModel.renameText,
                             onCommitRename: { viewModel.commitRename() },
                             onCancelRename: { viewModel.cancelRename() },
@@ -120,7 +122,8 @@ struct FileContentView: View {
                     }
                 }
                 .listStyle(.plain)
-                .environment(\.defaultMinListRowHeight, 22)
+                .environment(\.defaultMinListRowHeight,
+                    ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).listRowHeight)
                 .contextMenu { directoryContextMenu }
                 .onChange(of: viewModel.selectedFileIDs) { _, _ in
                     if let file = viewModel.selectedFile, file.id != lastScrolledID {
@@ -154,18 +157,20 @@ struct FileContentView: View {
                     sortableHeader("Size", sortKey: .size)
                         .frame(width: 80, alignment: .trailing)
                 case .modified:
-                    sortableHeader("Modified", sortKey: .date)
+                    sortableHeader(theme.isExplorer ? "Date modified" : "Modified", sortKey: .date)
                         .frame(width: 140, alignment: .trailing)
                 case .kind:
-                    sortableHeader("Kind", sortKey: .kind)
+                    sortableHeader(theme.isExplorer ? "Type" : "Kind", sortKey: .kind)
                         .frame(width: 100, alignment: .trailing)
                 }
             }
         }
         .padding(.horizontal, 28)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.03))
-        .font(.system(size: 10, weight: .semibold, design: .rounded))
+        .padding(.vertical, theme.isExplorer ? 6 : 4)
+        .background(theme.isExplorer
+            ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).chromeBackground
+            : Color.primary.opacity(0.03))
+        .font(.system(size: theme.isExplorer ? 11 : 10, weight: .semibold, design: .rounded))
         .foregroundColor(.secondary.opacity(0.6))
     }
 
@@ -875,13 +880,14 @@ struct FileListRow: View, @MainActor Equatable {
     let onToggleExpand: () -> Void
     @State private var hovering = false
     @FocusState private var isRenameFocused: Bool
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
-    /// Fixed row height. Enforced inside `body` so every row in the
-    /// `LazyVStack` is exactly the same vertical size regardless of
-    /// whether it shows a disclosure chevron, a progress spinner, or
-    /// nothing — `LazyVStack` would otherwise let intrinsic content
-    /// height vary by a point or two, producing visible jitter.
-    private static let rowHeight: CGFloat = 22
+    /// Theme-driven fixed row height. Enforced inside `body` so every row
+    /// has identical geometry regardless of its disclosure/loading state.
+    private var rowHeight: CGFloat {
+        ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).listRowHeight
+    }
     /// Pixels of indent per tree depth level. Matches Finder's list view.
     private static let indentPerLevel: CGFloat = 14
     /// Width reserved for the disclosure chevron column so name columns
@@ -978,7 +984,7 @@ struct FileListRow: View, @MainActor Equatable {
             }
         }
         .padding(.horizontal, 4)
-        .frame(height: Self.rowHeight)
+        .frame(height: rowHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(rowBackground)
         .onHover { hovering = $0 }
@@ -986,18 +992,26 @@ struct FileListRow: View, @MainActor Equatable {
 
     @ViewBuilder
     private var rowBackground: some View {
+        let palette = ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme)
         ZStack {
             if alternating {
                 altBackground
             }
             if hovering && !isSelected {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.12))
+                RoundedRectangle(cornerRadius: theme.isExplorer ? 2 : 4, style: .continuous)
+                    .fill(theme.isExplorer ? palette.hover : Color.accentColor.opacity(0.12))
                     .padding(.horizontal, 2)
             }
             if isSelected {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.2))
+                RoundedRectangle(cornerRadius: theme.isExplorer ? 2 : 4, style: .continuous)
+                    .fill(theme.isExplorer ? palette.selection : Color.accentColor.opacity(0.2))
+                    .padding(.horizontal, 2)
+            }
+        }
+        .overlay {
+            if theme.isExplorer && isSelected {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .strokeBorder(palette.accent.opacity(0.55), lineWidth: 1)
                     .padding(.horizontal, 2)
             }
         }
@@ -1012,7 +1026,7 @@ struct FileListRow: View, @MainActor Equatable {
             ProgressView()
                 .controlSize(.mini)
                 .scaleEffect(0.6)
-                .frame(width: Self.disclosureWidth, height: Self.rowHeight)
+                .frame(width: Self.disclosureWidth, height: rowHeight)
         } else if isExpandable {
             Button(action: onToggleExpand) {
                 // Outer frame defines the hit target; the glyph stays
@@ -1023,7 +1037,7 @@ struct FileListRow: View, @MainActor Equatable {
                     .foregroundColor(.secondary.opacity(0.75))
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     .animation(.easeInOut(duration: 0.12), value: isExpanded)
-                    .frame(width: Self.disclosureWidth, height: Self.rowHeight)
+                    .frame(width: Self.disclosureWidth, height: rowHeight)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1032,7 +1046,7 @@ struct FileListRow: View, @MainActor Equatable {
             // also selects it which feels jumpy.
             .simultaneousGesture(TapGesture().onEnded {})
         } else {
-            Color.clear.frame(width: Self.disclosureWidth, height: Self.rowHeight)
+            Color.clear.frame(width: Self.disclosureWidth, height: rowHeight)
         }
     }
 }
@@ -1052,6 +1066,8 @@ struct FileIconCell: View, Equatable {
     @State private var hovering = false
     @State private var thumbnail: NSImage?
     @FocusState private var isRenameFocused: Bool
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     /// SwiftUI uses this to short-circuit redraws when the visible inputs
     /// haven't changed. Two cells are equivalent iff every parameter that
@@ -1129,12 +1145,18 @@ struct FileIconCell: View, Equatable {
         .frame(width: cellWidth, height: cellHeight)
         .padding(6)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.15) : (hovering ? Color.primary.opacity(0.04) : Color.clear))
+            RoundedRectangle(cornerRadius: theme.isExplorer ? 4 : 8, style: .continuous)
+                .fill(isSelected
+                    ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).selection
+                    : (hovering
+                        ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).hover
+                        : Color.clear))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor.opacity(0.3) : Color.clear, lineWidth: 1)
+            RoundedRectangle(cornerRadius: theme.isExplorer ? 4 : 8, style: .continuous)
+                .strokeBorder(isSelected
+                    ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).accent.opacity(0.45)
+                    : Color.clear, lineWidth: 1)
         )
         .onHover { hovering = $0 }
         .animation(.easeInOut(duration: 0.15), value: hovering)

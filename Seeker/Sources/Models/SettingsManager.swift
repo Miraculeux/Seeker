@@ -2,6 +2,20 @@ import Foundation
 import CoreGraphics
 import Carbon.HIToolbox
 
+enum InterfaceStyle: String, CaseIterable, Identifiable {
+    case macOS
+    case windowsExplorer
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .macOS: return "macOS"
+        case .windowsExplorer: return "Windows Explorer"
+        }
+    }
+}
+
 enum ColumnID: String, CaseIterable, Identifiable {
     case size = "size"
     case modified = "modified"
@@ -206,6 +220,7 @@ final class SettingsManager {
         static let semanticSearchOCR = "semanticSearchOCR"
         static let semanticSearchMinimumRelevance = "semanticSearchMinimumRelevance"
         static let semanticSearchResultLimit = "semanticSearchResultLimit"
+        static let interfaceStyle = "interfaceStyle"
     }
     /// Icon-grid icon edge length in points. Clamped to [iconSizeMin,
     /// iconSizeMax] on read so a corrupted/legacy value can't escape the
@@ -450,6 +465,14 @@ final class SettingsManager {
     var showDualPane: Bool {
         get { defaults.object(forKey: Keys.showDualPane) as? Bool ?? true }
         set { defaults.set(newValue, forKey: Keys.showDualPane) }
+    }
+
+    var interfaceStyle: InterfaceStyle {
+        get {
+            guard let raw = defaults.string(forKey: Keys.interfaceStyle) else { return .macOS }
+            return InterfaceStyle(rawValue: raw) ?? .macOS
+        }
+        set { defaults.set(newValue.rawValue, forKey: Keys.interfaceStyle) }
     }
 
     var showSizeColumn: Bool {

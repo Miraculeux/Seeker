@@ -3,19 +3,21 @@ import AppKit
 
 struct SidebarView: View {
     @Environment(AppState.self) var appState
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     @State private var sidebarItems = SidebarDefaults.defaultItems()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: theme.isExplorer ? 10 : 14) {
                     ForEach(SidebarSection.allCases, id: \.self) { section in
                         let sectionItems = sidebarItems.filter { $0.section == section }
                         if !sectionItems.isEmpty {
                             VStack(alignment: .leading, spacing: 1) {
                                 HStack(spacing: 4) {
-                                    Text(section.rawValue.uppercased())
-                                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    Text(theme.isExplorer ? section.rawValue : section.rawValue.uppercased())
+                                        .font(.system(size: theme.isExplorer ? 11 : 9, weight: .bold, design: .rounded))
                                         .foregroundColor(.secondary.opacity(0.5))
                                         .tracking(0.5)
                                     Spacer()
@@ -31,12 +33,12 @@ struct SidebarView: View {
                                         .help("Add Folder to Favorites…")
                                     }
                                 }
-                                .padding(.horizontal, 14)
+                                .padding(.horizontal, theme.isExplorer ? 12 : 14)
                                 .padding(.bottom, 4)
 
                                 ForEach(sectionItems) { item in
                                     SidebarRow(item: item)
-                                        .padding(.horizontal, 6)
+                                        .padding(.horizontal, theme.isExplorer ? 5 : 6)
                                 }
                             }
                             .if(section == .favorites) { view in
@@ -51,7 +53,7 @@ struct SidebarView: View {
             }
         }
         .frame(maxHeight: .infinity)
-        .background(.ultraThinMaterial)
+        .background(sidebarBackground)
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
             sidebarItems = SidebarDefaults.defaultItems()
             // Refresh any tab viewing /Volumes so the new disk appears
@@ -88,6 +90,15 @@ struct SidebarView: View {
             // Single re-enumeration; the previous code did this twice (once
             // immediately, once after a 0.5s `asyncAfter` sleep poll).
             sidebarItems = SidebarDefaults.defaultItems()
+        }
+    }
+
+    @ViewBuilder
+    private var sidebarBackground: some View {
+        if theme.isExplorer {
+            ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).chromeBackground
+        } else {
+            Rectangle().fill(.ultraThinMaterial)
         }
     }
 
@@ -136,6 +147,8 @@ struct SidebarRow: View {
     let item: SidebarItem
     @Environment(AppState.self) var appState
     @State private var hovering = false
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     private var isActive: Bool {
         appState.activeExplorer.currentURL == item.url
@@ -187,11 +200,23 @@ struct SidebarRow: View {
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.vertical, theme.isExplorer ? 6 : 4)
             .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isActive ? Color.accentColor.opacity(0.12) : (hovering ? Color.primary.opacity(0.05) : Color.clear))
+                RoundedRectangle(cornerRadius: theme.isExplorer ? 4 : 6, style: .continuous)
+                    .fill(isActive
+                        ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).selection
+                        : (hovering
+                            ? ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).hover
+                            : Color.clear))
             )
+            .overlay(alignment: .leading) {
+                if theme.isExplorer && isActive {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme).accent)
+                        .frame(width: 3, height: 18)
+                        .padding(.leading, 2)
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

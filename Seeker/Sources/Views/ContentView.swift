@@ -2,6 +2,8 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppState.self) var appState
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -15,7 +17,7 @@ struct ContentView: View {
                 // Favorites sidebar (slides in)
                 if appState.showFavorites {
                     SidebarView()
-                        .frame(width: 140)
+                        .frame(width: theme.isExplorer ? 190 : 140)
                         .transition(.move(edge: .leading))
                     Divider()
                 }
@@ -144,7 +146,136 @@ struct ContentView: View {
 
 // MARK: - Modern Toolbar
 
+    @ViewBuilder
     private var mainToolbar: some View {
+        if theme.isExplorer {
+            explorerCommandBar
+        } else {
+            nativeMainToolbar
+        }
+    }
+
+    private var explorerCommandBar: some View {
+        let explorer = appState.activeExplorer
+        let palette = ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme)
+        return HStack(spacing: 4) {
+            ExplorerCommandButton(icon: "folder.badge.plus", title: "New") {
+                explorer.createNewFolder()
+            }
+
+            ToolbarSep()
+
+            ExplorerCommandButton(icon: "scissors", title: "Cut", disabled: !explorer.hasSelection) {
+                explorer.cutSelected()
+            }
+            ExplorerCommandButton(icon: "doc.on.doc", title: "Copy", disabled: !explorer.hasSelection) {
+                explorer.copySelected()
+            }
+            ExplorerCommandButton(icon: "doc.on.clipboard", title: "Paste", disabled: !explorer.canPaste) {
+                explorer.paste()
+            }
+            ExplorerCommandButton(icon: "character.cursor.ibeam", title: "Rename", disabled: explorer.selectedFile == nil) {
+                if let file = explorer.selectedFile { explorer.beginRename(file) }
+            }
+            ExplorerCommandButton(icon: "square.and.arrow.up", title: "Share", disabled: !explorer.hasSelection) {
+                let picker = NSSharingServicePicker(items: explorer.effectiveSelection.map(\.url))
+                if let window = NSApp.keyWindow, let contentView = window.contentView {
+                    picker.show(relativeTo: .zero, of: contentView, preferredEdge: .minY)
+                }
+            }
+            ExplorerCommandButton(icon: "trash", title: "Delete", disabled: !explorer.hasSelection) {
+                explorer.trashSelected()
+            }
+
+            ToolbarSep()
+
+            Menu {
+                Picker("Sort by", selection: Binding(
+                    get: { explorer.sortOrder },
+                    set: { explorer.sortOrder = $0; explorer.resort() }
+                )) {
+                    ForEach(FileExplorerViewModel.SortOrder.allCases, id: \.self) { order in
+                        Text(order.rawValue).tag(order)
+                    }
+                }
+                Divider()
+                Button(explorer.sortAscending ? "Descending" : "Ascending") {
+                    explorer.sortAscending.toggle()
+                    explorer.resort()
+                }
+            } label: {
+                Label("Sort", systemImage: "arrow.up.arrow.down")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            Menu {
+                Button("Details") { explorer.viewMode = .list }
+                Button("Icons") { explorer.viewMode = .icons }
+                Button("Columns") { explorer.viewMode = .columns }
+                Divider()
+                Button(explorer.showHiddenFiles ? "Hide hidden items" : "Show hidden items") {
+                    explorer.showHiddenFiles.toggle()
+                    explorer.loadFiles()
+                }
+                Button(appState.showInfoPanel ? "Hide details pane" : "Show details pane") {
+                    withAnimation { appState.showInfoPanel.toggle() }
+                }
+            } label: {
+                Label("View", systemImage: "rectangle.grid.1x2")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            Menu {
+                Button("New File") { explorer.createNewFile() }
+                Button("Open Terminal Here") { SystemTerminal.open(at: explorer.currentURL) }
+                Button("Edit Metadata") { appState.openMetadataEditor() }
+                    .disabled(!explorer.hasEditableMetadataSelection)
+                Button("Batch Rename") { appState.openBatchRename() }
+                    .disabled(!explorer.hasSelection)
+                Divider()
+                Button("Copy to Other Pane") { appState.copyToOtherPane() }
+                    .disabled(!appState.showDualPane || !explorer.hasSelection)
+                Button("Move to Other Pane") { appState.moveToOtherPane() }
+                    .disabled(!appState.showDualPane || !explorer.hasSelection)
+                Button("Swap Panes") { appState.swapPanes() }
+                    .disabled(!appState.showDualPane)
+                Divider()
+                Button("Search") { appState.openSearch() }
+                Button("Find Duplicates") { appState.openDuplicateFinder() }
+                Button("Compare Folders") { appState.openDirectoryCompare() }
+                    .disabled(!appState.canCompareDirectories)
+                Button("Semantic Image Search") { appState.openSemanticSearch() }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 24, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            Spacer(minLength: 8)
+
+            FileOperationCompactView()
+                .frame(width: 220, alignment: .trailing)
+
+            ToolbarSep()
+
+            ExplorerCommandButton(
+                icon: appState.showDualPane ? "rectangle.split.2x1.fill" : "rectangle.split.2x1",
+                title: "Panes",
+                isActive: appState.showDualPane
+            ) {
+                withAnimation(.easeInOut(duration: 0.15)) { appState.showDualPane.toggle() }
+            }
+        }
+        .font(.system(size: 11))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(palette.chromeBackground)
+    }
+
+    private var nativeMainToolbar: some View {
         HStack(spacing: 0) {
             // Left group: sidebar + navigation
             HStack(spacing: 2) {
@@ -323,6 +454,43 @@ struct ContentView: View {
         }
         .padding(.vertical, 7)
         .background(.ultraThinMaterial)
+    }
+}
+
+// MARK: - Explorer Command Button
+
+private struct ExplorerCommandButton: View {
+    let icon: String
+    let title: String
+    var isActive = false
+    var disabled = false
+    let action: () -> Void
+
+    @Environment(AppTheme.self) private var theme
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hovering = false
+
+    var body: some View {
+        let palette = ThemePalette(style: theme.interfaceStyle, colorScheme: colorScheme)
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                Text(title)
+                    .font(.system(size: 11))
+            }
+            .foregroundStyle(disabled ? Color.secondary.opacity(0.4) : .primary)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(isActive ? palette.selection : (hovering && !disabled ? palette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { hovering = $0 }
     }
 }
 
