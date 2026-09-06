@@ -2,6 +2,12 @@ import Foundation
 import Observation
 import AppKit
 
+struct BatchRenameRequest {
+    let selectedURLs: [URL]
+    let currentDirectoryURLs: [URL]
+    let useCurrentDirectoryByDefault: Bool
+}
+
 @MainActor @Observable
 class AppState {
     let windowID = UUID()
@@ -46,18 +52,23 @@ class AppState {
     /// URLs of the media file(s) being edited.
     var mediaMetadataEditorTargets: [URL]?
 
-    /// Non-nil when the Batch Rename sheet is open. Holds the URLs of the
-    /// files being renamed.
-    var batchRenameTargets: [URL]?
+    /// Non-nil when the Batch Rename sheet is open. Carries both the current
+    /// selection and the immediate files in the current directory so users
+    /// can switch scope without reopening the window.
+    var batchRenameRequest: BatchRenameRequest?
 
-    /// Opens the Batch Rename sheet for the active pane's selection (or
-    /// all files in the current directory if nothing is selected).
+    /// Opens Batch Rename for the selection, defaulting to the current
+    /// directory scope when no files are selected.
     func openBatchRename() {
         let active = activeExplorer
         let selected = active.effectiveSelection.map(\.url)
-        let targets = selected.isEmpty ? active.files.map(\.url) : selected
-        guard !targets.isEmpty else { NSSound.beep(); return }
-        batchRenameTargets = targets
+        let currentDirectory = active.currentDirectoryBatchRenameURLs
+        guard !selected.isEmpty || !currentDirectory.isEmpty else { NSSound.beep(); return }
+        batchRenameRequest = BatchRenameRequest(
+            selectedURLs: selected,
+            currentDirectoryURLs: currentDirectory,
+            useCurrentDirectoryByDefault: selected.isEmpty
+        )
     }
 
     /// Non-nil when the recursive Search window should open. Holds the

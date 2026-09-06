@@ -10,12 +10,36 @@ struct BatchRenameView: View {
     @State private var renamer: BatchRenamer
     @State private var previews: [BatchRenamer.Preview] = []
     @State private var isApplying = false
+    @State private var useCurrentDirectory: Bool
+    @FocusState private var isFindFocused: Bool
+
+    private let selectedURLs: [URL]
+    private let currentDirectoryURLs: [URL]
 
     /// Called after a successful apply with the renamed pairs.
     let onComplete: ([(from: URL, to: URL)]) -> Void
 
     init(urls: [URL], onComplete: @escaping ([(from: URL, to: URL)]) -> Void) {
+        selectedURLs = urls
+        currentDirectoryURLs = []
+        _useCurrentDirectory = State(initialValue: false)
         _renamer = State(initialValue: BatchRenamer(urls: urls))
+        self.onComplete = onComplete
+    }
+
+    init(
+        selectedURLs: [URL],
+        currentDirectoryURLs: [URL],
+        initialUseCurrentDirectory: Bool,
+        onComplete: @escaping ([(from: URL, to: URL)]) -> Void
+    ) {
+        self.selectedURLs = selectedURLs
+        self.currentDirectoryURLs = currentDirectoryURLs
+        let useDirectory = initialUseCurrentDirectory || selectedURLs.isEmpty
+        _useCurrentDirectory = State(initialValue: useDirectory)
+        _renamer = State(initialValue: BatchRenamer(
+            urls: useDirectory ? currentDirectoryURLs : selectedURLs
+        ))
         self.onComplete = onComplete
     }
 
@@ -27,17 +51,26 @@ struct BatchRenameView: View {
             Divider()
             modePicker
             Divider()
-            extensionFilter
-            Divider()
+            if !currentDirectoryURLs.isEmpty {
+                scopePicker
+                Divider()
+            }
             options
                 .padding(14)
+            Divider()
+            extensionFilter
             Divider()
             previewList
             Divider()
             footer
         }
         .frame(width: 640, height: 560)
-        .onAppear { refresh() }
+        .onAppear {
+            refresh()
+            if renamer.mode == .findReplace {
+                DispatchQueue.main.async { isFindFocused = true }
+            }
+        }
     }
 
     // MARK: - Header
@@ -104,6 +137,28 @@ struct BatchRenameView: View {
         .padding(.vertical, 8)
     }
 
+    private var scopePicker: some View {
+        Toggle("Rename all files in current directory", isOn: Binding(
+            get: { useCurrentDirectory },
+            set: { newValue in
+                useCurrentDirectory = newValue
+                renamer.urls = newValue ? currentDirectoryURLs : selectedURLs
+                refresh()
+                if renamer.mode == .findReplace {
+                    DispatchQueue.main.async { isFindFocused = true }
+                }
+            }
+        ))
+        .toggleStyle(.checkbox)
+        .font(.system(size: 11))
+        .disabled(selectedURLs.isEmpty)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .help(selectedURLs.isEmpty
+            ? "No selection; all files in the current directory are included."
+            : "Switch between the selected items and all files directly in the current directory.")
+    }
+
     private var itemCountText: String {
         let count = renamer.filteredURLs.count
         let total = renamer.urls.count
@@ -124,9 +179,17 @@ struct BatchRenameView: View {
 
     private var findReplaceOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
-            labeledField("Find", text: Binding(
-                get: { renamer.find }, set: { renamer.find = $0; refresh() }
-            ), placeholder: renamer.useRegex ? "regular expression" : "text to find")
+            HStack(spacing: 8) {
+                Text("Find")
+                    .font(.system(size: 11))
+                    .frame(width: 70, alignment: .trailing)
+                TextField(renamer.useRegex ? "regular expression" : "text to find", text: Binding(
+                    get: { renamer.find }, set: { renamer.find = $0; refresh() }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11))
+                .focused($isFindFocused)
+            }
             labeledField("Replace", text: Binding(
                 get: { renamer.replacement }, set: { renamer.replacement = $0; refresh() }
             ), placeholder: "replacement")

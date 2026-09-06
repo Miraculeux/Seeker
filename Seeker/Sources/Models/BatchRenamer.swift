@@ -42,7 +42,7 @@ final class BatchRenamer {
         var changed: Bool { error == nil && oldName != newName }
     }
 
-    let urls: [URL]
+    var urls: [URL]
 
     var mode: Mode = .findReplace
     var extensionFilter = ""

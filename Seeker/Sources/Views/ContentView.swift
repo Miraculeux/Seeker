@@ -79,11 +79,15 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: Binding(
-            get: { appState.batchRenameTargets != nil },
-            set: { if !$0 { appState.batchRenameTargets = nil } }
+            get: { appState.batchRenameRequest != nil },
+            set: { if !$0 { appState.batchRenameRequest = nil } }
         )) {
-            if let targets = appState.batchRenameTargets {
-                BatchRenameView(urls: targets) { _ in
+            if let request = appState.batchRenameRequest {
+                BatchRenameView(
+                    selectedURLs: request.selectedURLs,
+                    currentDirectoryURLs: request.currentDirectoryURLs,
+                    initialUseCurrentDirectory: request.useCurrentDirectoryByDefault
+                ) { _ in
                     appState.activeExplorer.loadFiles()
                     NotificationCenter.default.post(name: .filesDidChange, object: nil)
                 }

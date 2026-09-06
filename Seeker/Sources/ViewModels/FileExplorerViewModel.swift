@@ -34,6 +34,11 @@ class FileExplorerViewModel: Identifiable {
     /// Sorted, unfiltered listing as loaded from disk. Source of truth for
     /// the visible `files` list — filter changes do not touch the disk.
     private var allFiles: [FileItem] = []
+    /// Immediate non-directory files loaded for the current folder. Unlike
+    /// `files`, this excludes search filtering and expanded tree descendants.
+    var currentDirectoryBatchRenameURLs: [URL] {
+        allFiles.lazy.filter { !$0.isDirectory }.map(\.url)
+    }
     /// Sorted, unfiltered children of each expanded directory, keyed by
     /// the parent's `FileItem.ID`. Built lazily on the first expansion of
     /// each directory; refreshed when `loadFiles()` reloads the tab.
