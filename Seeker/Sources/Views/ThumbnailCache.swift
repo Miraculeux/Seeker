@@ -64,6 +64,8 @@ enum ThumbnailCache {
         "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "raf", "srw",
         // vector / docs
         "pdf", "svg", "ps", "eps",
+        // ebooks
+        "epub", "mobi", "azw", "azw3",
         // video (QL extracts a poster frame)
         "mov", "mp4", "m4v", "avi", "mkv", "webm",
         // app-rendered

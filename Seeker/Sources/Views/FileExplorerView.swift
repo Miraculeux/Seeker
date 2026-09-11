@@ -879,6 +879,7 @@ struct FileListRow: View, @MainActor Equatable {
     let onCancelRename: () -> Void
     let onToggleExpand: () -> Void
     @State private var hovering = false
+    @State private var thumbnail: NSImage?
     @FocusState private var isRenameFocused: Bool
     @Environment(AppTheme.self) private var theme
     @Environment(\.colorScheme) private var colorScheme
@@ -925,7 +926,7 @@ struct FileListRow: View, @MainActor Equatable {
                         .frame(width: CGFloat(depth) * Self.indentPerLevel, height: 1)
                 }
                 disclosure
-                Image(nsImage: file.nsIcon)
+                Image(nsImage: thumbnail ?? file.nsIcon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 18, height: 18)
@@ -988,6 +989,22 @@ struct FileListRow: View, @MainActor Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(rowBackground)
         .onHover { hovering = $0 }
+        .task(id: file.id) { await loadThumbnailIfNeeded() }
+    }
+
+    private func loadThumbnailIfNeeded() async {
+        guard !file.isDirectory, !file.isPackage,
+              ThumbnailCache.canThumbnail(file.url) else {
+            thumbnail = nil
+            return
+        }
+
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        thumbnail = await ThumbnailCache.thumbnail(
+            for: file.url,
+            sizeBucket: 32,
+            scale: scale
+        )
     }
 
     @ViewBuilder

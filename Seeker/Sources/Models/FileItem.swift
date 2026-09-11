@@ -12,11 +12,6 @@ import AppKit
 /// as no one mutates their configuration). Marked `nonisolated(unsafe)`
 /// so they are reachable from non-isolated `FileItem` computed properties.
 enum FileItemCache {
-    nonisolated(unsafe) static let iconByExtension: NSCache<NSString, NSImage> = {
-        let c = NSCache<NSString, NSImage>()
-        c.countLimit = 256
-        return c
-    }()
     nonisolated(unsafe) static let iconByPath: NSCache<NSString, NSImage> = {
         let c = NSCache<NSString, NSImage>()
         c.countLimit = 512
@@ -219,26 +214,9 @@ struct FileItem: Identifiable, Hashable {
         self.formattedDate = Self.makeFormattedDate(self.modificationDate)
     }
 
-    /// Native macOS file icon, matching Finder's display.
-    /// Cached: regular files share an icon per extension; directories and
-    /// bundles fall back to per-path caching since their icon may be custom.
+    /// Native macOS file icon, resolved per URL to preserve custom icons and
+    /// other path-specific icon metadata in the same way as Finder.
     var nsIcon: NSImage {
-        if isDirectory || isPackage {
-            let key = url.path as NSString
-            if let img = FileItemCache.iconByPath.object(forKey: key) { return img }
-            let img = NSWorkspace.shared.icon(forFile: url.path)
-            FileItemCache.iconByPath.setObject(img, forKey: key)
-            return img
-        }
-        let ext = url.pathExtension.lowercased()
-        if !ext.isEmpty {
-            let key = ext as NSString
-            if let img = FileItemCache.iconByExtension.object(forKey: key) { return img }
-            let img = NSWorkspace.shared.icon(forFile: url.path)
-            FileItemCache.iconByExtension.setObject(img, forKey: key)
-            return img
-        }
-        // Extension-less file: fall back to per-path (rare).
         let key = url.path as NSString
         if let img = FileItemCache.iconByPath.object(forKey: key) { return img }
         let img = NSWorkspace.shared.icon(forFile: url.path)
