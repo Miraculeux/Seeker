@@ -56,6 +56,7 @@ struct BatchRenameView: View {
                 Divider()
             }
             options
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)
             Divider()
             extensionFilter
@@ -65,6 +66,8 @@ struct BatchRenameView: View {
             footer
         }
         .frame(width: 640, height: 560)
+        .controlSize(.small)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             refresh()
             if renamer.mode == .findReplace {
@@ -78,7 +81,7 @@ struct BatchRenameView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "character.cursor.ibeam")
-                .font(.system(size: 15))
+                .font(.system(size: 16))
                 .foregroundColor(.accentColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Batch Rename")
@@ -88,6 +91,15 @@ struct BatchRenameView: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
+            Button { dismiss() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary.opacity(0.6))
+            }
+            .buttonStyle(.borderless)
+            .disabled(isApplying)
+            .help("Close Batch Rename")
+            .accessibilityLabel("Close Batch Rename")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -111,16 +123,15 @@ struct BatchRenameView: View {
 
     private var extensionFilter: some View {
         HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .foregroundColor(.secondary)
-            Text("Extension Filter")
+            Text("Extensions")
                 .font(.system(size: 11))
+                .frame(width: 70, alignment: .trailing)
             TextField("All extensions (e.g. jpg, png)", text: Binding(
                 get: { renamer.extensionFilter },
                 set: { renamer.extensionFilter = $0; refresh() }
             ))
-            .textFieldStyle(.roundedBorder)
-            .font(.system(size: 11))
+            .modifier(RenameTextFieldStyle())
+            .accessibilityLabel("Extension Filter")
             if !renamer.extensionFilter.isEmpty {
                 Button {
                     renamer.extensionFilter = ""
@@ -138,7 +149,7 @@ struct BatchRenameView: View {
     }
 
     private var scopePicker: some View {
-        Toggle("Rename all files in current directory", isOn: Binding(
+        let selection = Binding(
             get: { useCurrentDirectory },
             set: { newValue in
                 useCurrentDirectory = newValue
@@ -148,8 +159,23 @@ struct BatchRenameView: View {
                     DispatchQueue.main.async { isFindFocused = true }
                 }
             }
-        ))
-        .toggleStyle(.checkbox)
+        )
+
+        return HStack(spacing: 8) {
+            Toggle("Rename all files in current directory", isOn: selection)
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+                .frame(width: 70, alignment: .trailing)
+            Button {
+                selection.wrappedValue.toggle()
+            } label: {
+                Text("Rename all files in current directory")
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 6)
+            .accessibilityHidden(true)
+            Spacer(minLength: 0)
+        }
         .font(.system(size: 11))
         .disabled(selectedURLs.isEmpty)
         .padding(.horizontal, 14)
@@ -186,8 +212,8 @@ struct BatchRenameView: View {
                 TextField(renamer.useRegex ? "regular expression" : "text to find", text: Binding(
                     get: { renamer.find }, set: { renamer.find = $0; refresh() }
                 ))
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
+                .modifier(RenameTextFieldStyle())
+                .accessibilityLabel("Find")
                 .focused($isFindFocused)
             }
             labeledField("Replace", text: Binding(
@@ -203,12 +229,14 @@ struct BatchRenameView: View {
             }
             .toggleStyle(.checkbox)
             .font(.system(size: 11))
+            .padding(.leading, 78)
 
             if renamer.useRegex {
                 Text("Use $1, $2… for capture groups. Zero-pad with ${1:02d} (e.g. \"1\" → \"01\").")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 84)
             }
         }
     }
@@ -245,36 +273,37 @@ struct BatchRenameView: View {
             HStack(spacing: 8) {
                 Text("Date format")
                     .font(.system(size: 11))
-                    .frame(width: 90, alignment: .trailing)
+                    .frame(width: 70, alignment: .trailing)
                 TextField("yyyy-MM-dd", text: Binding(
                     get: { renamer.dateFormat }, set: { renamer.dateFormat = $0; refresh() }
                 ))
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
+                .modifier(RenameTextFieldStyle())
+                .accessibilityLabel("Date format")
                 .frame(maxWidth: 180)
             }
             HStack(spacing: 6) {
-                Spacer().frame(width: 90)
                 ForEach(Self.datePresets, id: \.self) { preset in
                     Button(preset) { renamer.dateFormat = preset; refresh() }
                         .buttonStyle(.borderless)
                         .font(.system(size: 9))
                 }
             }
+            .padding(.leading, 84)
             HStack(spacing: 8) {
                 Text("Separator")
                     .font(.system(size: 11))
-                    .frame(width: 90, alignment: .trailing)
+                    .frame(width: 70, alignment: .trailing)
                 Toggle("", isOn: Binding(
                     get: { renamer.useSeparator }, set: { renamer.useSeparator = $0; refresh() }
                 ))
                 .toggleStyle(.switch)
                 .labelsHidden()
+                .accessibilityLabel("Use separator")
                 TextField("-", text: Binding(
                     get: { renamer.separator }, set: { renamer.separator = $0; refresh() }
                 ))
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
+                .modifier(RenameTextFieldStyle())
+                .accessibilityLabel("Separator")
                 .frame(width: 50)
                 .disabled(!renamer.useSeparator)
                 Text("date \(renamer.useSeparator ? renamer.separator : "")sequence")
@@ -284,7 +313,7 @@ struct BatchRenameView: View {
             HStack(spacing: 8) {
                 Text("Start at")
                     .font(.system(size: 11))
-                    .frame(width: 90, alignment: .trailing)
+                    .frame(width: 70, alignment: .trailing)
                 Stepper(value: Binding(
                     get: { renamer.dateStartNumber },
                     set: { renamer.dateStartNumber = max(0, $0); refresh() }
@@ -303,6 +332,8 @@ struct BatchRenameView: View {
             Text("Date is read from the image's EXIF capture time, or the file's creation date if there is no EXIF.")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 84)
         }
     }
 
@@ -312,8 +343,8 @@ struct BatchRenameView: View {
                 .font(.system(size: 11))
                 .frame(width: 70, alignment: .trailing)
             TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
+                .modifier(RenameTextFieldStyle())
+                .accessibilityLabel(label)
         }
     }
 
@@ -348,7 +379,7 @@ struct BatchRenameView: View {
                         .truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 3)
                 }
             }
@@ -366,6 +397,7 @@ struct BatchRenameView: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isApplying)
             Button(isApplying ? "Renaming\u{2026}" : "Rename") { apply() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(isApplying || !renamer.canApply(previews))
@@ -413,5 +445,17 @@ struct BatchRenameView: View {
             }
             dismiss()
         }
+    }
+}
+
+private struct RenameTextFieldStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .textFieldStyle(.plain)
+            .font(.system(size: 11))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .background(Color.primary.opacity(0.05))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
