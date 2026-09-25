@@ -17,20 +17,23 @@ LINKER_FLAGS=(-Xlinker -dead_strip -Xlinker -dead_strip_dylibs)
 echo "==> Building ${APP_NAME} v${VERSION} (arm64)..."
 cd "$PROJECT_DIR"
 swift build -c release --arch arm64   "${LINKER_FLAGS[@]}"
+BIN_DIR="$(swift build -c release --arch arm64 "${LINKER_FLAGS[@]}" --show-bin-path)"
+test -x "$BIN_DIR/$APP_NAME"
+test -d "$BIN_DIR/${APP_NAME}_${APP_NAME}.bundle"
 
 echo "==> Creating app bundle..."
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-cp .build/arm64-apple-macosx/release/Seeker "$APP_BUNDLE/Contents/MacOS/Seeker"
+cp "$BIN_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/Seeker"
 # Strip local symbols (-x) and debug info (-S) from the shipped binary;
 # debug info already lives in the .dSYM elsewhere.
 strip -S -x "$APP_BUNDLE/Contents/MacOS/Seeker"
 
 cp Seeker/Sources/Info.plist "$APP_BUNDLE/Contents/Info.plist"
 cp Seeker/Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-cp -r .build/arm64-apple-macosx/release/Seeker_Seeker.bundle "$APP_BUNDLE/Contents/Resources/"
+cp -r "$BIN_DIR/${APP_NAME}_${APP_NAME}.bundle" "$APP_BUNDLE/Contents/Resources/"
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 
 echo "==> Code signing (hardened runtime)..."
