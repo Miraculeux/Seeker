@@ -50,6 +50,9 @@ struct TriageExplorerPanel: View {
     /// Cached `FileItem`s for fixed-list mode (rebuilt when `fixedURLs`
     /// changes) so the body doesn't re-`lstat` every file each render.
     @State private var fixedItems: [FileItem] = []
+    @State private var fixedItemCache: [URL: FileItem] = [:]
+    @State private var fixedLoadTask: Task<Void, Never>?
+    @State private var fixedLoadID = UUID()
     /// Files selected inside this panel. Supports ⌘-click (toggle) and
     /// ⇧-click (range) like the main explorer. Falls back to `targetURL`
     /// for actions when empty in browse mode.
@@ -140,6 +143,17 @@ struct TriageExplorerPanel: View {
         }
         .onChange(of: targetURL) { _, _ in if !isFixed { syncToTarget() } }
         .onChange(of: fixedURLs) { _, _ in rebuildFixed() }
+        .onDisappear {
+            fixedLoadTask?.cancel()
+            fixedLoadTask = nil
+            fixedLoadID = UUID()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .filesDidChange)) { _ in
+            if isFixed {
+                fixedItemCache = [:]
+                rebuildFixed()
+            }
+        }
         .onChange(of: anchorURL) { _, url in
             guard usesFloatingQuickLook, let url else { return }
             AppDelegate.shared?.updateQuickLookIfVisible(url: url, appState: appState)
@@ -195,12 +209,40 @@ struct TriageExplorerPanel: View {
 
     /// Rebuilds the cached `FileItem`s for fixed-list mode.
     private func rebuildFixed() {
-        guard let urls = fixedURLs else { return }
-        fixedItems = urls.map { FileItem(url: $0) }
-        // Drop any selection that's no longer present in the list.
+        fixedLoadTask?.cancel()
+        let loadID = UUID()
+        fixedLoadID = loadID
+        guard let urls = fixedURLs else {
+            fixedLoadTask = nil
+            fixedItems = []
+            fixedItemCache = [:]
+            return
+        }
+        let cached = fixedItemCache
         let present = Set(urls.map { $0.standardizedFileURL })
+        fixedItems.removeAll { !present.contains($0.url.standardizedFileURL) }
         selection = selection.filter { present.contains($0.standardizedFileURL) }
         if let a = anchorURL, !present.contains(a.standardizedFileURL) { anchorURL = nil }
+
+        fixedLoadTask = Task {
+            guard let result = try? await BackgroundWork.run({
+                var cache = cached
+                var items: [FileItem] = []
+                items.reserveCapacity(urls.count)
+                for url in urls {
+                    if Task.isCancelled { return (items: [FileItem](), cache: cached) }
+                    let item = cache[url] ?? FileItem(url: url)
+                    cache[url] = item
+                    items.append(item)
+                }
+                return (items: items, cache: cache)
+            }) else { return }
+            guard !Task.isCancelled, fixedLoadID == loadID else { return }
+            // Keep filtered-out metadata so adjusting a threshold doesn't re-stat it.
+            fixedItemCache = result.cache
+            fixedItems = result.items
+            fixedLoadTask = nil
+        }
     }
 
     /// Handles a row click with modifier keys: ⌘ toggles, ⇧ extends a
@@ -281,9 +323,10 @@ struct TriageExplorerPanel: View {
         selection = []
         anchorURL = nil
         Task {
-            let trashed = await Task.detached(priority: .userInitiated) { () -> [URL] in
+            guard let trashed = try? await BackgroundWork.run({
                 var done: [URL] = []
                 for url in urls {
+                    if Task.isCancelled { break }
                     do {
                         try FileManager.default.trashItem(at: url, resultingItemURL: nil)
                         done.append(url)
@@ -292,7 +335,7 @@ struct TriageExplorerPanel: View {
                     }
                 }
                 return done
-            }.value
+            }) else { return }
             guard !trashed.isEmpty else { return }
             for url in trashed { onDeleted?(url) }
             if !isFixed { vm.loadFiles() }

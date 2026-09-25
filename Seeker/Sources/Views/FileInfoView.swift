@@ -131,6 +131,10 @@ struct FileInfoView: View {
         .onAppear {
             calculateMultiSelectionSize(ids: selectedFileIDs)
         }
+        .onDisappear {
+            multiSelectionSizeTask?.cancel()
+            multiSelectionSizeTask = nil
+        }
     }
 
     private func calculateMultiSelectionSize(ids: Set<FileItem.ID>) {
@@ -139,10 +143,11 @@ struct FileInfoView: View {
         let files = appState.activeExplorer.selectedFiles
         let urls = Array(files.map(\.url))
         multiSelectionSizeTask = Task {
-            let total = await Task.detached(priority: .utility) { () -> Int64 in
+            guard let total = try? await BackgroundWork.run(priority: .utility, { () -> Int64 in
                 var size: Int64 = 0
                 let fm = FileManager.default
                 for url in urls {
+                    if Task.isCancelled { return -1 }
                     var isDir: ObjCBool = false
                     guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
                     if isDir.boolValue {
@@ -160,8 +165,8 @@ struct FileInfoView: View {
                     if Task.isCancelled { return -1 }
                 }
                 return size
-            }.value
-            if !Task.isCancelled && total >= 0 {
+            }) else { return }
+            if !Task.isCancelled && selectedFileIDs == ids && total >= 0 {
                 multiSelectionTotalSize = total
             }
         }
@@ -560,9 +565,9 @@ struct FileInfoView: View {
         let targetID = file.id
 
         folderSizeTask = Task { @MainActor in
-            let total = await Task.detached(priority: .utility) { () -> Int64 in
+            guard let total = try? await BackgroundWork.run(priority: .utility, {
                 Self.directorySize(at: url)
-            }.value
+            }) else { return }
 
             // Drop the result if the user moved on to a different item
             // while we were walking.
@@ -574,7 +579,8 @@ struct FileInfoView: View {
     /// Sums regular-file sizes under `url`. Returns -1 on cancellation.
     /// Uses `.fileAllocatedSize` when available (matches Finder's
     /// "On disk" measurement) and falls back to logical `.fileSize`.
-    private nonisolated static func directorySize(at url: URL) -> Int64 {
+    nonisolated static func directorySize(at url: URL) -> Int64 {
+        guard !Task.isCancelled else { return -1 }
         let keys: [URLResourceKey] = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey]
         let keySet = Set(keys)
         let fm = FileManager.default
@@ -586,12 +592,8 @@ struct FileInfoView: View {
         ) else { return 0 }
 
         var total: Int64 = 0
-        var checkCounter = 0
         while let next = enumerator.nextObject() as? URL {
-            // Cancellation check every 256 entries keeps overhead low
-            // while still aborting promptly on selection changes.
-            checkCounter &+= 1
-            if checkCounter & 0xFF == 0, Task.isCancelled { return -1 }
+            if Task.isCancelled { return -1 }
 
             guard let rv = try? next.resourceValues(forKeys: keySet) else { continue }
             guard rv.isRegularFile == true else { continue }
@@ -1241,18 +1243,31 @@ struct FileInfoView: View {
     /// can't open (DSF, DFF). Uses `TechnicalInfoService` so we report the
     /// correct DSD rate, channel count, and bit depth.
     private func nativeMediaInfo(for url: URL, ext: String) async -> MediaInfo? {
+        let result = try? await BackgroundWork.run(priority: .utility) {
+            Self.readNativeMediaInfo(for: url, ext: ext)
+        }
+        return Task.isCancelled ? nil : result
+    }
+
+    private nonisolated static func readNativeMediaInfo(for url: URL, ext: String) -> MediaInfo? {
+        guard !Task.isCancelled else { return nil }
         let fileSize = (try? FileManager.default
             .attributesOfItem(atPath: url.path)[.size] as? Int64) ?? nil
         let tech: MediaTechnicalInfo
+        let entries: [(key: String, value: String)]
         switch ext {
         case "dsf":
             guard let file = try? DSFFile.read(url) else { return nil }
             tech = TechnicalInfoService.finalize(
                 TechnicalInfoService.from(dsf: file, fileSize: fileSize))
+            guard !Task.isCancelled else { return nil }
+            entries = file.decoded().entries
         case "dff":
             guard let file = try? DFFFile.read(url) else { return nil }
             tech = TechnicalInfoService.finalize(
                 TechnicalInfoService.from(dff: file, fileSize: fileSize))
+            guard !Task.isCancelled else { return nil }
+            entries = file.decoded().entries
         default:
             return nil
         }
@@ -1294,14 +1309,15 @@ struct FileInfoView: View {
                 ? String(format: "%.1f Mbps", mbps)
                 : String(format: "%.0f kbps", br / 1000)
         }
-        // Pull tags via the same service so DSF/DFF show TITLE/ARTIST/etc.
-        if let tags = try? await MediaMetadataService.read(url) {
-            meta.title  = tags.first("TITLE")
-            meta.artist = tags.first("ARTIST")
-            meta.album  = tags.first("ALBUM")
-            meta.genre  = tags.first("GENRE")
-            meta.year   = tags.first("DATE") ?? tags.first("YEAR")
+        guard !Task.isCancelled else { return nil }
+        func tag(_ key: String) -> String? {
+            entries.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
         }
+        meta.title = tag("TITLE")
+        meta.artist = tag("ARTIST")
+        meta.album = tag("ALBUM")
+        meta.genre = tag("GENRE")
+        meta.year = tag("DATE") ?? tag("YEAR")
         return meta
     }
 

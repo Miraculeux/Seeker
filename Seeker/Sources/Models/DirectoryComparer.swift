@@ -72,9 +72,9 @@ final class DirectoryComparer {
         let recursive = self.recursive
         let task = Task { [weak self] in
             guard let self else { return }
-            let result = await Task.detached(priority: .userInitiated) { () -> (a: [Entry], b: [Entry]) in
+            guard let result = try? await BackgroundWork.run({
                 Self.diff(a: a, b: b, includeHidden: hidden, recursive: recursive)
-            }.value
+            }) else { return }
             if Task.isCancelled { return }
             self.onlyInA = result.a
             self.onlyInB = result.b
@@ -100,11 +100,14 @@ final class DirectoryComparer {
         includeHidden: Bool,
         recursive: Bool
     ) -> (a: [Entry], b: [Entry]) {
+        guard !Task.isCancelled else { return ([], []) }
         if recursive {
             return diffRecursive(a: a, b: b, includeHidden: includeHidden)
         }
         let entriesA = list(a, includeHidden: includeHidden)
+        guard !Task.isCancelled else { return ([], []) }
         let entriesB = list(b, includeHidden: includeHidden)
+        guard !Task.isCancelled else { return ([], []) }
         let namesA = Set(entriesA.map { $0.name.lowercased() })
         let namesB = Set(entriesB.map { $0.name.lowercased() })
 
@@ -125,7 +128,9 @@ final class DirectoryComparer {
         includeHidden: Bool
     ) -> (a: [Entry], b: [Entry]) {
         let filesA = listRecursive(a, includeHidden: includeHidden)
+        guard !Task.isCancelled else { return ([], []) }
         let filesB = listRecursive(b, includeHidden: includeHidden)
+        guard !Task.isCancelled else { return ([], []) }
         let keysA = Set(filesA.map { $0.relativePath.lowercased() })
         let keysB = Set(filesB.map { $0.relativePath.lowercased() })
 
@@ -150,20 +155,23 @@ final class DirectoryComparer {
         ) else { return [] }
 
         let keySet = Set(keys)
-        return urls.map { url in
+        var entries: [Entry] = []
+        for url in urls {
+            if Task.isCancelled { return [] }
             let rv = try? url.resourceValues(forKeys: keySet)
             let isDir = rv?.isDirectory ?? false
             let size = Int64(rv?.fileSize ?? 0)
             let name = url.lastPathComponent
-            return Entry(
+            entries.append(Entry(
                 id: url.absoluteString,
                 url: url,
                 name: name,
                 isDirectory: isDir,
                 fileSize: size,
                 relativePath: name
-            )
+            ))
         }
+        return entries
     }
 
     /// Walks `root` recursively, returning regular files with their path
@@ -183,10 +191,8 @@ final class DirectoryComparer {
         let rootPath = root.standardizedFileURL.path
         let keySet = Set(keys)
         var out: [Entry] = []
-        var counter = 0
         while let url = enumerator.nextObject() as? URL {
-            counter &+= 1
-            if counter & 0x3FF == 0, Task.isCancelled { return out }
+            if Task.isCancelled { return [] }
             let rv = try? url.resourceValues(forKeys: keySet)
             guard rv?.isRegularFile == true else { continue }
             let p = url.standardizedFileURL.path

@@ -52,6 +52,7 @@ class FileOperation: Identifiable {
     /// Completion handler invoked on the main actor when the operation
     /// finishes. Stored so the queue pump can call it.
     @ObservationIgnored var onComplete: (@MainActor (FileOperation) -> Void)?
+    @ObservationIgnored var task: Task<Void, Never>?
 
     struct PlannedItem {
         let source: URL
@@ -113,6 +114,7 @@ class FileOperation: Identifiable {
 
     func cancel() {
         isCancelled = true
+        task?.cancel()
     }
 }
 
@@ -208,8 +210,9 @@ class FileOperationManager {
             if busyVolumes.contains(vol) { continue }
             busyVolumes.insert(vol)
             op.isQueued = false
-            Task {
+            op.task = Task {
                 await performOperation(op)
+                op.task = nil
                 op.onComplete?(op)
                 cleanupFinished()
                 busyVolumes.remove(vol)
@@ -365,9 +368,19 @@ class FileOperationManager {
         // once per `moveItem` for progress) — for forests with many small
         // files this dominated wall time.
         let urls = op.sourceURLs
-        let sizeMap: [URL: Int64] = await Task.detached(priority: .userInitiated) {
-            self.calculateSizeMap(urls: urls)
-        }.value
+        let sizeMap: [URL: Int64]
+        do {
+            sizeMap = try await BackgroundWork.run {
+                try self.calculateSizeMap(urls: urls)
+            }
+        } catch is CancellationError {
+            op.isFinished = true
+            return
+        } catch {
+            op.error = "Couldn\u{2019}t calculate transfer size: \(error.localizedDescription)"
+            op.isFinished = true
+            return
+        }
         op.totalBytes = sizeMap.values.reduce(0, +)
         op.startTime = .now
 
@@ -416,8 +429,15 @@ class FileOperationManager {
                 op.completedDestinations.append(destURL)
                 op.filesCompleted += 1
             } catch is CancellationError {
-                // Remove the partially copied top-level item (file or folder)
-                try? FileManager.default.removeItem(at: destURL)
+                do {
+                    try await Task.detached(priority: .utility) {
+                        if FileManager.default.fileExists(atPath: destURL.path) {
+                            try FileManager.default.removeItem(at: destURL)
+                        }
+                    }.value
+                } catch {
+                    op.error = "Couldn\u{2019}t remove the partial copy: \(error.localizedDescription)"
+                }
                 break
             } catch {
                 if !op.isCancelled {
@@ -439,8 +459,9 @@ class FileOperationManager {
 
     /// Build a flat list of (source, destination, size) for all files under a tree,
     /// plus any entries the walk could not read.
-    private nonisolated func buildCopyManifest(source: URL, destination: URL)
+    private nonisolated func buildCopyManifest(source: URL, destination: URL) throws
         -> (pairs: [(src: URL, dst: URL, size: Int64)], skipped: [URL]) {
+        try Task.checkCancellation()
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else { return ([], [source]) }
@@ -454,6 +475,7 @@ class FileOperationManager {
                                                    return true   // keep walking the rest of the tree
                                                }) {
                 for case let fileURL as URL in enumerator {
+                    try Task.checkCancellation()
                     let rv = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
                     if rv?.isDirectory == true { continue }
                     let relativePath = fileURL.path.dropFirst(source.path.count)
@@ -470,10 +492,13 @@ class FileOperationManager {
     }
 
     private func copyWithProgress(from source: URL, to destination: URL, operation: FileOperation) async throws {
-        let (manifest, skipped) = buildCopyManifest(source: source, destination: destination)
-        operation.skippedItems.append(contentsOf: skipped)
+        let result = try await BackgroundWork.run {
+            try self.buildCopyManifest(source: source, destination: destination)
+        }
+        try Task.checkCancellation()
+        operation.skippedItems.append(contentsOf: result.skipped)
 
-        for (src, dst, size) in manifest {
+        for (src, dst, size) in result.pairs {
             guard !operation.isCancelled else { throw CancellationError() }
             await FileOperationManager.shared.waitWhilePaused(operation)
             guard !operation.isCancelled else { throw CancellationError() }
@@ -702,17 +727,14 @@ class FileOperationManager {
         }
     }
 
-    private nonisolated func calculateTotalSize(urls: [URL]) -> Int64 {
-        return calculateSizeMap(urls: urls).values.reduce(0, +)
-    }
-
     /// Compute byte sizes for each top-level source URL in a single pass per
     /// source, recursing into directories. Returned map keys are exactly the
     /// input URLs so callers can credit progress without re-walking.
-    private nonisolated func calculateSizeMap(urls: [URL]) -> [URL: Int64] {
+    private nonisolated func calculateSizeMap(urls: [URL]) throws -> [URL: Int64] {
         var map: [URL: Int64] = [:]
         let fm = FileManager.default
         for url in urls {
+            try Task.checkCancellation()
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else {
                 map[url] = 0
@@ -722,6 +744,7 @@ class FileOperationManager {
                 var total: Int64 = 0
                 if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) {
                     for case let fileURL as URL in enumerator {
+                        try Task.checkCancellation()
                         let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
                         total += Int64(size)
                     }

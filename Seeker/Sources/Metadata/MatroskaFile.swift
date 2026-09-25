@@ -10,12 +10,9 @@ import Foundation
 ///   * `Attachments` — `AttachedFile`(FileName, FileMimeType, FileData,
 ///                     FileUID) entries; we use the first image one as cover.
 ///
-/// Writing strategy: rather than recompute every parent size after editing,
-/// we rewrite the file with the `Segment` declared as **unknown-length**
-/// (VINT 0xFF). All original Segment children except `Tags`, `Attachments`
-/// and `SeekHead` are kept verbatim; the new `Tags` and `Attachments` are
-/// appended at the end. `SeekHead` is dropped — Matroska spec allows this
-/// (players linear-scan when SeekHead is absent), avoiding stale offsets.
+/// Writing preserves Segment/Cluster offsets by replacing old metadata and
+/// SeekHead elements with equally sized Void elements. New tags and artwork
+/// are appended to an unknown-length Segment; unchanged media is streamed.
 enum MatroskaError: Error, LocalizedError {
     case notMatroska
     case truncated
@@ -118,9 +115,8 @@ struct MatroskaFile {
             }
         }
 
-        // 4. Fallback: stream Segment children directly from the FileHandle,
-        //    stopping at the first Cluster. Tags/Attachments are required to
-        //    appear before the first Cluster when no SeekHead is present.
+        // 4. Seek over Segment children, including Clusters: without a SeekHead,
+        //    metadata can still follow the media (including files we wrote).
         var abs = segmentBodyAbs
         while abs < segmentBodyEndAbs {
             try handle.seek(toOffset: abs)
@@ -141,8 +137,6 @@ struct MatroskaFile {
                 if cover == nil {
                     cover = decodeAttachmentsForCover(body, start: 0, end: body.count)
                 }
-            case EBML.IDs.cluster:
-                return MatroskaFile(url: url, entries: entries, cover: cover)
             default:
                 break
             }
@@ -340,74 +334,81 @@ struct MatroskaFile {
     static func write(url: URL,
                       entries: [(key: String, value: String)],
                       cover: (data: Data, mime: String)?) throws {
-        let original = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard original.count >= 4,
-              original[0] == 0x1A, original[1] == 0x45,
-              original[2] == 0xDF, original[3] == 0xA3
-        else { throw MatroskaError.notMatroska }
-
-        // Locate EBML header and Segment.
-        var p = 0
-        var ebmlHeaderEnd = 0
-        var segmentIDStart = -1
-        var segmentBodyStart = -1
-        var segmentBodyEnd = original.count
-        while p < original.count {
-            guard let (id, idLen) = EBML.readID(original, at: p),
-                  let (size, sizeLen, isUnknown) = EBML.readSize(original, at: p + idLen)
-            else { break }
-            let bodyStart = p + idLen + sizeLen
-            let bodyEnd = isUnknown ? original.count : min(bodyStart + Int(size), original.count)
-            if id == EBML.IDs.ebmlHeader {
-                ebmlHeaderEnd = bodyEnd
-            } else if id == EBML.IDs.segment {
-                segmentIDStart = p
-                segmentBodyStart = bodyStart
-                segmentBodyEnd = bodyEnd
+        try MediaFileIO.rewrite(url) { input, fileSize, output in
+            guard fileSize >= 4,
+                  try MediaFileIO.read(input, at: 0, count: 4) == Data([0x1A, 0x45, 0xDF, 0xA3])
+            else { throw MatroskaError.notMatroska }
+            var p: UInt64 = 0
+            var foundSegment = false
+            while p < fileSize {
+                let element = try readHeader(input, at: p, end: fileSize)
+                if element.id != EBML.IDs.segment {
+                    try MediaFileIO.copy(input, to: output, range: p..<element.end)
+                    p = element.end
+                    continue
+                }
+                foundSegment = true
+                try MediaFileIO.copy(input, to: output, range: p..<(p + UInt64(element.idLength)))
+                var unknown = Data(repeating: 0xFF, count: element.sizeLength)
+                unknown[0] = UInt8(0xFF >> (element.sizeLength - 1))
+                try output.write(contentsOf: unknown)
+                var q = element.body
+                var pendingVoid: UInt64 = 0
+                while q < element.end {
+                    let child = try readHeader(input, at: q, end: element.end)
+                    switch child.id {
+                    case EBML.IDs.seekHead, EBML.IDs.tags, EBML.IDs.attachments, 0xEC:
+                        pendingVoid += child.end - q
+                    default:
+                        if pendingVoid > 0 {
+                            try writeVoid(length: pendingVoid, to: output)
+                            pendingVoid = 0
+                        }
+                        try MediaFileIO.copy(input, to: output, range: q..<child.end)
+                    }
+                    q = child.end
+                }
+                // Trailing metadata needs no placeholder: reuse its space so
+                // repeated edits don't append another dead tag/artwork block.
+                try output.write(contentsOf: buildTagsElement(entries: entries))
+                if let cover {
+                    try output.write(contentsOf: buildAttachmentsElement(cover: cover))
+                }
+                try MediaFileIO.copy(input, to: output, range: element.end..<fileSize)
                 break
             }
-            p = bodyEnd
+            guard foundSegment else { throw MatroskaError.notMatroska }
         }
-        guard segmentIDStart >= 0 else { throw MatroskaError.notMatroska }
+    }
 
-        // Collect Segment children, dropping SeekHead/Tags/Attachments. We keep
-        // the raw bytes of every other child to preserve them verbatim.
-        var keptChildrenBytes = Data()
-        var q = segmentBodyStart
-        while q < segmentBodyEnd {
-            guard let (cid, cidLen) = EBML.readID(original, at: q),
-                  let (csize, csizeLen, _) = EBML.readSize(original, at: q + cidLen)
-            else { break }
-            let bodyStart = q + cidLen + csizeLen
-            let bodyEnd = min(bodyStart + Int(csize), segmentBodyEnd)
-            switch cid {
-            case EBML.IDs.seekHead, EBML.IDs.tags, EBML.IDs.attachments:
-                break // drop
-            default:
-                keptChildrenBytes.append(original.subdata(in: q..<bodyEnd))
+    private static func readHeader(_ input: FileHandle, at offset: UInt64, end: UInt64)
+        throws -> (id: UInt64, idLength: Int, sizeLength: Int, body: UInt64, end: UInt64) {
+        let header = try MediaFileIO.read(input, at: offset, count: Int(min(16, end - offset)))
+        guard let (id, idLength) = EBML.readID(header, at: 0),
+              let (size, sizeLength, unknown) = EBML.readSize(header, at: idLength)
+        else { throw MatroskaError.truncated }
+        let body = offset + UInt64(idLength + sizeLength)
+        guard body <= end, unknown || size <= end - body else { throw MatroskaError.truncated }
+        return (id, idLength, sizeLength, body, unknown ? end : body + size)
+    }
+
+    private static func writeVoid(length: UInt64, to output: FileHandle) throws {
+        for width in 1...8 where length >= UInt64(width + 1) {
+            let payload = length - UInt64(width + 1)
+            if payload < (UInt64(1) << (7 * width)) - 1 {
+                var header = Data([0xEC])
+                var size = [UInt8](repeating: 0, count: width)
+                for i in 0..<width {
+                    size[width - i - 1] = UInt8(truncatingIfNeeded: payload >> (8 * i))
+                }
+                size[0] |= UInt8(0x80 >> (width - 1))
+                header.append(contentsOf: size)
+                try output.write(contentsOf: header)
+                try MediaFileIO.writeZeros(payload, to: output)
+                return
             }
-            q = bodyEnd
         }
-
-        // Build new Tags + Attachments and assemble a Segment with unknown
-        // length (one VINT byte = 0xFF) so we never need to compute its size.
-        var newSegmentBody = Data()
-        newSegmentBody.append(keptChildrenBytes)
-        newSegmentBody.append(buildTagsElement(entries: entries))
-        if let cover {
-            newSegmentBody.append(buildAttachmentsElement(cover: cover))
-        }
-
-        var out = Data()
-        out.append(original.subdata(in: 0..<ebmlHeaderEnd))   // EBML header verbatim
-        out.append(EBML.IDs.segmentBytes)                     // Segment ID
-        out.append(0xFF)                                       // unknown-size VINT
-        out.append(newSegmentBody)
-
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        try out.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        throw MatroskaError.truncated
     }
 
     // MARK: - Element builders

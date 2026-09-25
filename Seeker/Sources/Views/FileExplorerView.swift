@@ -54,6 +54,18 @@ struct FileContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottomTrailing) {
+            if let status = viewModel.fileMutationStatus {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(status).font(.caption)
+                }
+                .padding(10)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .padding(8)
+                .allowsHitTesting(false)
+            }
+        }
         .alert("Error", isPresented: $viewModel.showError) {
             Button("OK") { viewModel.showError = false }
         } message: {
@@ -390,7 +402,7 @@ struct FileContentView: View {
     ///   using this pane's current sort order and hidden-file setting.
     /// - If a single file is clicked, use all previewable items in the
     ///   current listing so the slideshow can begin at that file.
-    fileprivate func autoPreviewURLs(forContext file: FileItem) -> [URL] {
+    fileprivate func autoPreviewURLs(forContext file: FileItem) async throws -> [URL] {
         let selectedIDs = viewModel.selectedFileIDs
         if selectedIDs.count >= 2 {
             // Walk `viewModel.files` (already sorted in display order) and
@@ -403,7 +415,7 @@ struct FileContentView: View {
             }
         }
         if file.isDirectory && !file.isPackage {
-            let children = viewModel.sortedChildren(of: file.url)
+            let children = try await viewModel.sortedChildren(of: file.url)
             return children
                 .filter { !$0.isDirectory || $0.isPackage }
                 .map(\.url)
@@ -544,14 +556,23 @@ struct FileContentView: View {
         // folder right-clicks — is collected only at click time.
         if hasAutoPreviewCandidates(forContext: file) {
             Button("Auto Preview") {
-                let autoFiles = autoPreviewURLs(forContext: file)
-                guard autoFiles.count >= 2 else { return }
-                AppDelegate.shared?.startAutoPreview(
-                    urls: autoFiles,
-                    startingAt: file.url,
-                    interval: SettingsManager.shared.autoPreviewInterval,
-                    appState: appState
-                )
+                Task {
+                    do {
+                        let autoFiles = try await autoPreviewURLs(forContext: file)
+                        guard autoFiles.count >= 2 else { return }
+                        AppDelegate.shared?.startAutoPreview(
+                            urls: autoFiles,
+                            startingAt: file.url,
+                            interval: SettingsManager.shared.autoPreviewInterval,
+                            appState: appState
+                        )
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        viewModel.errorMessage = "Could not load preview files: \(error.localizedDescription)"
+                        viewModel.showError = true
+                    }
+                }
             }
         }
 
@@ -1751,4 +1772,3 @@ final class ColumnBrowserCache {
 // Moved to TextPreviewPanelController.swift
 
 // MARK: - Keyboard Handling (unused modifier kept for backward compat)
-

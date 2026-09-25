@@ -135,50 +135,36 @@ struct MP4File {
 
     fileprivate func writeReplacingMetadata(entries: [(key: String, value: String)],
                                             cover: Cover?) throws {
-        // Memory-map the input so very large containers (multi-GB MP4 video)
-        // don't cause a full-file copy into the resident set just to read the
-        // moov bytes. The kernel pages content in on demand; subdata() and
-        // the rebuild path then allocate only what they need.
-        let original = try Data(contentsOf: url, options: .mappedIfSafe)
-
         guard let moovIdx = topAtoms.firstIndex(where: { $0.type == "moov" }) else {
             throw NSError(domain: "MediaTagger.MP4", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "No moov atom"])
         }
         let moov = topAtoms[moovIdx]
-        let oldMoovBytes = original.subdata(in: Int(moov.start)..<Int(moov.end))
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        let oldMoovBytes = try MediaFileIO.read(input, at: moov.start,
+                                               count: Int(moov.end - moov.start))
 
         let newIlst = Self.buildIlst(entries: entries, cover: cover)
         let newMoov = Self.rebuildMoov(originalMoov: oldMoovBytes, newIlst: newIlst)
 
         let delta = Int64(newMoov.count) - Int64(oldMoovBytes.count)
 
-        // Determine if any top-level atom positioned AFTER moov holds media
-        // pointed to by stco/co64 (typically `mdat`). If so, patch offsets.
+        // Only media after moov shifts; offsets into earlier mdats must stay
+        // unchanged even when a container has media on both sides of moov.
         let mdatShifts = topAtoms.contains { $0.start > moov.start && $0.type == "mdat" }
         let patchedMoov: Data
         if mdatShifts && delta != 0 {
-            patchedMoov = Self.patchChunkOffsets(in: newMoov, delta: delta)
+            patchedMoov = Self.patchChunkOffsets(in: newMoov, delta: delta, shiftedFrom: moov.end)
         } else {
             patchedMoov = newMoov
         }
 
-        // Reassemble: top-level atoms in order, swapping moov for patchedMoov.
-        var out = Data()
-        out.reserveCapacity(original.count + max(0, Int(delta)))
-        for (i, atom) in topAtoms.enumerated() {
-            if i == moovIdx {
-                out.append(patchedMoov)
-            } else {
-                out.append(original.subdata(in: Int(atom.start)..<Int(atom.end)))
-            }
+        try MediaFileIO.rewrite(url) { source, size, output in
+            try MediaFileIO.copy(source, to: output, range: 0..<moov.start)
+            try output.write(contentsOf: patchedMoov)
+            try MediaFileIO.copy(source, to: output, range: moov.end..<size)
         }
-
-        // Atomic replace.
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        try out.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
     }
 
     // MARK: - Building moov / ilst
@@ -242,7 +228,7 @@ struct MP4File {
     /// from the original. If udta or meta is missing, they are created.
     private static func rebuildMoov(originalMoov: Data, newIlst: Data) -> Data {
         // Parse just enough of moov to find udta & meta.
-        let moovHeaderSize = 8
+        let moovHeaderSize = originalMoov.prefix(4).beUInt32 == 1 ? 16 : 8
         let moovBody = originalMoov.subdata(in: moovHeaderSize..<originalMoov.count)
         let children = AtomParser.parseInMemorySiblings(moovBody)
 
@@ -405,17 +391,17 @@ struct MP4File {
 
     // MARK: - Patch chunk offsets
 
-    /// Walk `moov`'s descendants in-place (in the rebuilt bytes) and add `delta`
-    /// to every entry of every `stco` (32-bit) / `co64` (64-bit) chunk-offset
-    /// table. Top-level atom order is preserved, so chunk offsets simply shift.
-    private static func patchChunkOffsets(in moovData: Data, delta: Int64) -> Data {
+    /// Patch offsets into ranges after the original moov. Top-level atom order
+    /// is preserved, so media before moov retains its original offsets.
+    private static func patchChunkOffsets(in moovData: Data, delta: Int64, shiftedFrom: UInt64) -> Data {
         var data = moovData
         // Walk any nested atoms; visit `stco` and `co64` payloads.
-        patchAtomTreeInPlace(data: &data, start: 0, end: data.count, delta: delta)
+        patchAtomTreeInPlace(data: &data, start: 0, end: data.count, delta: delta, shiftedFrom: shiftedFrom)
         return data
     }
 
-    private static func patchAtomTreeInPlace(data: inout Data, start: Int, end: Int, delta: Int64) {
+    private static func patchAtomTreeInPlace(data: inout Data, start: Int, end: Int,
+                                            delta: Int64, shiftedFrom: UInt64) {
         var p = start
         while p + 8 <= end {
             let size = Int(data.subdata(in: p..<p+4).beUInt32)
@@ -425,11 +411,14 @@ struct MP4File {
             let payloadEnd   = p + size
             switch type {
             case "moov", "trak", "mdia", "minf", "stbl", "edts", "udta":
-                patchAtomTreeInPlace(data: &data, start: payloadStart, end: payloadEnd, delta: delta)
+                patchAtomTreeInPlace(data: &data, start: payloadStart, end: payloadEnd,
+                                    delta: delta, shiftedFrom: shiftedFrom)
             case "stco":
-                patchStco32(data: &data, start: payloadStart, end: payloadEnd, delta: delta)
+                patchStco32(data: &data, start: payloadStart, end: payloadEnd,
+                            delta: delta, shiftedFrom: shiftedFrom)
             case "co64":
-                patchCo64(data: &data, start: payloadStart, end: payloadEnd, delta: delta)
+                patchCo64(data: &data, start: payloadStart, end: payloadEnd,
+                          delta: delta, shiftedFrom: shiftedFrom)
             default:
                 break
             }
@@ -437,7 +426,8 @@ struct MP4File {
         }
     }
 
-    private static func patchStco32(data: inout Data, start: Int, end: Int, delta: Int64) {
+    private static func patchStco32(data: inout Data, start: Int, end: Int,
+                                    delta: Int64, shiftedFrom: UInt64) {
         // 4 bytes version+flags, 4 bytes entry_count, then N * 4 bytes offsets
         guard start + 8 <= end else { return }
         let count = Int(data.subdata(in: start+4..<start+8).beUInt32)
@@ -445,13 +435,14 @@ struct MP4File {
         for _ in 0..<count {
             guard off + 4 <= end else { return }
             let cur = Int64(data.subdata(in: off..<off+4).beUInt32)
-            let new = UInt32(truncatingIfNeeded: cur + delta)
+            let new = UInt32(truncatingIfNeeded: cur + (UInt64(cur) >= shiftedFrom ? delta : 0))
             data.replaceSubrange(off..<off+4, with: new.beBytes)
             off += 4
         }
     }
 
-    private static func patchCo64(data: inout Data, start: Int, end: Int, delta: Int64) {
+    private static func patchCo64(data: inout Data, start: Int, end: Int,
+                                 delta: Int64, shiftedFrom: UInt64) {
         guard start + 8 <= end else { return }
         let count = Int(data.subdata(in: start+4..<start+8).beUInt32)
         var off = start + 8
@@ -459,7 +450,8 @@ struct MP4File {
             guard off + 8 <= end else { return }
             let cur = Int64(bitPattern: data.subdata(in: off..<off+8).beUInt64)
             // A crafted offset near Int64.max would trap on plain addition.
-            let (sum, overflow) = cur.addingReportingOverflow(delta)
+            let (sum, overflow) = cur.addingReportingOverflow(
+                UInt64(bitPattern: cur) >= shiftedFrom ? delta : 0)
             guard !overflow else { return }
             let new = UInt64(bitPattern: sum)
             data.replaceSubrange(off..<off+8, with: new.beBytes)

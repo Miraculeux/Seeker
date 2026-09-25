@@ -497,6 +497,7 @@ class PaneState {
 
     func closeTab(at index: Int) {
         guard tabs.count > 1 else { return }
+        tabs[index].cancelLoading()
         tabs.remove(at: index)
         if activeTabIndex >= tabs.count {
             activeTabIndex = tabs.count - 1

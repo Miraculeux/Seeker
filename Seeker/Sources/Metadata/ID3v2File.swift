@@ -21,29 +21,43 @@ enum ID3Error: Error, LocalizedError {
     }
 }
 
-/// In-memory representation of an MP3 file's ID3v2 tag plus the rest of the
-/// file body (audio + optional ID3v1 trailer) preserved verbatim.
+/// ID3v2 tag frames. In-memory parsing can optionally retain the audio body;
+/// disk reads load only the tag, and disk writes stream the unchanged body.
 struct ID3v2File {
     let url: URL
     /// Frames in iteration order. Frame IDs are normalised to 4-char ASCII
     /// (v2.2 not supported — vanishingly rare).
     var frames: [ID3Frame]
-    /// Bytes after the ID3v2 tag (audio + ID3v1 if present).
+    /// Optional body retained by `parse`; disk `read` leaves this empty.
     var body: Data
 
     // MARK: Read
 
     static func read(_ url: URL) throws -> ID3v2File {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        return try parse(data, url: url)
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        let size = try input.seekToEnd()
+        let length = try tagLength(input, fileSize: size)
+        guard length > 0 else { return ID3v2File(url: url, frames: [], body: Data()) }
+        return try parse(MediaFileIO.read(input, at: 0, count: Int(length)),
+                         url: url, includeBody: false)
     }
 
-    static func parse(_ data: Data, url: URL) throws -> ID3v2File {
+    private static func tagLength(_ input: FileHandle, fileSize: UInt64) throws -> UInt64 {
+        guard fileSize >= 10 else { throw ID3Error.truncated }
+        let header = try MediaFileIO.read(input, at: 0, count: 10)
+        guard header.starts(with: [0x49, 0x44, 0x33]) else { return 0 }
+        let length = UInt64(syncsafe(header[6], header[7], header[8], header[9])) + 10
+        guard length <= fileSize else { throw ID3Error.truncated }
+        return length
+    }
+
+    static func parse(_ data: Data, url: URL, includeBody: Bool = true) throws -> ID3v2File {
         guard data.count >= 10 else { throw ID3Error.truncated }
         let hasID3 = data[0] == 0x49 && data[1] == 0x44 && data[2] == 0x33  // "ID3"
         guard hasID3 else {
             // No ID3v2 tag at all — return an empty one and treat the whole file as body.
-            return ID3v2File(url: url, frames: [], body: data)
+            return ID3v2File(url: url, frames: [], body: includeBody ? data : Data())
         }
         let major = data[3]
         let _    = data[4]   // revision (ignored)
@@ -83,7 +97,7 @@ struct ID3v2File {
             p = dataStart + size
         }
 
-        let body = data.subdata(in: end..<data.count)
+        let body = includeBody ? data.subdata(in: end..<data.count) : Data()
         return ID3v2File(url: url, frames: frames, body: body)
     }
 
@@ -161,10 +175,6 @@ struct ID3v2File {
         entries: [(key: String, value: String)],
         cover: (data: Data, mime: String)?
     ) throws {
-        // Read existing body so audio + ID3v1 are preserved.
-        let existing = try ID3v2File.read(url)
-        let body = existing.body
-
         // Build frames.
         var newFrames: [ID3Frame] = []
 
@@ -208,12 +218,17 @@ struct ID3v2File {
         }
 
         let tag = encodeTag(frames: newFrames, padding: 1024)
-        var out = Data()
-        out.reserveCapacity(tag.count + body.count)
-        out.append(tag)
-        out.append(body)
-
-        try atomicWrite(out, to: url)
+        do {
+            try MediaFileIO.rewrite(url) { input, size, output in
+                let audioOffset = try tagLength(input, fileSize: size)
+                try output.write(contentsOf: tag)
+                try MediaFileIO.copy(input, to: output, range: audioOffset..<size)
+            }
+        } catch let error as ID3Error {
+            throw error
+        } catch {
+            throw ID3Error.writeFailed(error.localizedDescription)
+        }
     }
 
     /// Encodes an ID3v2.3 tag (header + frames + padding).
@@ -237,17 +252,6 @@ struct ID3v2File {
         return out
     }
 
-    private static func atomicWrite(_ data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        do {
-            try data.write(to: tmp, options: .atomic)
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-        } catch {
-            try? FileManager.default.removeItem(at: tmp)
-            throw ID3Error.writeFailed(error.localizedDescription)
-        }
-    }
 }
 
 // MARK: - Frame

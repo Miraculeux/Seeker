@@ -81,17 +81,30 @@ final class FileSearcher {
         let includeHidden = self.includeHidden
         let limit = self.resultLimit
         let task = Task { [weak self] in
-            let found = await Task.detached(priority: .userInitiated) { () -> [Result] in
+            do {
+                let found: [Result]
                 switch mode {
                 case .name:
-                    return Self.searchByName(root: root, query: trimmed, includeHidden: includeHidden, limit: limit)
+                    found = try await BackgroundWork.run {
+                        Self.searchByName(root: root, query: trimmed, includeHidden: includeHidden, limit: limit)
+                    }
                 case .contents:
-                    return Self.searchByContents(root: root, query: trimmed, limit: limit)
+                    let worker = Task.detached(priority: .userInitiated) {
+                        try await Self.searchByContents(root: root, query: trimmed, limit: limit)
+                    }
+                    found = try await withTaskCancellationHandler {
+                        try await worker.value
+                    } onCancel: {
+                        worker.cancel()
+                    }
                 }
-            }.value
-            guard let self, !Task.isCancelled else { return }
-            self.results = found
-            self.status = .done(count: found.count)
+                guard let self, !Task.isCancelled else { return }
+                self.results = found
+                self.status = .done(count: found.count)
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.status = .failed(error.localizedDescription)
+            }
         }
         currentTask = task
     }
@@ -117,10 +130,8 @@ final class FileSearcher {
 
         let rootPath = root.standardizedFileURL.path
         var out: [Result] = []
-        var counter = 0
         while let url = enumerator.nextObject() as? URL {
-            counter &+= 1
-            if counter & 0x3FF == 0, Task.isCancelled { return out }
+            if Task.isCancelled { return [] }
             guard url.lastPathComponent.localizedCaseInsensitiveContains(query) else { continue }
             let rv = try? url.resourceValues(forKeys: Set(keys))
             let isDir = rv?.isDirectory ?? false
@@ -134,6 +145,7 @@ final class FileSearcher {
             ))
             if out.count >= limit { break }
         }
+        guard !Task.isCancelled else { return [] }
         return out.sorted { $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending }
     }
 
@@ -143,7 +155,7 @@ final class FileSearcher {
         root: URL,
         query: String,
         limit: Int
-    ) -> [Result] {
+    ) async throws -> [Result] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
         // Match indexed text content, scoped to the root. Backslashes must be
@@ -156,15 +168,25 @@ final class FileSearcher {
 
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
+        process.standardError = FileHandle.nullDevice
+        let data = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
             try process.run()
-        } catch {
-            return []
+            // Cancellation can race process startup.
+            if Task.isCancelled, process.isRunning { process.terminate() }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            try Task.checkCancellation()
+            guard process.terminationStatus == 0 else {
+                throw NSError(
+                    domain: "Seeker.FileSearcher", code: Int(process.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: "Spotlight search failed (exit \(process.terminationStatus))."]
+                )
+            }
+            return data
+        } onCancel: {
+            if process.isRunning { process.terminate() }
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        if Task.isCancelled { return [] }
 
         let rootPath = root.standardizedFileURL.path
         let fm = FileManager.default
@@ -173,6 +195,7 @@ final class FileSearcher {
             .prefix(limit)
         var out: [Result] = []
         for line in lines {
+            try Task.checkCancellation()
             let path = String(line)
             guard !path.isEmpty else { continue }
             let url = URL(fileURLWithPath: path)

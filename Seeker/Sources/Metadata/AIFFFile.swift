@@ -31,23 +31,27 @@ struct AIFFFile {
     // MARK: - Read
 
     static func read(_ url: URL) throws -> AIFFFile {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard data.count >= 12 else { throw AIFFError.truncated }
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        let fileSize = try input.seekToEnd()
+        guard fileSize >= 12 else { throw AIFFError.truncated }
+        let data = try MediaFileIO.read(input, at: 0, count: 12)
         guard data[0] == 0x46, data[1] == 0x4F, data[2] == 0x52, data[3] == 0x4D
         else { throw AIFFError.notAIFF }                           // "FORM"
         let formType = String(data: data.subdata(in: 8..<12), encoding: .ascii) ?? ""
         guard formType == "AIFF" || formType == "AIFC" else { throw AIFFError.notAIFF }
 
-        var p = 12
+        var p: UInt64 = 12
         var id3: Data?
-        while p + 8 <= data.count {
-            let id = String(data: data.subdata(in: p..<p+4), encoding: .ascii) ?? ""
-            let size = Int(beU32(data, p + 4))
+        while p + 8 <= fileSize {
+            let header = try MediaFileIO.read(input, at: p, count: 8)
+            let id = String(data: header.prefix(4), encoding: .ascii) ?? ""
+            let size = UInt64(beU32(header, 4))
             let payloadStart = p + 8
             let payloadEnd = payloadStart + size
-            guard payloadEnd <= data.count else { break }
+            guard payloadEnd <= fileSize else { throw AIFFError.truncated }
             if id == "ID3 " {
-                id3 = data.subdata(in: payloadStart..<payloadEnd)
+                id3 = try MediaFileIO.read(input, at: payloadStart, count: Int(size))
             }
             // Advance past payload + 1-byte pad if odd.
             p = payloadEnd + (size & 1)
@@ -71,46 +75,34 @@ struct AIFFFile {
     static func write(url: URL,
                       entries: [(key: String, value: String)],
                       cover: (data: Data, mime: String)?) throws {
-        let original = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard original.count >= 12,
-              original[0] == 0x46, original[1] == 0x4F,
-              original[2] == 0x52, original[3] == 0x4D
-        else { throw AIFFError.notAIFF }
-        let formType = original.subdata(in: 8..<12)
-
-        // Build the new ID3v2 tag payload by reusing the MP3 path.
         let newID3 = encodedID3(entries: entries, cover: cover)
-
-        // Rebuild chunk list: keep every non-ID3 chunk's bytes (including its
-        // header and pad byte), and emit our new "ID3 " chunk last.
-        var chunksOut = Data()
-        var p = 12
-        while p + 8 <= original.count {
-            let id = String(data: original.subdata(in: p..<p+4), encoding: .ascii) ?? ""
-            let size = Int(beU32(original, p + 4))
-            let payloadEnd = p + 8 + size
-            guard payloadEnd <= original.count else { break }
-            let chunkEnd = payloadEnd + (size & 1)        // include pad byte if any
-            if id != "ID3 " {
-                chunksOut.append(original.subdata(in: p..<min(chunkEnd, original.count)))
+        try MediaFileIO.rewrite(url) { input, fileSize, output in
+            guard fileSize >= 12 else { throw AIFFError.notAIFF }
+            let header = try MediaFileIO.read(input, at: 0, count: 12)
+            guard header.starts(with: [0x46, 0x4F, 0x52, 0x4D]) else { throw AIFFError.notAIFF }
+            try output.write(contentsOf: header)
+            var p: UInt64 = 12
+            while p + 8 <= fileSize {
+                let chunk = try MediaFileIO.read(input, at: p, count: 8)
+                let size = UInt64(beU32(chunk, 4))
+                let payloadEnd = p + 8 + size
+                guard payloadEnd <= fileSize else { throw AIFFError.truncated }
+                let end = min(payloadEnd + (size & 1), fileSize)
+                if !chunk.starts(with: Data("ID3 ".utf8)) {
+                    try MediaFileIO.copy(input, to: output, range: p..<end)
+                }
+                p = end
             }
-            p = chunkEnd
+            try MediaFileIO.copy(input, to: output, range: p..<fileSize)
+            try output.write(contentsOf: Data("ID3 ".utf8))
+            try output.write(contentsOf: beU32Bytes(UInt32(newID3.count)))
+            try output.write(contentsOf: newID3)
+            if newID3.count & 1 == 1 { try output.write(contentsOf: Data([0])) }
+            let end = try output.offset()
+            guard let formSize = UInt32(exactly: end - 8) else { throw AIFFError.truncated }
+            try output.seek(toOffset: 4)
+            try output.write(contentsOf: beU32Bytes(formSize))
         }
-
-        // Append new ID3 chunk.
-        chunksOut.append(Data("ID3 ".utf8))
-        chunksOut.append(beU32Bytes(UInt32(newID3.count)))
-        chunksOut.append(newID3)
-        if newID3.count & 1 == 1 { chunksOut.append(0) }   // pad to even
-
-        // Final FORM size = 4 ("AIFF"/"AIFC") + chunks.
-        var out = Data()
-        out.append(Data("FORM".utf8))
-        out.append(beU32Bytes(UInt32(4 + chunksOut.count)))
-        out.append(formType)
-        out.append(chunksOut)
-
-        try atomicWrite(out, to: url)
     }
 
     private static func encodedID3(entries: [(key: String, value: String)],
@@ -156,17 +148,6 @@ struct AIFFFile {
         return ID3v2File.encodeTag(frames: newFrames, padding: 1024)
     }
 
-    private static func atomicWrite(_ data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        do {
-            try data.write(to: tmp, options: .atomic)
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-        } catch {
-            try? FileManager.default.removeItem(at: tmp)
-            throw error
-        }
-    }
 }
 
 // MARK: - helpers (file-private to avoid clashing with other parsers)

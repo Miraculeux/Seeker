@@ -103,33 +103,20 @@ struct DSFFile {
     static func write(url: URL,
                       entries: [(key: String, value: String)],
                       cover: (data: Data, mime: String)?) throws {
-        let original = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard original.count >= 28,
-              original[0] == 0x44, original[1] == 0x53,
-              original[2] == 0x44, original[3] == 0x20
-        else { throw DSFError.notDSF }
-
-        let oldMetaPtr = leU64(original, 20)
-        // Truncate any existing ID3 tag — the prefix up to oldMetaPtr is the
-        // DSD/fmt/data chunks we want to keep verbatim. If no tag was present,
-        // keep everything (which is the same as the file body).
-        let bodyEnd = (oldMetaPtr > 0 && oldMetaPtr <= UInt64(original.count))
-            ? Int(oldMetaPtr) : original.count
-        var out = original.subdata(in: 0..<bodyEnd)
-
-        // Build fresh ID3v2 tag bytes (mirror ID3v2File.write's frame-building).
         let id3 = encodedID3(entries: entries, cover: cover)
-        let newMetaPtr = UInt64(out.count)
-        out.append(id3)
-
-        // Patch DSD chunk header: total file size at [12..20), metadata pointer at [20..28).
-        out.replaceSubrange(12..<20, with: leU64Bytes(UInt64(out.count)))
-        out.replaceSubrange(20..<28, with: leU64Bytes(newMetaPtr))
-
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        try out.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        try MediaFileIO.rewrite(url) { input, size, output in
+            guard size >= 28 else { throw DSFError.notDSF }
+            var header = try MediaFileIO.read(input, at: 0, count: 28)
+            guard header.starts(with: [0x44, 0x53, 0x44, 0x20]) else { throw DSFError.notDSF }
+            let oldMetaPtr = leU64(header, 20)
+            let bodyEnd = (oldMetaPtr > 0 && oldMetaPtr <= size) ? oldMetaPtr : size
+            guard bodyEnd >= 28 else { throw DSFError.truncated }
+            header.replaceSubrange(12..<20, with: leU64Bytes(bodyEnd + UInt64(id3.count)))
+            header.replaceSubrange(20..<28, with: leU64Bytes(bodyEnd))
+            try output.write(contentsOf: header)
+            try MediaFileIO.copy(input, to: output, range: 28..<bodyEnd)
+            try output.write(contentsOf: id3)
+        }
     }
 
     private static func encodedID3(entries: [(key: String, value: String)],

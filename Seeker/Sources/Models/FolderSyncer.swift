@@ -132,9 +132,9 @@ final class FolderSyncer {
         let hidden = includeHidden
         let task = Task { [weak self] in
             guard let self else { return }
-            let plan = await Task.detached(priority: .userInitiated) { () -> [Action] in
+            guard let plan = try? await BackgroundWork.run({
                 Self.buildPlan(a: a, b: b, direction: dir, includeHidden: hidden)
-            }.value
+            }) else { return }
             if Task.isCancelled { return }
             self.actions = plan
             self.status = .ready
@@ -154,12 +154,16 @@ final class FolderSyncer {
         direction: Direction,
         includeHidden: Bool
     ) -> [Action] {
+        guard !Task.isCancelled else { return [] }
         let mapA = scan(a, includeHidden: includeHidden)
+        guard !Task.isCancelled else { return [] }
         let mapB = scan(b, includeHidden: includeHidden)
+        guard !Task.isCancelled else { return [] }
         var plan: [Action] = []
 
         // Files in A (and possibly B).
         for (rel, metaA) in mapA {
+            if Task.isCancelled { return [] }
             if let metaB = mapB[rel] {
                 // Present on both sides — compare.
                 if sameFile(metaA, metaB) { continue }
@@ -192,6 +196,7 @@ final class FolderSyncer {
 
         // Files only in B.
         for (rel, metaB) in mapB where mapA[rel] == nil {
+            if Task.isCancelled { return [] }
             switch direction {
             case .mirror:
                 plan.append(Action(kind: .deleteB, relativePath: rel, source: nil,
@@ -204,6 +209,7 @@ final class FolderSyncer {
             }
         }
 
+        guard !Task.isCancelled else { return [] }
         return plan.sorted {
             if $0.kind.sortOrder != $1.kind.sortOrder {
                 return $0.kind.sortOrder < $1.kind.sortOrder
@@ -233,10 +239,8 @@ final class FolderSyncer {
         let rootPath = root.standardizedFileURL.path
         let keySet = Set(keys)
         var map: [String: FileMeta] = [:]
-        var counter = 0
         while let url = enumerator.nextObject() as? URL {
-            counter &+= 1
-            if counter & 0x3FF == 0, Task.isCancelled { return map }
+            if Task.isCancelled { return [:] }
             let rv = try? url.resourceValues(forKeys: keySet)
             guard rv?.isRegularFile == true else { continue }
             let p = url.standardizedFileURL.path
@@ -279,17 +283,26 @@ final class FolderSyncer {
             // file name so the user sees what's being removed.
             var deletedOK = 0
             var deletedFail = 0
+            defer {
+                if deletedOK > 0 {
+                    NotificationCenter.default.post(name: .filesDidChange, object: nil)
+                }
+            }
             for action in deletes {
                 if Task.isCancelled { self.currentActivity = nil; self.status = .cancelled; return }
                 self.currentActivity = Activity(kind: .deleteB, name: action.relativePath)
-                let ok = await Task.detached(priority: .userInitiated) { Self.perform(action) }.value
+                guard let ok = try? await BackgroundWork.run({ Self.perform(action) }) else {
+                    self.currentActivity = nil
+                    self.status = .cancelled
+                    return
+                }
                 if ok { deletedOK += 1 } else { deletedFail += 1 }
             }
             self.currentActivity = nil
+            guard !Task.isCancelled else { self.status = .cancelled; return }
 
             guard !plan.isEmpty else {
                 self.status = .finished(applied: deletedOK, failed: deletedFail)
-                if deletedOK > 0 { NotificationCenter.default.post(name: .filesDidChange, object: nil) }
                 return
             }
 
@@ -297,7 +310,7 @@ final class FolderSyncer {
             // engine the main window uses): byte-level progress, speed/ETA,
             // pause and throttle. Copies overwrite silently (sync semantics);
             // the manager surfaces the current file name as it works.
-            self.activeOperation = FileOperationManager.shared.startPlannedCopy(plan) { [weak self] op in
+            self.activeOperation = FileOperationManager.shared.startPlannedCopy(plan) { [weak self, deletedOK, deletedFail] op in
                 guard let self else { return }
                 self.activeOperation = nil
                 if op.isCancelled {

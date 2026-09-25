@@ -23,6 +23,10 @@ struct DuplicateFinderView: View {
     /// The duplicate file the user clicked in the left list; drives the
     /// embedded explorer on the right to navigate to and highlight it.
     @State private var focusedURL: URL?
+    @State private var deletionTask: Task<Void, Never>?
+    @State private var deletionCompleted = 0
+    @State private var deletionTotal = 0
+    @State private var deletionError: String?
 
     init(rootURLs: [URL]) {
         _roots = State(initialValue: rootURLs)
@@ -33,6 +37,7 @@ struct DuplicateFinderView: View {
             header
             Divider()
             rootsBar
+                .disabled(deletionTask != nil)
             Divider()
             Group {
                 switch finder.status {
@@ -55,6 +60,7 @@ struct DuplicateFinderView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .disabled(deletionTask != nil)
 
             Divider()
             footer
@@ -70,7 +76,8 @@ struct DuplicateFinderView: View {
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            handleFolderDrop(providers)
+            guard deletionTask == nil else { return false }
+            return handleFolderDrop(providers)
         }
         .onAppear {
             finder.scan(roots: roots)
@@ -78,6 +85,18 @@ struct DuplicateFinderView: View {
         }
         .onChange(of: finder.status) { _, newValue in
             if case .done = newValue { initializePreselection() }
+        }
+        .onDisappear {
+            finder.cancel()
+            deletionTask?.cancel()
+        }
+        .alert("Some files could not be moved to Trash", isPresented: Binding(
+            get: { deletionError != nil },
+            set: { if !$0 { deletionError = nil } }
+        )) {
+            Button("OK") { deletionError = nil }
+        } message: {
+            Text(deletionError ?? "")
         }
     }
 
@@ -305,7 +324,14 @@ struct DuplicateFinderView: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            if case .scanning = finder.status {
+            if deletionTask != nil {
+                ProgressView(value: Double(deletionCompleted), total: Double(max(1, deletionTotal)))
+                    .frame(width: 100)
+                Text("Trashing \(deletionCompleted) / \(deletionTotal)")
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                Button("Stop") { deletionTask?.cancel() }
+            } else if case .scanning = finder.status {
                 Button("Cancel") { finder.cancel() }
             } else if case .hashingHeads = finder.status {
                 Button("Cancel") { finder.cancel() }
@@ -321,7 +347,7 @@ struct DuplicateFinderView: View {
                 trashSelected()
             }
             .keyboardShortcut(.delete, modifiers: [])
-            .disabled(toDelete.isEmpty)
+            .disabled(toDelete.isEmpty || deletionTask != nil)
             Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
         }
@@ -420,6 +446,7 @@ struct DuplicateFinderView: View {
     }
 
     private func rescan() {
+        guard deletionTask == nil else { return }
         toDelete = []
         expanded = []
         focusedURL = nil
@@ -472,7 +499,7 @@ struct DuplicateFinderView: View {
 
     private func trashSelected() {
         let urls = Array(toDelete)
-        guard !urls.isEmpty else { return }
+        guard !urls.isEmpty, deletionTask == nil else { return }
         let alert = NSAlert()
         alert.messageText = "Move \(urls.count) duplicate\(urls.count == 1 ? "" : "s") to Trash?"
         alert.informativeText = "The selected files will be moved to the Trash. You can recover them from there."
@@ -481,30 +508,57 @@ struct DuplicateFinderView: View {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let fm = FileManager.default
-        var trashed: Set<URL> = []
-        for url in urls {
-            do {
-                try fm.trashItem(at: url, resultingItemURL: nil)
-                trashed.insert(url)
-            } catch {
-                print("[Seeker] Failed to trash \(url.path): \(error)")
+        deletionCompleted = 0
+        deletionTotal = urls.count
+        deletionError = nil
+        deletionTask = Task {
+            let worker = Task.detached(priority: .userInitiated) {
+                var trashed: Set<URL> = []
+                var errors: [String] = []
+                var failed = 0
+                var lastProgress = ContinuousClock.now
+                for (index, url) in urls.enumerated() {
+                    if Task.isCancelled { break }
+                    do {
+                        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                        trashed.insert(url)
+                    } catch {
+                        failed += 1
+                        if errors.count < 10 {
+                            errors.append("\(url.path): \(error.localizedDescription)")
+                        }
+                    }
+                    let now = ContinuousClock.now
+                    if now - lastProgress >= .milliseconds(100) || index + 1 == urls.count {
+                        let completed = index + 1
+                        await MainActor.run { deletionCompleted = completed }
+                        lastProgress = now
+                    }
+                }
+                return (trashed: trashed, errors: errors, failed: failed)
+            }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            // Even a cancelled batch must reconcile operations already completed.
+            finder.groups = finder.groups.compactMap { group in
+                let remaining = group.urls.filter { !result.trashed.contains($0) }
+                return remaining.count > 1
+                    ? DuplicateFinder.Group(fileSize: group.fileSize, urls: remaining)
+                    : nil
+            }
+            toDelete.subtract(result.trashed)
+            if let focusedURL, result.trashed.contains(focusedURL) { self.focusedURL = nil }
+            if result.failed > 0 {
+                deletionError = "\(result.failed) file(s) failed.\n" + result.errors.joined(separator: "\n")
+            }
+            deletionTask = nil
+            if !result.trashed.isEmpty {
+                NotificationCenter.default.post(name: .filesDidChange, object: nil)
             }
         }
-
-        // Drop trashed files from the displayed groups; collapse groups
-        // that no longer have \u2265 2 members.
-        var newGroups: [DuplicateFinder.Group] = []
-        for group in finder.groups {
-            let remaining = group.urls.filter { !trashed.contains($0) }
-            if remaining.count > 1 {
-                newGroups.append(DuplicateFinder.Group(fileSize: group.fileSize, urls: remaining))
-            }
-        }
-        finder.groups = newGroups
-        toDelete.subtract(trashed)
-        // Notify other panes so they refresh listings of the affected dirs.
-        NotificationCenter.default.post(name: .filesDidChange, object: nil)
     }
 
     /// Drops a single file (trashed from the embedded explorer panel)
@@ -623,4 +677,3 @@ private final class URLCollector: @unchecked Sendable {
     func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
     func snapshot() -> [URL] { lock.lock(); defer { lock.unlock() }; return urls }
 }
-

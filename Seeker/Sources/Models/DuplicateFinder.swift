@@ -58,6 +58,7 @@ final class DuplicateFinder {
     var minimumFileSize: Int64 = 4 * 1024
 
     private var currentTask: Task<Void, Never>?
+    private var scanID = UUID()
 
     /// Total bytes that could be reclaimed across all groups.
     var totalReclaimableBytes: Int64 {
@@ -67,6 +68,7 @@ final class DuplicateFinder {
     func cancel() {
         currentTask?.cancel()
         currentTask = nil
+        scanID = UUID()
         status = .cancelled
     }
 
@@ -87,6 +89,8 @@ final class DuplicateFinder {
     /// first.
     func scan(roots: [URL], includeHidden: Bool = false) {
         currentTask?.cancel()
+        let scanID = UUID()
+        self.scanID = scanID
         groups = []
         status = .scanning(scanned: 0)
 
@@ -97,11 +101,11 @@ final class DuplicateFinder {
             guard let self else { return }
 
             // Stage 1: enumerate + group by size, off-main.
-            let bySizeResult = await Task.detached(priority: .userInitiated) { () -> [Int64: [URL]] in
+            guard let bySizeResult = try? await BackgroundWork.run({
                 Self.enumerateBySize(roots: roots, includeHidden: includeHidden, minSize: floor)
-            }.value
+            }) else { return }
 
-            if Task.isCancelled { self.markCancelled(); return }
+            if Task.isCancelled { return }
 
             // Filter to size-classes with potential duplicates.
             let candidatesBySize = bySizeResult.filter { $0.value.count > 1 }
@@ -114,11 +118,13 @@ final class DuplicateFinder {
             // Stage 2: head hash, parallel over workers.
             let headHashes = await Self.hashHeads(urls: headStageURLs) { done in
                 Task { @MainActor in
+                    guard self.scanID == scanID,
+                          case .hashingHeads = self.status else { return }
                     self.status = .hashingHeads(done: done, total: headTotal)
                 }
             }
 
-            if Task.isCancelled { self.markCancelled(); return }
+            if Task.isCancelled { return }
 
             // Re-group by (size, headHash). Anything that doesn't have
             // \u2265 2 members at this point can't be a duplicate.
@@ -151,6 +157,7 @@ final class DuplicateFinder {
             // Stage 3: full hash, parallel.
             let fullHashes = await Self.hashFullFiles(urls: fullStageURLs, sizes: sizeByURL) { done, bytesAdded in
                 Task { @MainActor in
+                    guard self.scanID == scanID else { return }
                     if case let .hashingFull(_, total, bytes, totalBytes) = self.status {
                         self.status = .hashingFull(
                             done: done,
@@ -162,7 +169,7 @@ final class DuplicateFinder {
                 }
             }
 
-            if Task.isCancelled { self.markCancelled(); return }
+            if Task.isCancelled { return }
 
             // Final regrouping by (size, fullHash).
             var byFullHash: [SizeFullKey: [URL]] = [:]
@@ -191,10 +198,6 @@ final class DuplicateFinder {
             self.status = .done
         }
         currentTask = task
-    }
-
-    private func markCancelled() {
-        status = .cancelled
     }
 
     // MARK: - Stage 1: enumerate by size
@@ -234,6 +237,7 @@ final class DuplicateFinder {
             if Task.isCancelled { return [:] }
             let partial = enumerateBySize(root: root, includeHidden: includeHidden, minSize: minSize)
             for (size, urls) in partial {
+                if Task.isCancelled { return [:] }
                 for url in urls where seen.insert(url.standardizedFileURL).inserted {
                     bySize[size, default: []].append(url)
                 }
@@ -260,10 +264,8 @@ final class DuplicateFinder {
 
         let keySet = Set(keys)
         var bySize: [Int64: [URL]] = [:]
-        var counter = 0
         while let url = enumerator.nextObject() as? URL {
-            counter &+= 1
-            if counter & 0xFF == 0, Task.isCancelled { return [:] }
+            if Task.isCancelled { return [:] }
             guard let rv = try? url.resourceValues(forKeys: keySet),
                   rv.isRegularFile == true,
                   rv.isSymbolicLink != true,

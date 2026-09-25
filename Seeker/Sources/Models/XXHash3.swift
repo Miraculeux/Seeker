@@ -58,16 +58,27 @@ enum XXHash3 {
 
     /// Convenience: stream-hash a file from disk in fixed-size chunks
     /// without ever loading more than `chunkSize` bytes into memory.
-    /// Returns `nil` if the file cannot be opened.
+    /// Returns `nil` on cancellation or a read error, never a partial digest.
     static func hashFile(at url: URL, chunkSize: Int = 1 << 20) -> UInt64? {
+        guard !Task.isCancelled, chunkSize > 0 else { return nil }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         let hasher = Streaming()
-        while true {
-            guard let chunk = try? handle.read(upToCount: chunkSize), !chunk.isEmpty else { break }
-            hasher.update(chunk)
+        do {
+            while true {
+                try Task.checkCancellation()
+                let hasData = try autoreleasepool {
+                    guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else { return false }
+                    hasher.update(chunk)
+                    return true
+                }
+                if !hasData { break }
+            }
+            try Task.checkCancellation()
+            return hasher.finalize()
+        } catch {
+            return nil
         }
-        return hasher.finalize()
     }
 
     /// Hash the first `count` bytes of a file. Used as a cheap second-
@@ -76,9 +87,10 @@ enum XXHash3 {
     /// encoding parameters), so a small head-hash eliminates most
     /// collisions before paying for the full-file sweep.
     static func hashFileHead(at url: URL, byteCount: Int = 4096) -> UInt64? {
+        guard !Task.isCancelled else { return nil }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         guard let chunk = try? handle.read(upToCount: byteCount), !chunk.isEmpty else { return nil }
-        return hash(chunk)
+        return Task.isCancelled ? nil : hash(chunk)
     }
 }

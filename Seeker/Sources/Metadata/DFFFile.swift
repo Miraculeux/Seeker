@@ -35,8 +35,12 @@ struct DFFFile {
     // MARK: - Read
 
     static func read(_ url: URL) throws -> DFFFile {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard data.count >= 16,
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        let fileSize = try input.seekToEnd()
+        guard fileSize >= 16 else { throw DFFError.notDFF }
+        let data = try MediaFileIO.read(input, at: 0, count: 16)
+        guard
               data[0] == 0x46, data[1] == 0x52, data[2] == 0x4D, data[3] == 0x38
         else { throw DFFError.notDFF }                              // "FRM8"
         let formType = String(data: data.subdata(in: 12..<16), encoding: .ascii) ?? ""
@@ -44,7 +48,7 @@ struct DFFFile {
 
         // Walk top-level chunks of FRM8 starting after the 16-byte header.
         // We extract both the ID3 tag and PROP/SND tech info in this single pass.
-        var p = 16
+        var p: UInt64 = 16
         var id3: Data?
         var tech = MediaTechnicalInfo()
         tech.container = "DFF"
@@ -52,19 +56,22 @@ struct DFFFile {
         tech.isDSD = true
         var dsdDataSize: UInt64 = 0
 
-        while p + 12 <= data.count {
-            let id = String(data: data.subdata(in: p..<p+4), encoding: .ascii) ?? ""
-            let size = Int(beU64(data, p + 4))
+        while p + 12 <= fileSize {
+            let header = try MediaFileIO.read(input, at: p, count: 12)
+            let id = String(data: header.prefix(4), encoding: .ascii) ?? ""
+            let size = beU64(header, 4)
             let payloadStart = p + 12
-            let payloadEnd = min(payloadStart + size, data.count)
+            guard size <= fileSize - payloadStart else { throw DFFError.truncated }
+            let payloadEnd = payloadStart + size
             switch id {
             case "ID3 ":
-                id3 = data.subdata(in: payloadStart..<payloadEnd)
+                id3 = try MediaFileIO.read(input, at: payloadStart, count: Int(size))
             case "PROP":
-                if payloadEnd - payloadStart >= 4,
-                   String(data: data.subdata(in: payloadStart..<payloadStart+4),
+                let props = try MediaFileIO.read(input, at: payloadStart, count: Int(size))
+                if props.count >= 4,
+                   String(data: props.prefix(4),
                           encoding: .ascii) == "SND " {
-                    parseSND(data, start: payloadStart + 4, end: payloadEnd, into: &tech)
+                    parseSND(props, start: 4, end: props.count, into: &tech)
                 }
             case "DSD ":
                 dsdDataSize = UInt64(size)
@@ -128,47 +135,33 @@ struct DFFFile {
     static func write(url: URL,
                       entries: [(key: String, value: String)],
                       cover: (data: Data, mime: String)?) throws {
-        let original = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard original.count >= 16,
-              original[0] == 0x46, original[1] == 0x52,
-              original[2] == 0x4D, original[3] == 0x38
-        else { throw DFFError.notDFF }
-        let formType = original.subdata(in: 12..<16)
-
         let newID3 = encodedID3(entries: entries, cover: cover)
-
-        // Rebuild chunks: keep every non-ID3 chunk's bytes verbatim, then
-        // append a fresh ID3 chunk last.
-        var chunksOut = Data()
-        var p = 16
-        while p + 12 <= original.count {
-            let id = String(data: original.subdata(in: p..<p+4), encoding: .ascii) ?? ""
-            let size = Int(beU64(original, p + 4))
-            let payloadEnd = p + 12 + size
-            guard payloadEnd <= original.count else { break }
-            let chunkEnd = payloadEnd + (size & 1)
-            if id != "ID3 " {
-                chunksOut.append(original.subdata(in: p..<min(chunkEnd, original.count)))
+        try MediaFileIO.rewrite(url) { input, fileSize, output in
+            guard fileSize >= 16 else { throw DFFError.notDFF }
+            let header = try MediaFileIO.read(input, at: 0, count: 16)
+            guard header.starts(with: [0x46, 0x52, 0x4D, 0x38]) else { throw DFFError.notDFF }
+            try output.write(contentsOf: header)
+            var p: UInt64 = 16
+            while p + 12 <= fileSize {
+                let chunk = try MediaFileIO.read(input, at: p, count: 12)
+                let size = beU64(chunk, 4)
+                guard size <= fileSize - p - 12 else { throw DFFError.truncated }
+                let payloadEnd = p + 12 + size
+                let end = min(payloadEnd + (size & 1), fileSize)
+                if !chunk.starts(with: Data("ID3 ".utf8)) {
+                    try MediaFileIO.copy(input, to: output, range: p..<end)
+                }
+                p = end
             }
-            p = chunkEnd
+            try MediaFileIO.copy(input, to: output, range: p..<fileSize)
+            try output.write(contentsOf: Data("ID3 ".utf8))
+            try output.write(contentsOf: beU64Bytes(UInt64(newID3.count)))
+            try output.write(contentsOf: newID3)
+            if newID3.count & 1 == 1 { try output.write(contentsOf: Data([0])) }
+            let end = try output.offset()
+            try output.seek(toOffset: 4)
+            try output.write(contentsOf: beU64Bytes(end - 12))
         }
-
-        chunksOut.append(Data("ID3 ".utf8))
-        chunksOut.append(beU64Bytes(UInt64(newID3.count)))
-        chunksOut.append(newID3)
-        if newID3.count & 1 == 1 { chunksOut.append(0) }
-
-        // FRM8 size = 4 (form type) + chunksOut.count.
-        var out = Data()
-        out.append(Data("FRM8".utf8))
-        out.append(beU64Bytes(UInt64(4 + chunksOut.count)))
-        out.append(formType)                                         // "DSD "
-        out.append(chunksOut)
-
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        try out.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
     }
 
     private static func encodedID3(entries: [(key: String, value: String)],

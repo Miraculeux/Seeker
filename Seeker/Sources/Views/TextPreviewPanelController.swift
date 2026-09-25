@@ -18,6 +18,8 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
     private var scrollView: NSScrollView?
     private(set) var isVisible: Bool = false
     private var currentURL: URL?
+    private var loadTask: Task<Void, Never>?
+    private var loadGeneration: UInt64 = 0
 
     // Overlay HUD (file name + byte info)
     private var overlayView: NSVisualEffectView?
@@ -47,15 +49,16 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
     /// Read up to the configured byte limit and decode into text. Returns
     /// the decoded string plus whether the file was truncated and the
     /// total file size in bytes.
-    private func loadText(from url: URL) -> (text: String, truncated: Bool, totalBytes: Int) {
-        let limit = SettingsManager.shared.textPreviewByteLimit
-
+    nonisolated static func loadText(from url: URL, limit: Int) throws
+        -> (text: String, truncated: Bool, totalBytes: Int) {
+        try Task.checkCancellation()
         // Directories can't be read as text.
         var isDir: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
             return ("〔这是一个文件夹，无法作为文本预览〕", false, 0)
         }
 
+        try Task.checkCancellation()
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             return ("〔无法打开文件：\(url.lastPathComponent)〕", false, 0)
         }
@@ -63,15 +66,28 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
 
         let totalBytes = (try? FileManager.default
             .attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-        let data = handle.readData(ofLength: limit)
+        var data = Data()
+        do {
+            while data.count < limit {
+                try Task.checkCancellation()
+                guard let chunk = try handle.read(upToCount: min(64 * 1024, limit - data.count)),
+                      !chunk.isEmpty else { break }
+                data.append(chunk)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return ("〔无法读取文件：\(url.lastPathComponent)〕", false, totalBytes)
+        }
+        try Task.checkCancellation()
         let truncated = data.count < totalBytes
-        return (Self.decode(data), truncated, totalBytes)
+        return (try Self.decode(data), truncated, totalBytes)
     }
 
     /// Decode raw bytes into a String, trying a few common encodings. Reads
     /// may cut a multi-byte character in half at the byte limit, so each
     /// encoding is retried after dropping up to a few trailing bytes.
-    private static func decode(_ data: Data) -> String {
+    private nonisolated static func decode(_ data: Data) throws -> String {
         if data.isEmpty { return "〔空文件〕" }
 
         let gb18030 = String.Encoding(rawValue:
@@ -82,6 +98,7 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
         for enc in encodings {
             let maxDrop = min(4, data.count)
             for drop in 0..<maxDrop {
+                try Task.checkCancellation()
                 let slice = data.subdata(in: 0..<(data.count - drop))
                 if let s = String(data: slice, encoding: enc), !s.isEmpty {
                     return s
@@ -93,13 +110,29 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
     }
 
     private func load(url: URL) {
-        let result = loadText(from: url)
-        textView?.string = result.text
-        // Scroll back to the top for the new file.
-        textView?.scroll(NSPoint.zero)
+        loadTask?.cancel()
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        let limit = SettingsManager.shared.textPreviewByteLimit
         currentURL = url
         panel?.title = url.lastPathComponent
-        updateOverlay(url: url, truncated: result.truncated, totalBytes: result.totalBytes)
+        textView?.string = ""
+        updateOverlay(url: url, truncated: false, totalBytes: 0)
+        loadTask = Task { [weak self] in
+            do {
+                let result = try await BackgroundWork.run {
+                    try Self.loadText(from: url, limit: limit)
+                }
+                guard !Task.isCancelled, let self,
+                      self.loadGeneration == generation, self.currentURL == url else { return }
+                self.textView?.string = result.text
+                self.textView?.scroll(NSPoint.zero)
+                self.updateOverlay(url: url, truncated: result.truncated, totalBytes: result.totalBytes)
+                self.loadTask = nil
+            } catch {
+                // Cancellation must not replace a newer preview or reopen a closed one.
+            }
+        }
     }
 
     // MARK: Panel lifecycle
@@ -197,6 +230,9 @@ class TextPreviewPanelController: NSObject, NSWindowDelegate {
 
     func close() {
         guard let panel = panel, isVisible else { return }
+        loadTask?.cancel()
+        loadTask = nil
+        loadGeneration &+= 1
         isVisible = false
         currentURL = nil
         NSAnimationContext.runAnimationGroup({ ctx in

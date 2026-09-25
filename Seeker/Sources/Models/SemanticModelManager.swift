@@ -44,6 +44,7 @@ final class SemanticModelManager {
     private(set) var activeModelID: String?
     private(set) var storageRevision: UInt64 = 0
     private var downloadTask: Task<Void, Never>?
+    private var installationID = UUID()
 
     func isInstalled(_ descriptor: SemanticModelDescriptor) -> Bool {
         _ = storageRevision
@@ -56,15 +57,26 @@ final class SemanticModelManager {
         customURL: String
     ) {
         guard descriptor.availability == .downloadable, downloadTask == nil else { return }
+        let installationID = UUID()
+        self.installationID = installationID
         activeModelID = descriptor.id
         downloadTask = Task {
             do {
                 try await installAndWait(descriptor, source: source, customURL: customURL)
+                guard self.installationID == installationID else { return }
                 activeModelID = nil
             } catch is CancellationError {
+                guard self.installationID == installationID else { return }
                 state = .idle
                 activeModelID = nil
             } catch {
+                guard self.installationID == installationID else { return }
+                if Task.isCancelled {
+                    state = .idle
+                    activeModelID = nil
+                    downloadTask = nil
+                    return
+                }
                 state = .failed(error.localizedDescription)
             }
             downloadTask = nil
@@ -74,6 +86,7 @@ final class SemanticModelManager {
     func cancelInstall() {
         downloadTask?.cancel()
         downloadTask = nil
+        installationID = UUID()
         activeModelID = nil
         state = .idle
     }
@@ -96,8 +109,9 @@ final class SemanticModelManager {
     ) async throws {
         let fm = FileManager.default
         let finalDirectory = Self.modelDirectory(for: descriptor)
-        let stagingDirectory = finalDirectory.appendingPathExtension("downloading")
-        try? fm.removeItem(at: stagingDirectory)
+        // A cancelled worker may still be unwinding when a new install starts.
+        let stagingDirectory = finalDirectory.appendingPathExtension("downloading-\(UUID().uuidString)")
+        try Task.checkCancellation()
         try fm.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: stagingDirectory) }
 
@@ -112,10 +126,14 @@ final class SemanticModelManager {
                 file: URL(fileURLWithPath: asset.localPath).lastPathComponent
             )
             let (temporaryURL, response) = try await Self.downloadWithResume(from: remoteURL)
+            defer { try? fm.removeItem(at: temporaryURL) }
+            try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 throw SemanticModelError.downloadFailed(remoteURL.absoluteString)
             }
-            guard try Self.sha256(of: temporaryURL) == asset.sha256 else {
+            let checksum = try await Self.checksum(of: temporaryURL)
+            try Task.checkCancellation()
+            guard checksum == asset.sha256 else {
                 throw SemanticModelError.checksumMismatch(asset.localPath)
             }
             let destination = stagingDirectory.appendingPathComponent(asset.localPath)
@@ -143,6 +161,7 @@ final class SemanticModelManager {
         case .compiledArchives:
             try await Self.installCompiledArchives(in: stagingDirectory)
         }
+        try Task.checkCancellation()
         try Data("installed".utf8).write(to: stagingDirectory.appendingPathComponent("complete"), options: .atomic)
 
         try? fm.removeItem(at: finalDirectory)
@@ -151,16 +170,14 @@ final class SemanticModelManager {
     }
 
     private nonisolated static func compileModel(at url: URL) async throws -> URL {
-        let task = Task.detached(priority: .userInitiated) {
+        let compiled = try await BackgroundWork.run {
             try MLModel.compileModel(at: url)
         }
-        return try await withTaskCancellationHandler {
-            let compiled = try await task.value
-            try Task.checkCancellation()
-            return compiled
-        } onCancel: {
-            task.cancel()
+        if Task.isCancelled {
+            try? FileManager.default.removeItem(at: compiled)
+            throw CancellationError()
         }
+        return compiled
     }
 
     private nonisolated static func downloadWithResume(
@@ -189,7 +206,7 @@ final class SemanticModelManager {
     }
 
     private nonisolated static func installCompiledArchives(in directory: URL) async throws {
-        try await Task.detached(priority: .userInitiated) {
+        let worker = Task.detached(priority: .userInitiated) {
             let fm = FileManager.default
             let archives = directory.appendingPathComponent("archives", isDirectory: true)
             let extraction = directory.appendingPathComponent("extracted", isDirectory: true)
@@ -204,7 +221,7 @@ final class SemanticModelManager {
                 try Task.checkCancellation()
                 let output = extraction.appendingPathComponent(job.archive, isDirectory: true)
                 try fm.createDirectory(at: output, withIntermediateDirectories: true)
-                try extractZip(
+                try await extractZip(
                     archives.appendingPathComponent(job.archive),
                     to: output
                 )
@@ -218,18 +235,31 @@ final class SemanticModelManager {
             }
             try fm.removeItem(at: archives)
             try fm.removeItem(at: extraction)
-        }.value
+        }
+        try await withTaskCancellationHandler {
+            try await worker.value
+            try Task.checkCancellation()
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
-    private nonisolated static func extractZip(_ archive: URL, to destination: URL) throws {
+    private nonisolated static func extractZip(_ archive: URL, to destination: URL) async throws {
         guard try zipEntriesAreSafe(archive) else {
             throw SemanticModelError.invalidArchive(archive.lastPathComponent)
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
         process.arguments = ["-x", "-k", archive.path, destination.path]
-        try process.run()
-        process.waitUntilExit()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try process.run()
+            if Task.isCancelled, process.isRunning { process.terminate() }
+            process.waitUntilExit()
+            try Task.checkCancellation()
+        } onCancel: {
+            if process.isRunning { process.terminate() }
+        }
         guard process.terminationStatus == 0 else {
             throw SemanticModelError.invalidArchive(archive.lastPathComponent)
         }
@@ -256,16 +286,29 @@ final class SemanticModelManager {
         }
     }
 
+    nonisolated static func checksum(of url: URL) async throws -> String {
+        let result = try await BackgroundWork.run {
+            try sha256(of: url)
+        }
+        try Task.checkCancellation()
+        return result
+    }
+
     private nonisolated static func sha256(of url: URL) throws -> String {
+        try Task.checkCancellation()
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while autoreleasepool(invoking: {
-            let data = try? handle.read(upToCount: 1 << 20)
-            guard let data, !data.isEmpty else { return false }
-            hasher.update(data: data)
-            return true
-        }) {}
+        while true {
+            try Task.checkCancellation()
+            let hasData = try autoreleasepool {
+                guard let data = try handle.read(upToCount: 1 << 20), !data.isEmpty else { return false }
+                hasher.update(data: data)
+                return true
+            }
+            if !hasData { break }
+        }
+        try Task.checkCancellation()
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 

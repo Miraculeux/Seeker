@@ -58,8 +58,27 @@ struct FlacFile {
     // MARK: Reading
 
     static func read(_ url: URL) throws -> FlacFile {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        return try parse(data, url: url)
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        let size = try input.seekToEnd()
+        guard size >= 4,
+              try MediaFileIO.read(input, at: 0, count: 4) == Data([0x66, 0x4C, 0x61, 0x43])
+        else { throw FlacError.notFlac }
+        var blocks: [FlacBlock] = []
+        var offset: UInt64 = 4
+        while true {
+            guard size - offset >= 4 else { throw FlacError.truncated }
+            let header = try MediaFileIO.read(input, at: offset, count: 4)
+            let length = (Int(header[1]) << 16) | (Int(header[2]) << 8) | Int(header[3])
+            offset += 4
+            guard UInt64(length) <= size - offset else { throw FlacError.truncated }
+            let payload = try MediaFileIO.read(input, at: offset, count: length)
+            let last = header[0] & 0x80 != 0
+            blocks.append(FlacBlock(isLast: last, type: header[0] & 0x7F, data: payload))
+            offset += UInt64(length)
+            if last { break }
+        }
+        return FlacFile(url: url, blocks: blocks, audioOffset: Int(offset))
     }
 
     static func parse(_ data: Data, url: URL) throws -> FlacFile {
@@ -167,42 +186,20 @@ struct FlacFile {
         return d
     }
 
-    /// Writes the file in-place. If the new metadata area fits within the
-    /// existing one (using padding), we patch in place; otherwise we rewrite.
+    /// Rewrites atomically, streaming audio and retaining the metadata area's
+    /// original length where padding permits.
     func write() throws {
-        let original = try Data(contentsOf: url, options: .mappedIfSafe)
         let originalMetadataLen = audioOffset - 4 // excluding "fLaC"
-
-        // Try to fit into existing metadata area.
         let inPlace = encodeMetadataArea(targetSize: originalMetadataLen)
-        if inPlace.count == originalMetadataLen {
-            var out = Data()
-            out.reserveCapacity(original.count)
-            out.append(contentsOf: [0x66, 0x4C, 0x61, 0x43])
-            out.append(inPlace)
-            out.append(original.subdata(in: audioOffset..<original.count))
-            try atomicWrite(out, to: url)
-            return
-        }
-
-        // Otherwise rewrite with default padding.
-        var out = Data()
-        let area = encodeMetadataArea()
-        out.reserveCapacity(4 + area.count + (original.count - audioOffset))
-        out.append(contentsOf: [0x66, 0x4C, 0x61, 0x43])
-        out.append(area)
-        out.append(original.subdata(in: audioOffset..<original.count))
-        try atomicWrite(out, to: url)
-    }
-
-    private func atomicWrite(_ data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
+        let area = inPlace.count == originalMetadataLen ? inPlace : encodeMetadataArea()
         do {
-            try data.write(to: tmp, options: .atomic)
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+            try MediaFileIO.rewrite(url) { input, size, output in
+                guard audioOffset >= 4, UInt64(audioOffset) <= size else { throw FlacError.truncated }
+                try output.write(contentsOf: Data([0x66, 0x4C, 0x61, 0x43]))
+                try output.write(contentsOf: area)
+                try MediaFileIO.copy(input, to: output, range: UInt64(audioOffset)..<size)
+            }
         } catch {
-            try? FileManager.default.removeItem(at: tmp)
             throw FlacError.writeFailed(error.localizedDescription)
         }
     }

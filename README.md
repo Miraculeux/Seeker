@@ -12,10 +12,12 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - **Sidebar** — favorites and volumes, with Finder-style monochrome icons in the native macOS theme (including the system Applications glyph when available), auto-detection of mount / unmount, and eject support
 - **Inline path editing** — click the pencil in the breadcrumb or press ⌘⇧G to type a path directly
 - **Back / Forward history** per tab, plus ⌘↑ to step into the enclosing folder
+- Directory enumeration and sorting run in the background; superseded navigation and search work is cancelled between filesystem operations
 - **`seeker://` URL scheme** — `seeker://reveal?path=…` selects a file in its parent folder; `seeker://open?path=…` opens a folder. Short forms `seeker://<absolute path>` are also accepted.
 
 ### File Operations
 - Copy, move, rename, delete, duplicate, new folder / new file — all with a background progress panel
+- Recursive copy planning, archive preparation, bulk deletion, and undo run off the UI thread; batch-rename previews are debounced and validated again before applying
 - Cross-pane copy / move (⌘⇧C / ⌘⇧M)
 - Cut / Copy / Paste between any locations
 - Drag and drop, with Option to force copy
@@ -32,6 +34,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 ### Metadata Tools
 - **Image metadata editor** — view and edit EXIF / IPTC fields; one-click "Strip GPS & Personal Info" for selected images
 - **Audio / video metadata editor** — read and write tags for MP3 (ID3v2), FLAC, M4A / MP4, DSF, DFF, AIFF, WAV, and Matroska / WebM containers, including cover art
+- Metadata rewrites stream unchanged media payloads in bounded chunks and atomically replace the file, rather than buffering entire recordings
 - **Duplicate finder** — content-hash based (xxHash3), with bulk move-to-trash
 - **Visual similarity search** — ranks nearby images with Vision, pHash, aspect ratio, and optional semantic embeddings
 - **Semantic image search** — finds images from an open-ended text description using an on-device Core ML model
@@ -93,6 +96,16 @@ All shortcuts are configurable in **Settings → Shortcuts**.
 swift build
 swift run
 ```
+
+### Regression Tests
+
+```bash
+swift test
+```
+
+The tests use isolated synthetic files to check cancellation, sorting, batch
+rename safety, preview limits, hashing, and streaming media metadata updates.
+They do not require network downloads or access to a personal media library.
 
 ### Build a Signed Release
 

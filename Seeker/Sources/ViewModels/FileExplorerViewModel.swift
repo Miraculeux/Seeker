@@ -43,6 +43,11 @@ class FileExplorerViewModel: Identifiable {
     /// the parent's `FileItem.ID`. Built lazily on the first expansion of
     /// each directory; refreshed when `loadFiles()` reloads the tab.
     @ObservationIgnored private var childrenByParentID: [FileItem.ID: [FileItem]] = [:]
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var sortTask: Task<Void, Never>?
+    @ObservationIgnored private var childTasks: [FileItem.ID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var expandedRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var listingRevision: UInt64 = 0
     /// Set of directory ids whose children should be flattened into the
     /// visible `files` list under their parent row. Persisted across
     /// reloads of the current tab; cleared on `navigateTo(_:)`.
@@ -170,6 +175,7 @@ class FileExplorerViewModel: Identifiable {
     var renameText: String = ""
     var errorMessage: String?
     var showError: Bool = false
+    var fileMutationStatus: String?
     var viewMode: ViewMode = .list {
         didSet {
             // Switching between list (tree-capable) and icon / column
@@ -182,7 +188,7 @@ class FileExplorerViewModel: Identifiable {
     }
     var undoStack: [UndoableAction] = []
 
-    enum UndoableAction {
+    enum UndoableAction: Sendable {
         case trash(originalURLs: [URL], trashURLs: [URL])
         case create(url: URL)
         case rename(oldURL: URL, newURL: URL)
@@ -190,7 +196,7 @@ class FileExplorerViewModel: Identifiable {
         case move(originalURLs: [URL], destinationURLs: [URL])
     }
 
-    var canUndo: Bool { !undoStack.isEmpty }
+    var canUndo: Bool { !undoStack.isEmpty && fileMutationStatus == nil }
 
     // Clipboard for copy/cut operations. Main-actor isolated (like the rest
     // of this type) so the compiler enforces single-threaded access.
@@ -203,7 +209,7 @@ class FileExplorerViewModel: Identifiable {
         case columns = "Columns"
     }
 
-    enum SortOrder: String, CaseIterable {
+    enum SortOrder: String, CaseIterable, Sendable {
         case name = "Name"
         case date = "Date Modified"
         case size = "Size"
@@ -332,6 +338,7 @@ class FileExplorerViewModel: Identifiable {
     // MARK: - Navigation
 
     func navigateTo(_ url: URL) {
+        cancelLoading()
         let isSameURL = (currentURL == url)
         currentURL = url
         searchText = ""
@@ -418,6 +425,7 @@ class FileExplorerViewModel: Identifiable {
     }
 
     func loadFiles() {
+        cancelLoading()
         // Snapshot all main-actor state needed for the off-main enumeration,
         // then hop back to assign results. Bulk `URLResourceValues` keys are
         // batched by Foundation in a single getattrlistbulk sweep — far
@@ -431,28 +439,44 @@ class FileExplorerViewModel: Identifiable {
             || url.resolvingSymlinksInPath() == trashURL.resolvingSymlinksInPath()
         let token = nextLoadToken()
 
-        Task.detached(priority: .userInitiated) {
-            var items: [FileItem]
-            if isTrash {
-                items = Self.loadTrashViaFinder()
-                if items.isEmpty {
-                    // If AppleScript returned nothing, still try the
-                    // direct enumeration as a fall-through.
-                    items = Self.enumerate(url: url, options: options) ?? []
+        loadTask = Task { [weak self] in
+            do {
+                let items = try await BackgroundWork.run {
+                    if isTrash {
+                        let trashItems = Self.loadTrashViaFinder()
+                        if !trashItems.isEmpty { return trashItems }
+                    }
+                    return try Self.enumerate(url: url, options: options) ?? []
                 }
-            } else {
-                items = Self.enumerate(url: url, options: options) ?? []
-            }
-
-            await MainActor.run { [weak self] in
                 guard let self, self.currentLoadToken == token else { return }
-                let sorted = self.sortItems(items)
+                let sorted = try await self.sortedForCurrentOrder(items)
+                guard !Task.isCancelled, self.currentLoadToken == token else { return }
                 self.allFiles = sorted
+                self.listingRevision &+= 1
                 self.rebuildVisibleFiles()
                 self.applyPendingSelection()
+                self.loadTask = nil
                 self.refreshExpandedChildren()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.currentLoadToken == token else { return }
+                self.loadTask = nil
+                self.showFileError("Could not load folder: \(error.localizedDescription)")
             }
         }
+    }
+
+    func cancelLoading() {
+        loadTask?.cancel()
+        loadTask = nil
+        sortTask?.cancel()
+        sortTask = nil
+        expandedRefreshTask?.cancel()
+        expandedRefreshTask = nil
+        for task in childTasks.values { task.cancel() }
+        childTasks.removeAll()
+        loadingDirectoryIDs.removeAll()
     }
 
     /// URL that should be selected once the next `loadFiles()` completes.
@@ -517,7 +541,8 @@ class FileExplorerViewModel: Identifiable {
     private nonisolated static func enumerate(
         url: URL,
         options: FileManager.DirectoryEnumerationOptions
-    ) -> [FileItem]? {
+    ) throws -> [FileItem]? {
+        try Task.checkCancellation()
         let fm = FileManager.default
         let keys = FileItem.prefetchKeys
         let contents: [URL]
@@ -531,16 +556,17 @@ class FileExplorerViewModel: Identifiable {
             guard let alt = try? fm.contentsOfDirectory(
                 at: resolved, includingPropertiesForKeys: keys, options: options
             ) else { return nil }
-            return Self.buildItems(from: alt, keys: keys)
+            return try Self.buildItems(from: alt, keys: keys)
         }
-        return Self.buildItems(from: contents, keys: keys)
+        return try Self.buildItems(from: contents, keys: keys)
     }
 
-    private nonisolated static func buildItems(from urls: [URL], keys: [URLResourceKey]) -> [FileItem] {
+    private nonisolated static func buildItems(from urls: [URL], keys: [URLResourceKey]) throws -> [FileItem] {
         let keySet = Set(keys)
         var items: [FileItem] = []
         items.reserveCapacity(urls.count)
         for u in urls {
+            try Task.checkCancellation()
             let rv = (try? u.resourceValues(forKeys: keySet)) ?? URLResourceValues()
             items.append(FileItem(url: u, resourceValues: rv))
         }
@@ -629,6 +655,8 @@ class FileExplorerViewModel: Identifiable {
     /// is cleared so subsequent arrow-key navigation has a valid anchor.
     func collapseDirectory(_ file: FileItem) {
         guard expandedDirectoryIDs.remove(file.id) != nil else { return }
+        childTasks.removeValue(forKey: file.id)?.cancel()
+        loadingDirectoryIDs.remove(file.id)
         // Compute the set of ids that were visible *under* `file` before
         // the rebuild so we can prune selection.
         let removed = Self.collectDescendantIDs(
@@ -654,13 +682,28 @@ class FileExplorerViewModel: Identifiable {
         let dirURL = file.url.standardizedFileURL
         let options: FileManager.DirectoryEnumerationOptions =
             showHiddenFiles ? [] : [.skipsHiddenFiles]
-        Task.detached(priority: .userInitiated) {
-            let items = Self.enumerate(url: dirURL, options: options) ?? []
-            await MainActor.run { [weak self] in
-                guard let self else { return }
+        let token = currentLoadToken
+        childTasks[parentID] = Task { [weak self] in
+            do {
+                let items = try await BackgroundWork.run {
+                    try Self.enumerate(url: dirURL, options: options) ?? []
+                }
+                guard let self, self.currentLoadToken == token else { return }
+                let sorted = try await self.sortedForCurrentOrder(items)
+                guard !Task.isCancelled, self.currentLoadToken == token,
+                      self.expandedDirectoryIDs.contains(parentID) else { return }
                 self.loadingDirectoryIDs.remove(parentID)
-                self.childrenByParentID[parentID] = self.sortItems(items)
+                self.childTasks[parentID] = nil
+                self.childrenByParentID[parentID] = sorted
+                self.listingRevision &+= 1
                 self.rebuildVisibleFiles()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.currentLoadToken == token else { return }
+                self.loadingDirectoryIDs.remove(parentID)
+                self.childTasks[parentID] = nil
+                self.showFileError("Could not expand folder: \(error.localizedDescription)")
             }
         }
     }
@@ -669,23 +712,46 @@ class FileExplorerViewModel: Identifiable {
     /// (including nested ones). Called from `loadFiles()` so newly-created
     /// or deleted files surface without requiring a manual collapse.
     private func refreshExpandedChildren() {
-        for id in expandedDirectoryIDs {
-            // `FileItem.ID` is `url.absoluteString` — recover the URL.
-            guard let url = URL(string: id) else { continue }
-            let parentID = id
-            let dirURL = url.standardizedFileURL
-            let options: FileManager.DirectoryEnumerationOptions =
-                showHiddenFiles ? [] : [.skipsHiddenFiles]
-            Task.detached(priority: .userInitiated) {
-                let items = Self.enumerate(url: dirURL, options: options) ?? []
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    // Only update if the directory is still expanded —
-                    // user may have collapsed mid-flight.
-                    guard self.expandedDirectoryIDs.contains(parentID) else { return }
-                    self.childrenByParentID[parentID] = self.sortItems(items)
-                    self.rebuildVisibleFiles()
+        expandedRefreshTask?.cancel()
+        let ids = expandedDirectoryIDs
+        guard !ids.isEmpty else { return }
+        let token = currentLoadToken
+        let options: FileManager.DirectoryEnumerationOptions =
+            showHiddenFiles ? [] : [.skipsHiddenFiles]
+        expandedRefreshTask = Task { [weak self] in
+            do {
+                let listings = try await BackgroundWork.run {
+                    var result: [FileItem.ID: [FileItem]] = [:]
+                    for id in ids {
+                        try Task.checkCancellation()
+                        guard let url = URL(string: id) else { continue }
+                        result[id] = try Self.enumerate(url: url.standardizedFileURL, options: options) ?? []
+                    }
+                    return result
                 }
+                guard let self, self.currentLoadToken == token else { return }
+                while !Task.isCancelled {
+                    let order = self.sortOrder
+                    let ascending = self.sortAscending
+                    let sorted = try await BackgroundWork.run {
+                        try listings.mapValues { try Self.sortItems($0, order: order, ascending: ascending) }
+                    }
+                    guard !Task.isCancelled, self.currentLoadToken == token else { return }
+                    if order != self.sortOrder || ascending != self.sortAscending { continue }
+                    for (id, items) in sorted where self.expandedDirectoryIDs.contains(id) {
+                        self.childrenByParentID[id] = items
+                    }
+                    self.listingRevision &+= 1
+                    self.rebuildVisibleFiles()
+                    self.expandedRefreshTask = nil
+                    break
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.currentLoadToken == token else { return }
+                self.expandedRefreshTask = nil
+                self.showFileError("Could not refresh folders: \(error.localizedDescription)")
             }
         }
     }
@@ -819,17 +885,59 @@ class FileExplorerViewModel: Identifiable {
     /// `loadFiles()` which would re-run `contentsOfDirectory` + per-file
     /// resource fetches.
     func resort() {
-        allFiles = sortItems(allFiles)
-        for (parentID, children) in childrenByParentID {
-            childrenByParentID[parentID] = sortItems(children)
+        sortTask?.cancel()
+        let items = allFiles
+        let children = childrenByParentID
+        let order = sortOrder
+        let ascending = sortAscending
+        let revision = listingRevision
+        let token = currentLoadToken
+        sortTask = Task { [weak self] in
+            do {
+                let (sorted, sortedChildren) = try await BackgroundWork.run {
+                    let sorted = try Self.sortItems(items, order: order, ascending: ascending)
+                    var sortedChildren: [FileItem.ID: [FileItem]] = [:]
+                    for (id, files) in children {
+                        sortedChildren[id] = try Self.sortItems(files, order: order, ascending: ascending)
+                    }
+                    return (sorted, sortedChildren)
+                }
+                guard let self, !Task.isCancelled, self.currentLoadToken == token else { return }
+                guard self.listingRevision == revision else {
+                    self.resort()
+                    return
+                }
+                self.allFiles = sorted
+                self.childrenByParentID = sortedChildren
+                self.listingRevision &+= 1
+                self.rebuildVisibleFiles()
+                self.sortTask = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.showFileError("Could not sort files: \(error.localizedDescription)")
+            }
         }
-        rebuildVisibleFiles()
     }
 
-    func sortItems(_ items: [FileItem]) -> [FileItem] {
-        let asc = sortAscending
-        let order = sortOrder
-        return items.sorted { a, b in
+    private func sortedForCurrentOrder(_ items: [FileItem]) async throws -> [FileItem] {
+        while true {
+            try Task.checkCancellation()
+            let order = sortOrder
+            let ascending = sortAscending
+            let sorted = try await BackgroundWork.run {
+                try Self.sortItems(items, order: order, ascending: ascending)
+            }
+            if order == sortOrder, ascending == sortAscending { return sorted }
+        }
+    }
+
+    nonisolated static func sortItems(
+        _ items: [FileItem], order: SortOrder, ascending asc: Bool
+    ) throws -> [FileItem] {
+        try Task.checkCancellation()
+        return try items.sorted { a, b in
+            try Task.checkCancellation()
             // Directories first
             if a.isDirectory != b.isDirectory { return a.isDirectory }
             switch order {
@@ -849,16 +957,18 @@ class FileExplorerViewModel: Identifiable {
         }
     }
 
-    /// Enumerate `folder` synchronously using the same hidden-file and
+    /// Enumerate `folder` off-main using the same hidden-file and
     /// resource-key conventions as the main listing, then apply this view
     /// model's current sort. Used by context-menu actions (e.g. Auto
     /// Preview) so out-of-listing folders are ordered consistently with
     /// the visible pane.
-    func sortedChildren(of folder: URL) -> [FileItem] {
+    func sortedChildren(of folder: URL) async throws -> [FileItem] {
         let options: FileManager.DirectoryEnumerationOptions =
             showHiddenFiles ? [] : [.skipsHiddenFiles]
-        let items = Self.enumerate(url: folder.standardizedFileURL, options: options) ?? []
-        return sortItems(items)
+        let items = try await BackgroundWork.run {
+            try Self.enumerate(url: folder.standardizedFileURL, options: options) ?? []
+        }
+        return try await sortedForCurrentOrder(items)
     }
 
     func goBack() {
@@ -1144,6 +1254,10 @@ class FileExplorerViewModel: Identifiable {
     func trashSelected() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
+        guard beginFileMutation("Moving to Trash\u{2026}") else { return }
+        let origin = currentURL
+        let selectedIDs = selectedFileIDs
+        let urls = items.map(\.url)
 
         // Determine which file should be selected after deletion: prefer the
         // next surviving sibling (after the last trashed item), otherwise the
@@ -1165,31 +1279,31 @@ class FileExplorerViewModel: Identifiable {
             return nil
         }()
 
-        var originalURLs: [URL] = []
-        var trashURLs: [URL] = []
-        for item in items {
-            do {
-                var resultingURL: NSURL?
-                try FileManager.default.trashItem(at: item.url, resultingItemURL: &resultingURL)
-                originalURLs.append(item.url)
-                if let trashURL = resultingURL as URL? {
-                    trashURLs.append(trashURL)
+        Task {
+            defer { fileMutationStatus = nil }
+            let result = await Task.detached(priority: .userInitiated) {
+                var originals: [URL] = []
+                var trashed: [URL] = []
+                var failure: String?
+                for url in urls {
+                    do {
+                        var resultingURL: NSURL?
+                        try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+                        originals.append(url)
+                        if let trashURL = resultingURL as URL? { trashed.append(trashURL) }
+                    } catch {
+                        failure = "Could not move to Trash: \(error.localizedDescription)"
+                        break
+                    }
                 }
-            } catch {
-                showFileError("Could not move to Trash: \(error.localizedDescription)")
-                return
+                return (originals, trashed, failure)
+            }.value
+            if !result.0.isEmpty && result.0.count == result.1.count {
+                undoStack.append(.trash(originalURLs: result.0, trashURLs: result.1))
             }
+            finishFileMutation(origin: origin, selection: selectedIDs, neighbor: nextNeighborURL, sources: urls)
+            if let error = result.2 { showFileError(error) }
         }
-        if !originalURLs.isEmpty && originalURLs.count == trashURLs.count {
-            undoStack.append(.trash(originalURLs: originalURLs, trashURLs: trashURLs))
-        }
-        selectionAnchor = nil
-        selectedFileIDs = []
-        if let neighbor = nextNeighborURL {
-            pendingSelectionURL = neighbor
-        }
-        loadFiles()
-        notifyFilesChanged()
     }
 
     /// Permanently deletes the effective selection, bypassing the Trash.
@@ -1197,6 +1311,7 @@ class FileExplorerViewModel: Identifiable {
     func deleteSelectedPermanently() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
+        guard fileMutationStatus == nil else { NSSound.beep(); return }
 
         let alert = NSAlert()
         if items.count == 1 {
@@ -1209,6 +1324,10 @@ class FileExplorerViewModel: Identifiable {
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard beginFileMutation("Deleting\u{2026}") else { return }
+        let origin = currentURL
+        let selectedIDs = selectedFileIDs
+        let urls = items.map(\.url)
 
         // Pick the file to select afterwards (same logic as trashSelected).
         let deletedIDs = Set(items.map(\.id))
@@ -1224,22 +1343,44 @@ class FileExplorerViewModel: Identifiable {
             return nil
         }()
 
-        let fm = FileManager.default
-        for item in items {
-            do {
-                try fm.removeItem(at: item.url)
-            } catch {
-                showFileError("Could not delete: \(error.localizedDescription)")
-                break
+        Task {
+            defer { fileMutationStatus = nil }
+            let failure = await Task.detached(priority: .userInitiated) { () -> String? in
+                for url in urls {
+                    do {
+                        try FileManager.default.removeItem(at: url)
+                    } catch {
+                        return "Could not delete: \(error.localizedDescription)"
+                    }
+                }
+                return nil
+            }.value
+            finishFileMutation(origin: origin, selection: selectedIDs, neighbor: nextNeighborURL, sources: urls)
+            if let failure { showFileError(failure) }
+        }
+    }
+
+    private func beginFileMutation(_ status: String) -> Bool {
+        guard fileMutationStatus == nil else {
+            NSSound.beep()
+            return false
+        }
+        fileMutationStatus = status
+        return true
+    }
+
+    private func finishFileMutation(
+        origin: URL, selection: Set<FileItem.ID>, neighbor: URL?, sources: [URL]
+    ) {
+        if currentURL == origin, selectedFileIDs == selection {
+            selectionAnchor = nil
+            selectedFileIDs = []
+            if let neighbor {
+                pendingSelectionURL = neighbor
             }
         }
-        selectionAnchor = nil
-        selectedFileIDs = []
-        if let neighbor = nextNeighborURL {
-            pendingSelectionURL = neighbor
-        }
         loadFiles()
-        notifyFilesChanged()
+        notifyDirectoriesChanged(sourceURLs: sources)
     }
 
     func moveSelectedTo(destination: URL) {
@@ -1259,48 +1400,45 @@ class FileExplorerViewModel: Identifiable {
     // MARK: - Undo
 
     func undo() {
+        guard fileMutationStatus == nil else { NSSound.beep(); return }
         guard let action = undoStack.popLast() else { return }
-        let fm = FileManager.default
-        switch action {
-        case .trash(let originalURLs, let trashURLs):
-            for (original, trashURL) in zip(originalURLs, trashURLs) {
-                do {
-                    try fm.moveItem(at: trashURL, to: original)
-                } catch {
-                    showFileError("Undo failed: \(error.localizedDescription)")
+        fileMutationStatus = "Undoing\u{2026}"
+        Task {
+            defer { fileMutationStatus = nil }
+            let result = await Task.detached(priority: .userInitiated) {
+                let fm = FileManager.default
+                var errors: [String] = []
+                var affected: [URL] = []
+                func move(_ source: URL, to destination: URL) {
+                    affected.append(contentsOf: [source, destination])
+                    do { try fm.moveItem(at: source, to: destination) }
+                    catch { errors.append(error.localizedDescription) }
                 }
-            }
-        case .create(let url):
-            do {
-                try fm.trashItem(at: url, resultingItemURL: nil)
-            } catch {
-                showFileError("Undo failed: \(error.localizedDescription)")
-            }
-        case .rename(let oldURL, let newURL):
-            do {
-                try fm.moveItem(at: newURL, to: oldURL)
-            } catch {
-                showFileError("Undo failed: \(error.localizedDescription)")
-            }
-        case .copy(let destinationURLs):
-            for dest in destinationURLs {
-                do {
-                    try fm.trashItem(at: dest, resultingItemURL: nil)
-                } catch {
-                    showFileError("Undo failed: \(error.localizedDescription)")
+                func trash(_ url: URL) {
+                    affected.append(url)
+                    do { try fm.trashItem(at: url, resultingItemURL: nil) }
+                    catch { errors.append(error.localizedDescription) }
                 }
-            }
-        case .move(let originalURLs, let destinationURLs):
-            for (original, dest) in zip(originalURLs, destinationURLs) {
-                do {
-                    try fm.moveItem(at: dest, to: original)
-                } catch {
-                    showFileError("Undo failed: \(error.localizedDescription)")
+                switch action {
+                case .trash(let originals, let trashURLs):
+                    for (original, url) in zip(originals, trashURLs) { move(url, to: original) }
+                case .create(let url):
+                    trash(url)
+                case .rename(let oldURL, let newURL):
+                    move(newURL, to: oldURL)
+                case .copy(let destinations):
+                    for url in destinations { trash(url) }
+                case .move(let originals, let destinations):
+                    for (original, destination) in zip(originals, destinations) { move(destination, to: original) }
                 }
+                return (errors, affected)
+            }.value
+            loadFiles()
+            notifyDirectoriesChanged(sourceURLs: result.1)
+            if !result.0.isEmpty {
+                showFileError("Undo failed: " + result.0.joined(separator: "\n"))
             }
         }
-        loadFiles()
-        notifyFilesChanged()
     }
 
     // MARK: - Multi-Selection
@@ -1402,7 +1540,7 @@ class FileExplorerViewModel: Identifiable {
         NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL] != nil
     }
 
-    private func uniqueDestination(for source: URL, in directory: URL, suffix: String = "") -> URL {
+    private nonisolated static func uniqueDestination(for source: URL, in directory: URL, suffix: String = "") -> URL {
         let fm = FileManager.default
         let name = source.deletingPathExtension().lastPathComponent
         let ext = source.pathExtension
@@ -1438,8 +1576,8 @@ class FileExplorerViewModel: Identifiable {
         } catch {
             return (-1, error.localizedDescription)
         }
-        process.waitUntilExit()
         let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return (process.terminationStatus, errMsg)
     }
@@ -1528,6 +1666,7 @@ class FileExplorerViewModel: Identifiable {
     func compressSelected() {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
+        guard beginFileMutation("Compressing\u{2026}") else { return }
         let urls = items.map(\.url)
         let dir = currentURL
 
@@ -1538,51 +1677,57 @@ class FileExplorerViewModel: Identifiable {
             archiveName = "Archive.zip"
         }
 
-        let dest = uniqueDestination(for: dir.appendingPathComponent(archiveName), in: dir)
-
-        var tmpDir: URL?
-        let args: [String]
-        do {
-            if urls.count > 1 {
+        Task {
+            defer { fileMutationStatus = nil }
+            let result = await Task.detached(priority: .userInitiated) {
+                let dest = Self.uniqueDestination(for: dir.appendingPathComponent(archiveName), in: dir)
                 let fm = FileManager.default
-                let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-                try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
-                tmpDir = tmp
-                for url in urls {
-                    try fm.copyItem(at: url, to: tmp.appendingPathComponent(url.lastPathComponent))
+                var temporaryDirectory: URL?
+                var failure: String?
+                do {
+                    let args: [String]
+                    if urls.count > 1 {
+                        let tmp = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+                        temporaryDirectory = tmp
+                        for url in urls {
+                            try fm.copyItem(at: url, to: tmp.appendingPathComponent(url.lastPathComponent))
+                        }
+                        args = ["-c", "-k", "--sequesterRsrc", tmp.path, dest.path]
+                    } else {
+                        args = ["-c", "-k", "--sequesterRsrc", "--keepParent", urls[0].path, dest.path]
+                    }
+                    let archiveResult = Self.runDitto(arguments: args)
+                    if archiveResult.status != 0 {
+                        failure = "Compression failed: \(archiveResult.error)"
+                    }
+                } catch {
+                    failure = "Compression failed: \(error.localizedDescription)"
                 }
-                args = ["-c", "-k", "--sequesterRsrc", tmp.path, dest.path]
-            } else {
-                args = ["-c", "-k", "--sequesterRsrc", "--keepParent", urls[0].path, dest.path]
-            }
-        } catch {
-            showFileError("Compression failed: \(error.localizedDescription)")
-            return
-        }
-
-        let cleanupDir = tmpDir
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = Self.runDitto(arguments: args)
-            if let cleanupDir { try? FileManager.default.removeItem(at: cleanupDir) }
-            DispatchQueue.main.async { [weak self] in
-                if result.status != 0 {
-                    self?.showFileError("Compression failed: \(result.error)")
+                if let temporaryDirectory {
+                    do { try fm.removeItem(at: temporaryDirectory) }
+                    catch {
+                        let cleanupError = "Could not remove temporary archive files: \(error.localizedDescription)"
+                        failure = failure.map { $0 + "\n" + cleanupError } ?? cleanupError
+                    }
                 }
-                self?.loadFiles()
-                self?.notifyFilesChanged()
-            }
+                return (dest, failure)
+            }.value
+            loadFiles()
+            notifyDirectoriesChanged(sourceURLs: [result.0])
+            if let failure = result.1 { showFileError(failure) }
         }
     }
 
     func decompressFile(_ file: FileItem) {
         let sourcePath = file.url.path
         let folderName = file.url.deletingPathExtension().lastPathComponent
-        let extractDir = uniqueDestination(
+        let extractDir = Self.uniqueDestination(
             for: currentURL.appendingPathComponent(folderName),
             in: currentURL
         )
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
             do {
                 try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
             } catch {
@@ -1605,12 +1750,12 @@ class FileExplorerViewModel: Identifiable {
     private func decompressAndOpen(_ file: FileItem) {
         let sourcePath = file.url.path
         let folderName = file.url.deletingPathExtension().lastPathComponent
-        let extractDir = uniqueDestination(
+        let extractDir = Self.uniqueDestination(
             for: currentURL.appendingPathComponent(folderName),
             in: currentURL
         )
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
             do {
                 try FileManager.default.createDirectory(at: extractDir, withIntermediateDirectories: true)
             } catch {

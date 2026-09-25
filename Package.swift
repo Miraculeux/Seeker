@@ -50,6 +50,11 @@ let package = Package(
                     "-Xlinker", "Seeker/Sources/Info.plist"
                 ])
             ]
+        ),
+        .testTarget(
+            name: "SeekerTests",
+            dependencies: ["Seeker"],
+            path: "Seeker/Tests"
         )
     ]
 )

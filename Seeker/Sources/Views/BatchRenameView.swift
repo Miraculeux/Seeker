@@ -8,7 +8,6 @@ import AppKit
 struct BatchRenameView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var renamer: BatchRenamer
-    @State private var previews: [BatchRenamer.Preview] = []
     @State private var isApplying = false
     @State private var useCurrentDirectory: Bool
     @FocusState private var isFindFocused: Bool
@@ -45,6 +44,8 @@ struct BatchRenameView: View {
 
     private static let datePresets = ["yyyy-MM-dd", "yyMMdd", "yyyyMMdd", "yyyy-MM-dd_HHmmss"]
 
+    private var previews: [BatchRenamer.Preview] { renamer.previewRows }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -68,12 +69,15 @@ struct BatchRenameView: View {
         .frame(width: 640, height: 560)
         .controlSize(.small)
         .background(Color(nsColor: .windowBackgroundColor))
+        .disabled(isApplying)
         .onAppear {
             refresh()
             if renamer.mode == .findReplace {
                 DispatchQueue.main.async { isFindFocused = true }
             }
         }
+        .onDisappear { renamer.cancelPendingWork() }
+        .interactiveDismissDisabled(isApplying)
     }
 
     // MARK: - Header
@@ -91,7 +95,7 @@ struct BatchRenameView: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
-            Button { dismiss() } label: {
+            Button { close() } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 14))
                     .foregroundColor(.secondary.opacity(0.6))
@@ -395,18 +399,19 @@ struct BatchRenameView: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
             Spacer()
-            Button("Cancel") { dismiss() }
+            Button("Cancel") { close() }
                 .keyboardShortcut(.cancelAction)
                 .disabled(isApplying)
             Button(isApplying ? "Renaming\u{2026}" : "Rename") { apply() }
                 .keyboardShortcut(.defaultAction)
-                .disabled(isApplying || !renamer.canApply(previews))
+                .disabled(isApplying || !renamer.canApply)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
     }
 
     private var summary: String {
+        if renamer.isPreviewLoading { return "Updating preview\u{2026}" }
         let changed = previews.filter { $0.changed }.count
         let errors = previews.filter { $0.error != nil }.count
         if errors > 0 {
@@ -418,16 +423,16 @@ struct BatchRenameView: View {
     // MARK: - Actions
 
     private func refresh() {
-        if renamer.mode == .exifDate {
-            Task {
-                await renamer.loadDatesIfNeeded()
-                previews = renamer.previews()
-            }
-        }
-        previews = renamer.previews()
+        renamer.requestPreview()
+    }
+
+    private func close() {
+        renamer.cancelPendingWork()
+        dismiss()
     }
 
     private func apply() {
+        guard !isApplying, renamer.canApply else { return }
         isApplying = true
         Task {
             let result = await renamer.apply()

@@ -38,6 +38,7 @@ struct DirectoryCompareView: View {
         .frame(minWidth: 940, idealWidth: 1100, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
         .onAppear { comparer.compare() }
+        .onDisappear { comparer.cancel() }
         // Re-compare when files change elsewhere (e.g. after a Sync from
         // this window, or copy/move/rename in the side panels).
         .onReceive(NotificationCenter.default.publisher(for: .filesDidChange)) { _ in

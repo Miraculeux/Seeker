@@ -110,48 +110,33 @@ struct AVIFile {
 
     static func write(url: URL,
                       entries: [(key: String, value: String)]) throws {
-        let original = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard original.count >= 12,
-              original[0] == 0x52, original[1] == 0x49,
-              original[2] == 0x46, original[3] == 0x46
-        else { throw AVIError.notAVI }
-        let formType = original.subdata(in: 8..<12)
-
-        // Rebuild children, dropping any existing LIST/INFO.
-        var kept = Data()
-        var p = 12
-        while p + 8 <= original.count {
-            let id = String(data: original.subdata(in: p..<p+4), encoding: .ascii) ?? ""
-            let size = Int(leU32(original, p + 4))
-            let payloadStart = p + 8
-            let payloadEnd = min(payloadStart + size, original.count)
-            let chunkEnd = min(payloadEnd + (size & 1), original.count)
-            var skip = false
-            if id == "LIST", payloadEnd - payloadStart >= 4 {
-                let listType = String(data: original.subdata(in: payloadStart..<payloadStart+4),
-                                      encoding: .ascii) ?? ""
-                if listType == "INFO" { skip = true }
-            }
-            if !skip {
-                kept.append(original.subdata(in: p..<chunkEnd))
-            }
-            p = chunkEnd
-        }
-
-        // Build new LIST/INFO from entries.
         let infoList = buildInfoList(entries: entries)
-        kept.append(infoList)
-
-        var out = Data()
-        out.append(Data("RIFF".utf8))
-        out.append(leU32Bytes(UInt32(4 + kept.count)))   // file size minus header
-        out.append(formType)                              // "AVI "
-        out.append(kept)
-
-        let tmp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        try out.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        try MediaFileIO.rewrite(url) { input, fileSize, output in
+            guard fileSize >= 12 else { throw AVIError.notAVI }
+            let header = try MediaFileIO.read(input, at: 0, count: 12)
+            guard header.starts(with: [0x52, 0x49, 0x46, 0x46]) else { throw AVIError.notAVI }
+            try output.write(contentsOf: header)
+            var p: UInt64 = 12
+            while p + 8 <= fileSize {
+                let chunk = try MediaFileIO.read(input, at: p, count: 8)
+                let size = UInt64(leU32(chunk, 4))
+                let payloadStart = p + 8
+                guard size <= fileSize - payloadStart else { throw AVIError.truncated }
+                let end = min(payloadStart + size + (size & 1), fileSize)
+                var skip = false
+                if chunk.starts(with: Data("LIST".utf8)), size >= 4 {
+                    skip = try MediaFileIO.read(input, at: payloadStart, count: 4) == Data("INFO".utf8)
+                }
+                if !skip { try MediaFileIO.copy(input, to: output, range: p..<end) }
+                p = end
+            }
+            try MediaFileIO.copy(input, to: output, range: p..<fileSize)
+            try output.write(contentsOf: infoList)
+            let end = try output.offset()
+            guard let riffSize = UInt32(exactly: end - 8) else { throw AVIError.truncated }
+            try output.seek(toOffset: 4)
+            try output.write(contentsOf: leU32Bytes(riffSize))
+        }
     }
 
     private static func buildInfoList(entries: [(key: String, value: String)]) -> Data {

@@ -54,6 +54,7 @@ struct FileSearchView: View {
                 .hidden()
         )
         .onAppear { DispatchQueue.main.async { queryFocused = true } }
+        .onDisappear { searcher.cancel() }
         .sheet(isPresented: $showPreview) {
             if let url = previewURL {
                 VStack(spacing: 0) {
@@ -115,7 +116,12 @@ struct FileSearchView: View {
                     .focused($queryFocused)
                     .onSubmit { searcher.search() }
                 if !searcher.query.isEmpty {
-                    Button { searcher.query = ""; searcher.results = []; searcher.status = .idle } label: {
+                    Button {
+                        searcher.cancel()
+                        searcher.query = ""
+                        searcher.results = []
+                        searcher.status = .idle
+                    } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 11))
                             .foregroundColor(.secondary.opacity(0.5))
