@@ -160,7 +160,10 @@ struct SidebarRow: View {
         } label: {
             HStack(spacing: 7) {
                 Group {
-                    if item.isTrash {
+                    if !theme.isExplorer {
+                        nativeSidebarIcon
+                            .foregroundStyle(item.section == .favorites ? Color.accentColor : Color.secondary)
+                    } else if item.isTrash {
                         Image(systemName: "trash.fill")
                             .foregroundColor(.secondary)
                     } else {
@@ -239,6 +242,31 @@ struct SidebarRow: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var nativeSidebarIcon: some View {
+        if item.url.standardizedFileURL.path == "/Applications",
+           let image = Self.applicationsSidebarIcon {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+        } else {
+            Image(systemName: item.icon)
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 15, weight: .regular))
+        }
+    }
+
+    private static let applicationsSidebarIcon: NSImage? = {
+        // Finder's Applications glyph is not a public SF Symbol.
+        let path = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/SidebarApplicationsFolder.icns"
+        guard let image = NSImage(contentsOfFile: path) else {
+            NSLog("Seeker: Finder Applications sidebar icon unavailable at %@; using pencil.and.ruler.", path)
+            return nil
+        }
+        image.isTemplate = true
+        return image
+    }()
 
     private func ejectVolume(at url: URL) {
         let volumeName = url.lastPathComponent

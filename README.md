@@ -9,7 +9,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - **Tabbed browsing** — multiple tabs per pane, each with its own history
 - **Three view modes** — List (with tree expansion), Icons, and Column browser
 - **Tree view in List mode** — expand folders inline with the disclosure chevron, or use ← / → on the keyboard (similar to Finder's List view)
-- **Sidebar** — favorites and volumes, with auto-detection of mount / unmount and eject support
+- **Sidebar** — favorites and volumes, with Finder-style monochrome icons in the native macOS theme (including the system Applications glyph when available), auto-detection of mount / unmount, and eject support
 - **Inline path editing** — click the pencil in the breadcrumb or press ⌘⇧G to type a path directly
 - **Back / Forward history** per tab, plus ⌘↑ to step into the enclosing folder
 - **`seeker://` URL scheme** — `seeker://reveal?path=…` selects a file in its parent folder; `seeker://open?path=…` opens a folder. Short forms `seeker://<absolute path>` are also accepted.

@@ -24,10 +24,10 @@ struct SidebarDefaults {
         // Favorites
         let homeURL = FileManager.default.homeDirectoryForCurrentUser
         let favorites: [(String, String, String)] = [
-            ("Applications", "app.fill", "/Applications"),
+            ("Applications", "pencil.and.ruler", "/Applications"),
             ("Desktop", "menubar.dock.rectangle", "Desktop"),
-            ("Documents", "doc.on.doc.fill", "Documents"),
-            ("Downloads", "arrow.down.circle.fill", "Downloads"),
+            ("Documents", "doc", "Documents"),
+            ("Downloads", "arrow.down.circle", "Downloads"),
         ]
 
         for (name, icon, path) in favorites {
@@ -51,7 +51,7 @@ struct SidebarDefaults {
             items.append(SidebarItem(
                 id: "userfav_\(path)",
                 name: name,
-                icon: "folder.fill",
+                icon: "folder",
                 url: url,
                 section: .favorites,
                 isUserFavorite: true
@@ -60,7 +60,7 @@ struct SidebarDefaults {
 
         // Locations - root disk
         let rootURL = URL(fileURLWithPath: "/")
-        items.append(SidebarItem(id: "loc_root", name: "Macintosh HD", icon: "internaldrive.fill", url: rootURL, section: .locations))
+        items.append(SidebarItem(id: "loc_root", name: "Macintosh HD", icon: "internaldrive", url: rootURL, section: .locations))
 
         // External volumes
         let volumesURL = URL(fileURLWithPath: "/Volumes")
@@ -70,16 +70,16 @@ struct SidebarDefaults {
                 if name == "Macintosh HD" { continue }
                 let rv = try? volume.resourceValues(forKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey])
                 let ejectable = (rv?.volumeIsEjectable == true) || (rv?.volumeIsRemovable == true) || (rv?.volumeIsInternal == false)
-                items.append(SidebarItem(id: "loc_\(name)", name: name, icon: "externaldrive.fill", url: volume, section: .locations, isEjectable: ejectable))
+                items.append(SidebarItem(id: "loc_\(name)", name: name, icon: "externaldrive", url: volume, section: .locations, isEjectable: ejectable))
             }
         }
 
         // Home folder
-        items.append(SidebarItem(id: "loc_home", name: NSUserName(), icon: "house.fill", url: homeURL, section: .locations))
+        items.append(SidebarItem(id: "loc_home", name: NSUserName(), icon: "house", url: homeURL, section: .locations))
 
         // Trash
         let trashURL = homeURL.appendingPathComponent(".Trash")
-        items.append(SidebarItem(id: "loc_trash", name: "Trash", icon: "trash.fill", url: trashURL, section: .locations, isTrash: true))
+        items.append(SidebarItem(id: "loc_trash", name: "Trash", icon: "trash", url: trashURL, section: .locations, isTrash: true))
 
         return items
     }
