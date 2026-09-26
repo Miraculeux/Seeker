@@ -58,24 +58,31 @@ struct SidebarDefaults {
             ))
         }
 
-        // Locations - root disk
-        let rootURL = URL(fileURLWithPath: "/")
-        items.append(SidebarItem(id: "loc_root", name: "Macintosh HD", icon: "internaldrive", url: rootURL, section: .locations))
-
-        // External volumes
-        let volumesURL = URL(fileURLWithPath: "/Volumes")
-        if let volumes = try? FileManager.default.contentsOfDirectory(at: volumesURL, includingPropertiesForKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey], options: []) {
-            for volume in volumes {
-                let name = volume.lastPathComponent
-                if name == "Macintosh HD" { continue }
-                let rv = try? volume.resourceValues(forKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey])
-                let ejectable = (rv?.volumeIsEjectable == true) || (rv?.volumeIsRemovable == true) || (rv?.volumeIsInternal == false)
-                items.append(SidebarItem(id: "loc_\(name)", name: name, icon: "externaldrive", url: volume, section: .locations, isEjectable: ejectable))
-            }
-        }
-
         // Home folder
         items.append(SidebarItem(id: "loc_home", name: NSUserName(), icon: "house", url: homeURL, section: .locations))
+        items.append(SidebarItem(
+            id: "loc_computer", name: ComputerLocation.name, icon: "macmini.fill",
+            url: ComputerLocation.url, section: .locations
+        ))
+
+        do {
+            for volume in try ComputerLocation.volumes() {
+                let values = try volume.resourceValues(forKeys: ComputerLocation.volumeKeys)
+                let isRoot = volume.path == "/"
+                let ejectable = !isRoot && (
+                    values.volumeIsEjectable == true || values.volumeIsRemovable == true
+                        || values.volumeIsInternal == false
+                )
+                items.append(SidebarItem(
+                    id: isRoot ? "loc_root" : "loc_\(volume.path)",
+                    name: values.volumeName ?? volume.lastPathComponent,
+                    icon: values.volumeIsInternal == true ? "internaldrive" : "externaldrive",
+                    url: volume, section: .locations, isEjectable: ejectable
+                ))
+            }
+        } catch {
+            NSLog("Seeker: Could not load sidebar volumes: %@", error.localizedDescription)
+        }
 
         // Trash
         let trashURL = homeURL.appendingPathComponent(".Trash")

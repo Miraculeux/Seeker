@@ -57,9 +57,8 @@ struct SidebarView: View {
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in
             sidebarItems = SidebarDefaults.defaultItems()
             // Refresh any tab viewing /Volumes so the new disk appears
-            let volumesDir = URL(fileURLWithPath: "/Volumes").standardizedFileURL
             for pane in [appState.leftPane, appState.rightPane] {
-                for tab in pane.tabs where tab.currentURL.standardizedFileURL == volumesDir {
+                for tab in pane.tabs where ComputerLocation.isRoot(tab.currentURL) {
                     tab.loadFiles()
                 }
             }
@@ -75,13 +74,12 @@ struct SidebarView: View {
                 // Navigate panes away from the ejected volume, and refresh any viewing /Volumes
                 let home = FileManager.default.homeDirectoryForCurrentUser
                 let volumePath = volumeURL.standardizedFileURL.path
-                let volumesDir = URL(fileURLWithPath: "/Volumes").standardizedFileURL
                 for pane in [appState.leftPane, appState.rightPane] {
                     for tab in pane.tabs {
                         let tabPath = tab.currentURL.standardizedFileURL
                         if tabPath.path.hasPrefix(volumePath) {
                             tab.navigateTo(home)
-                        } else if tabPath == volumesDir {
+                        } else if ComputerLocation.isRoot(tabPath) {
                             tab.loadFiles()
                         }
                     }

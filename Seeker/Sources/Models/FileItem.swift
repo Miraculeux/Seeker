@@ -181,10 +181,10 @@ struct FileItem: Identifiable, Hashable {
     /// Build a `FileItem` from prefetched URL resource values. Avoids the
     /// per-file `lstat` + `NSWorkspace.isFilePackage` round-trips that
     /// dominate `loadFiles()` on directories with thousands of entries.
-    init(url: URL, resourceValues rv: URLResourceValues) {
+    init(url: URL, resourceValues rv: URLResourceValues, name: String? = nil) {
         self.id = url.absoluteString
         self.url = url
-        self.name = url.lastPathComponent
+        self.name = name ?? url.lastPathComponent
 
         // TCC-protected names: still avoid touching them even on the fast path.
         let parentPath = url.deletingLastPathComponent().path

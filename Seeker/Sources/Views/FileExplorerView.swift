@@ -1532,6 +1532,7 @@ struct ColumnBrowserView: View {
                             directoryURL: url,
                             columnIndex: index,
                             showHiddenFiles: viewModel.showHiddenFiles,
+                            suppliedItems: ComputerLocation.isRoot(url) ? viewModel.files : nil,
                             selection: columnSelections[url],
                             onSelect: { handleSelection($0, at: url, columnIndex: index) },
                             onOpen: { viewModel.openItem($0) }
@@ -1621,6 +1622,7 @@ private struct ColumnFileList: View {
     let directoryURL: URL
     let columnIndex: Int
     let showHiddenFiles: Bool
+    let suppliedItems: [FileItem]?
     let selection: FileItem?
     let onSelect: (FileItem?) -> Void
     let onOpen: (FileItem) -> Void
@@ -1631,7 +1633,7 @@ private struct ColumnFileList: View {
     var body: some View {
         let binding = Binding<FileItem?>(get: { selection }, set: { onSelect($0) })
         return List(selection: binding) {
-            ForEach(items) { file in
+            ForEach(suppliedItems ?? items) { file in
                 HStack(spacing: 4) {
                     Image(nsImage: file.nsIcon)
                         .resizable()
@@ -1663,12 +1665,13 @@ private struct ColumnFileList: View {
         }
         .listStyle(.plain)
         .overlay {
-            if !loaded && items.isEmpty {
+            if suppliedItems == nil && !loaded && items.isEmpty {
                 ProgressView()
                     .controlSize(.small)
             }
         }
         .task(id: cacheKey) {
+            guard suppliedItems == nil else { return }
             // Warm-cache path resolves synchronously in the same tick;
             // cold path hops to a detached Task so directory enumeration
             // never blocks the main actor.
@@ -1688,6 +1691,7 @@ private struct ColumnFileList: View {
             loaded = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .filesDidChange)) { _ in
+            guard suppliedItems == nil else { return }
             // Cache is wiped wholesale by ColumnBrowserCache's listener;
             // re-trigger our own load so the visible column reflects the
             // change without waiting for a navigation.

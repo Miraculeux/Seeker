@@ -360,7 +360,7 @@ class FileExplorerViewModel: Identifiable {
         applySavedViewState(for: url)
 
         // Manage history (skip duplicate if navigating to same URL)
-        if !isSameURL {
+        if !isSameURL || pathHistory.isEmpty {
             if historyIndex < pathHistory.count - 1 {
                 pathHistory = Array(pathHistory.prefix(historyIndex + 1))
             }
@@ -543,6 +543,9 @@ class FileExplorerViewModel: Identifiable {
         options: FileManager.DirectoryEnumerationOptions
     ) throws -> [FileItem]? {
         try Task.checkCancellation()
+        if ComputerLocation.isRoot(url) {
+            return try ComputerLocation.files()
+        }
         let fm = FileManager.default
         let keys = FileItem.prefetchKeys
         let contents: [URL]
@@ -986,7 +989,8 @@ class FileExplorerViewModel: Identifiable {
     }
 
     func goUp() {
-        let parent = currentURL.deletingLastPathComponent()
+        guard canGoUp else { return }
+        let parent = currentURL.path == "/" ? ComputerLocation.url : currentURL.deletingLastPathComponent()
         navigateTo(parent)
     }
 
@@ -1016,10 +1020,10 @@ class FileExplorerViewModel: Identifiable {
 
     var canGoBack: Bool { historyIndex > 0 }
     var canGoForward: Bool { historyIndex < pathHistory.count - 1 }
-    var canGoUp: Bool { currentURL.path != "/" }
+    var canGoUp: Bool { !ComputerLocation.isRoot(currentURL) }
 
     var tabTitle: String {
-        currentURL.lastPathComponent.isEmpty ? "/" : currentURL.lastPathComponent
+        ComputerLocation.title(for: currentURL)
     }
 
     var pathComponents: [(String, URL)] {
@@ -1027,10 +1031,17 @@ class FileExplorerViewModel: Identifiable {
         var components: [(String, URL)] = []
         var url = currentURL
         while url.path != "/" {
+            if ComputerLocation.isRoot(url) {
+                components.append((ComputerLocation.name, ComputerLocation.url))
+                components.reverse()
+                _cachedPathComponents = components
+                return components
+            }
             components.append((url.lastPathComponent, url))
             url = url.deletingLastPathComponent()
         }
-        components.append(("/", URL(fileURLWithPath: "/")))
+        components.append((ComputerLocation.title(for: url), url))
+        components.append((ComputerLocation.name, ComputerLocation.url))
         components.reverse()
         _cachedPathComponents = components
         return components
