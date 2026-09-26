@@ -149,6 +149,7 @@ struct SidebarRow: View {
     @State private var hovering = false
     @Environment(AppTheme.self) private var theme
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.controlActiveState) private var controlActiveState
 
     private var isActive: Bool {
         appState.activeExplorer.currentURL == item.url
@@ -160,7 +161,10 @@ struct SidebarRow: View {
         } label: {
             HStack(spacing: 7) {
                 nativeSidebarIcon
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(
+                        !theme.isExplorer && item.section == .favorites && controlActiveState != .inactive
+                            ? Color.accentColor : Color(nsColor: .secondaryLabelColor)
+                    )
                     .frame(width: 16, height: 16)
                 Text(item.name)
                     .font(.system(size: 12, weight: isActive ? .semibold : .regular))
@@ -234,7 +238,7 @@ struct SidebarRow: View {
 
     @ViewBuilder
     private var nativeSidebarIcon: some View {
-        if let image = Self.nativeSidebarIcons[item.icon] {
+        if item.icon == "pencil.and.ruler", let image = Self.nativeApplicationsIcon {
             Image(nsImage: image)
                 .renderingMode(.template)
                 .resizable()
@@ -246,28 +250,16 @@ struct SidebarRow: View {
         }
     }
 
-    private static let nativeSidebarIcons: [String: NSImage] = {
-        let resources = [
-            "pencil.and.ruler": "SidebarApplicationsFolder",
-            "menubar.dock.rectangle": "SidebarDesktopFolder",
-            "doc": "SidebarDocumentsFolder",
-            "arrow.down.circle": "SidebarDownloadsFolder",
-            "folder": "SidebarGenericFolder",
-            "house": "SidebarHomeFolder",
-            "internaldrive": "SidebarInternalDisk",
-            "externaldrive": "SidebarExternalDisk",
-        ]
-        var images: [String: NSImage] = [:]
-        for (symbol, resource) in resources {
-            let path = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/\(resource).icns"
-            guard let image = NSImage(contentsOfFile: path) else {
-                NSLog("Seeker: Finder sidebar icon unavailable at %@; using %@.", path, symbol)
-                continue
-            }
-            image.isTemplate = true
-            images[symbol] = image
+    // CoreTypes' other Sidebar*.icns assets use legacy artwork rather than
+    // modern Finder outlines. Applications has no matching public SF Symbol.
+    static let nativeApplicationsIcon: NSImage? = {
+        let path = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/SidebarApplicationsFolder.icns"
+        guard let image = NSImage(contentsOfFile: path) else {
+            NSLog("Seeker: Finder sidebar icon unavailable at %@; using pencil.and.ruler.", path)
+            return nil
         }
-        return images
+        image.isTemplate = true
+        return image
     }()
 
     private func ejectVolume(at url: URL) {
