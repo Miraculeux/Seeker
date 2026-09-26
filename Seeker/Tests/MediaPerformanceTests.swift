@@ -156,19 +156,71 @@ final class MediaPerformanceTests: XCTestCase {
         }
     }
 
+    private func dsfFormat(channelType: UInt64, channels: UInt64, sampleRate: UInt64,
+                           bitOrder: UInt64, sampleCount: UInt64) -> Data {
+        var format = Data("fmt ".utf8) + le(52, 8)
+        format += le(1) + le(0) + le(channelType) + le(channels)
+        format += le(sampleRate) + le(bitOrder) + le(sampleCount, 8)
+        format += le(4096) + le(0)
+        return format
+    }
+
+    func testDSFTechnicalInfoUsesFormatOffsetsAnd64BitSampleCount() throws {
+        // DSD256 header values from the reported file; sample count exceeds UInt32.
+        let sampleCount: UInt64 = 0x000000018ECB4600
+        for bitOrder: UInt64 in [1, 8] {
+            let format = dsfFormat(channelType: 2, channels: 2, sampleRate: 11_289_600,
+                                   bitOrder: bitOrder, sampleCount: sampleCount)
+            let url = try fixture("header-\(bitOrder).dsf", Data("DSD ".utf8)
+                + le(28, 8) + le(80, 8) + le(0, 8) + format)
+            let parsed = try DSFFile.read(url)
+            let info = TechnicalInfoService.finalize(
+                TechnicalInfoService.from(dsf: parsed, fileSize: 80))
+            XCTAssertEqual(info.container, "DSF")
+            XCTAssertEqual(info.codec, "DSD")
+            XCTAssertTrue(info.isDSD)
+            XCTAssertEqual(info.channels, 2)
+            XCTAssertEqual(info.sampleRate, 11_289_600)
+            XCTAssertEqual(info.bitsPerSample, 1)
+            XCTAssertEqual(info.bitrate, 22_579_200)
+            let duration = try XCTUnwrap(info.durationSeconds)
+            XCTAssertEqual(duration, 592.638685, accuracy: 0.000001)
+            XCTAssertEqual(Int(duration) / 60, 9)
+            XCTAssertEqual(Int(duration) % 60, 52)
+            XCTAssertNil(parsed.id3Tag)
+        }
+    }
+
+    func testDSFChannelCountIsNotChannelType() throws {
+        let format = dsfFormat(channelType: 6, channels: 5, sampleRate: 2_822_400,
+                               bitOrder: 1, sampleCount: 4_233_600)
+        let url = try fixture("multichannel.dsf", Data("DSD ".utf8)
+            + le(28, 8) + le(80, 8) + le(0, 8) + format)
+        let info = try DSFFile.read(url).techInfo
+        XCTAssertEqual(info.channels, 5)
+        XCTAssertEqual(info.sampleRate, 2_822_400)
+        XCTAssertEqual(info.durationSeconds, 1.5)
+        XCTAssertEqual(info.bitrate, 14_112_000)
+    }
+
     func testDSFRewritePreservesAudioAndPatchesPointers() throws {
         let audio = payload
-        let body = Data("fmt ".utf8) + le(52, 8) + Data(count: 40)
+        let sampleCount = UInt64(audio.count) * 4
+        let body = dsfFormat(channelType: 2, channels: 2, sampleRate: 2_822_400,
+                             bitOrder: 1, sampleCount: sampleCount)
             + Data("data".utf8) + le(UInt64(audio.count + 12), 8) + audio
         let url = try fixture("audio.dsf", Data("DSD ".utf8) + le(28, 8)
             + le(UInt64(28 + body.count), 8) + le(0, 8) + body)
+        let originalInfo = try DSFFile.read(url).techInfo
         for _ in 0..<2 {
             try DSFFile.write(url: url, entries: tags, cover: cover)
             let bytes = try read(url)
             XCTAssertEqual(bytes.subdata(in: 28..<(28 + body.count)), body)
             XCTAssertEqual(number(bytes, at: 12, width: 8, little: true), UInt64(bytes.count))
             XCTAssertEqual(number(bytes, at: 20, width: 8, little: true), UInt64(28 + body.count))
-            XCTAssertEqual(try DSFFile.read(url).decoded().cover?.data, cover.data)
+            let parsed = try DSFFile.read(url)
+            XCTAssertEqual(parsed.decoded().cover?.data, cover.data)
+            XCTAssertEqual(parsed.techInfo, originalInfo)
             try assertMode(url)
         }
     }

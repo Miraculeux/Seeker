@@ -108,7 +108,8 @@ swift test
 ```
 
 The tests use isolated synthetic files to check cancellation, sorting, batch
-rename safety, preview limits, hashing, and streaming media metadata updates.
+rename safety, preview limits, hashing, DSF duration and audio properties, and
+streaming media metadata updates.
 They do not require network downloads or access to a personal media library.
 
 ### Build a Signed Release
