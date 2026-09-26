@@ -359,9 +359,10 @@ struct SidebarRow: View {
     private func forceEmptyTrash() {
         releasePreviewHandles()
         Task {
-            let diagnostics = await Task.detached(priority: .userInitiated) { () -> [TrashDiagnostic] in
+            let result = await Task.detached(priority: .userInitiated) { () -> (diagnostics: [TrashDiagnostic], errors: [String]) in
                 let fileManager = FileManager.default
-                return TrashDiagnostics.trashItemURLs().compactMap { url -> TrashDiagnostic? in
+                let listing = TrashDiagnostics.listing()
+                let diagnostics = listing.urls.compactMap { url -> TrashDiagnostic? in
                     do {
                         try fileManager.removeItem(at: url)
                         return nil
@@ -369,11 +370,19 @@ struct SidebarRow: View {
                         return TrashDiagnostics.diagnose(url: url, error: error)
                     }
                 }
+                return (diagnostics, listing.errors)
             }.value
 
             refreshTrashIfVisible()
-            if !diagnostics.isEmpty {
-                showTrashDiagnostics(diagnostics)
+            if !result.diagnostics.isEmpty {
+                showTrashDiagnostics(result.diagnostics)
+            }
+            if !result.errors.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "Some Trash folders could not be read"
+                alert.informativeText = result.errors.joined(separator: "\n")
+                alert.alertStyle = .warning
+                alert.runModal()
             }
         }
     }

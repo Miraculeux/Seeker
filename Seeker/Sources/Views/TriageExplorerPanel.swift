@@ -323,22 +323,31 @@ struct TriageExplorerPanel: View {
         selection = []
         anchorURL = nil
         Task {
-            guard let trashed = try? await BackgroundWork.run({
+            guard let result = try? await BackgroundWork.run({
                 var done: [URL] = []
+                var errors: [String] = []
                 for url in urls {
                     if Task.isCancelled { break }
                     do {
-                        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                        _ = try TrashRestoreService.shared.trash(url)
                         done.append(url)
                     } catch {
-                        print("[Seeker] Failed to trash \(url.path): \(error)")
+                        errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
                     }
                 }
-                return done
+                return (done, errors)
             }) else { return }
-            guard !trashed.isEmpty else { return }
-            for url in trashed { onDeleted?(url) }
+            if !result.1.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "Some items could not be moved to Trash"
+                alert.informativeText = result.1.prefix(10).joined(separator: "\n")
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+            guard !result.0.isEmpty else { return }
+            for url in result.0 { onDeleted?(url) }
             if !isFixed { vm.loadFiles() }
+            NotificationCenter.default.post(name: .filesDidChange, object: nil)
         }
     }
 

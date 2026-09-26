@@ -1097,6 +1097,11 @@ struct SeekerApp: App {
                 .disabled(AppDelegate.isHelperWindow(NSApp.keyWindow)
                     && !AppDelegate.isTriageWindow(NSApp.keyWindow))
 
+                Button("Put Back") {
+                    appState.activeExplorer.restoreSelectedFromTrash()
+                }
+                .disabled(!mainWindowCommandsEnabled || !appState.activeExplorer.canRestoreFromTrash)
+
                 Button("Delete Immediately\u{2026}") {
                     // Permanent delete bypasses the Trash. Only meaningful
                     // for the main window; ignore when a helper window

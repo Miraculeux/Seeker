@@ -338,7 +338,7 @@ final class FolderSyncer {
                 try fm.copyItem(at: source, to: dest)
                 return true
             case .deleteB:
-                try fm.trashItem(at: action.destination, resultingItemURL: nil)
+                _ = try TrashRestoreService.shared.trash(action.destination)
                 return true
             }
         } catch {

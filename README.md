@@ -22,6 +22,8 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - Batch rename keeps accepted previews valid when text editing ends; failed attempts report errors and keep the dialog open when no files were renamed
 - Cross-pane copy / move (⌘⇧C / ⌘⇧M)
 - Cut / Copy / Paste between any locations
+- Trash lists recoverable items from the startup disk and mounted external volumes, even when Finder omits an external volume; unreadable Trash folders are reported explicitly
+- **Put Back** in the Trash context menu or File menu restores items deleted by Seeker to their original locations, including after restarting. For items deleted outside Seeker, choose a restore folder. Existing files are never overwritten; failed items stay in the Trash.
 - Drag and drop, with Option to force copy
 - Compress to `.zip`, decompress archives
 - Move to Trash via ⌘⌫

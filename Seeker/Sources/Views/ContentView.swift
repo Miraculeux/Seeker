@@ -238,6 +238,9 @@ struct ContentView: View {
                     .disabled(!explorer.hasEditableMetadataSelection)
                 Button("Batch Rename") { appState.openBatchRename() }
                     .disabled(!explorer.hasSelection)
+                if explorer.canRestoreFromTrash {
+                    Button("Put Back") { explorer.restoreSelectedFromTrash() }
+                }
                 Divider()
                 Button("Copy to Other Pane") { appState.copyToOtherPane() }
                     .disabled(!appState.showDualPane || !explorer.hasSelection)
@@ -626,4 +629,3 @@ struct FavoriteToolbarBtn: View {
         isFavorite = SettingsManager.shared.isUserFavorite(appState.activeExplorer.currentURL)
     }
 }
-

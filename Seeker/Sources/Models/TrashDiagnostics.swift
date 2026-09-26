@@ -26,31 +26,82 @@ struct TrashDiagnostic: Sendable {
 }
 
 enum TrashDiagnostics {
-    static func trashItemURLs() -> [URL] {
+    struct Listing: Sendable {
+        var urls: [URL] = []
+        var errors: [String] = []
+    }
+
+    static func isTrashLocation(_ url: URL) -> Bool {
+        let trash = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        return url.standardizedFileURL.path == trash.standardizedFileURL.path
+            || url.resolvingSymlinksInPath().path == trash.resolvingSymlinksInPath().path
+    }
+
+    static func isTrashDirectory(_ url: URL) -> Bool {
+        if isTrashLocation(url) { return true }
+        let components = url.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+        return components.count == 5 && components[1] == "Volumes"
+            && components[3] == ".Trashes" && components[4] == String(getuid())
+    }
+
+    static func isInsideTrash(_ url: URL) -> Bool {
+        if isTrashDirectory(url) { return true }
+        var directory = url.deletingLastPathComponent().resolvingSymlinksInPath()
+        while directory.path != "/" {
+            if isTrashDirectory(directory) { return true }
+            directory.deleteLastPathComponent()
+        }
+        return false
+    }
+
+    static func trashRoots() throws -> [URL] {
         let fileManager = FileManager.default
-        var roots = [fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")]
         let volumesURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
         let userID = String(getuid())
-        if let volumes = try? fileManager.contentsOfDirectory(
+        let volumes = try fileManager.contentsOfDirectory(
             at: volumesURL,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
-        ) {
-            roots += volumes.map {
+        )
+        return [fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")]
+            + volumes.map {
                 $0.appendingPathComponent(".Trashes", isDirectory: true)
                     .appendingPathComponent(userID, isDirectory: true)
             }
-        }
+    }
 
-        var seenPaths = Set<String>()
-        return roots.flatMap { root -> [URL] in
-            guard seenPaths.insert(root.standardizedFileURL.path).inserted else { return [] }
-            return (try? fileManager.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: nil,
-                options: []
-            )) ?? []
+    static func listing() -> Listing {
+        do {
+            return listing(roots: try trashRoots())
+        } catch {
+            var result = listing(roots: [
+                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+            ])
+            result.errors.append("Could not locate external Trash folders: \(error.localizedDescription)")
+            return result
         }
+    }
+
+    static func listing(roots: [URL]) -> Listing {
+        var result = Listing()
+        var seenPaths = Set<String>()
+        for root in roots {
+            let directory = root.resolvingSymlinksInPath().standardizedFileURL
+            guard seenPaths.insert(directory.path).inserted else { continue }
+            do {
+                result.urls += try FileManager.default.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: FileItem.prefetchKeys,
+                    options: []
+                )
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                // Volumes with no trashed items need not have a Trash directory yet.
+                continue
+            } catch {
+                result.errors.append("Could not read Trash at \(root.path): \(error.localizedDescription)")
+            }
+        }
+        return result
     }
 
     static func diagnose(url: URL, error: Error) -> TrashDiagnostic {

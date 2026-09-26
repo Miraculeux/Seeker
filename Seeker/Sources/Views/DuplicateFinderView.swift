@@ -520,7 +520,7 @@ struct DuplicateFinderView: View {
                 for (index, url) in urls.enumerated() {
                     if Task.isCancelled { break }
                     do {
-                        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                        _ = try TrashRestoreService.shared.trash(url)
                         trashed.insert(url)
                     } catch {
                         failed += 1

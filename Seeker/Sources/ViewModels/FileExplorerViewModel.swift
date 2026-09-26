@@ -198,6 +198,12 @@ class FileExplorerViewModel: Identifiable {
 
     var canUndo: Bool { !undoStack.isEmpty && fileMutationStatus == nil }
 
+    var canRestoreFromTrash: Bool {
+        let items = effectiveSelection
+        return fileMutationStatus == nil && !items.isEmpty
+            && items.allSatisfy { TrashDiagnostics.isTrashDirectory($0.url.deletingLastPathComponent()) }
+    }
+
     // Clipboard for copy/cut operations. Main-actor isolated (like the rest
     // of this type) so the compiler enforces single-threaded access.
     static var clipboard: [URL] = []
@@ -218,8 +224,11 @@ class FileExplorerViewModel: Identifiable {
 
     private let _observer = UncheckedSendableBox<Any?>(nil)
     private let _zoomObserver = UncheckedSendableBox<Any?>(nil)
+    @ObservationIgnored private let trashService: TrashRestoreService
 
-    init(url: URL = FileManager.default.homeDirectoryForCurrentUser) {
+    init(url: URL = FileManager.default.homeDirectoryForCurrentUser,
+         trashService: TrashRestoreService = .shared) {
+        self.trashService = trashService
         self.currentURL = url
         self._standardizedCurrentURL = url.standardizedFileURL
         navigateTo(url)
@@ -243,7 +252,10 @@ class FileExplorerViewModel: Identifiable {
                     // slash, so URL equality would wrongly differ.
                     let here = self._standardizedCurrentURL.path
                     let changed = dir.standardizedFileURL.path
-                    if here != changed { return }
+                    if here != changed && !TrashDiagnostics.isTrashLocation(self.currentURL) { return }
+                }
+                if TrashDiagnostics.isTrashLocation(self.currentURL) {
+                    TrashCache.shared.invalidate()
                 }
                 self.loadFiles()
             }
@@ -433,23 +445,19 @@ class FileExplorerViewModel: Identifiable {
         let url = currentURL.standardizedFileURL
         let options: FileManager.DirectoryEnumerationOptions =
             showHiddenFiles ? [] : [.skipsHiddenFiles]
-        let trashURL = FileManager.default
-            .homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-        let isTrash = url.standardizedFileURL == trashURL.standardizedFileURL
-            || url.resolvingSymlinksInPath() == trashURL.resolvingSymlinksInPath()
+        let isTrash = TrashDiagnostics.isTrashLocation(url)
         let token = nextLoadToken()
 
         loadTask = Task { [weak self] in
             do {
-                let items = try await BackgroundWork.run {
+                let result = try await BackgroundWork.run {
                     if isTrash {
-                        let trashItems = Self.loadTrashViaFinder()
-                        if !trashItems.isEmpty { return trashItems }
+                        return Self.loadTrash()
                     }
-                    return try Self.enumerate(url: url, options: options) ?? []
+                    return (items: try Self.enumerate(url: url, options: options) ?? [], errors: [String]())
                 }
                 guard let self, self.currentLoadToken == token else { return }
-                let sorted = try await self.sortedForCurrentOrder(items)
+                let sorted = try await self.sortedForCurrentOrder(result.items)
                 guard !Task.isCancelled, self.currentLoadToken == token else { return }
                 self.allFiles = sorted
                 self.listingRevision &+= 1
@@ -457,6 +465,9 @@ class FileExplorerViewModel: Identifiable {
                 self.applyPendingSelection()
                 self.loadTask = nil
                 self.refreshExpandedChildren()
+                if !result.errors.isEmpty {
+                    self.showFileError(result.errors.joined(separator: "\n"))
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -822,6 +833,32 @@ class FileExplorerViewModel: Identifiable {
     }
 
     @ObservationIgnored private var lastDuplicateLog: FileItem.ID?
+
+    private nonisolated static func loadTrash() -> (items: [FileItem], errors: [String]) {
+        let listing = TrashDiagnostics.listing()
+        let keys = Set(FileItem.prefetchKeys)
+        var items: [FileItem] = []
+        var errors = listing.errors
+        var seenPaths = Set<String>()
+        for url in listing.urls {
+            guard seenPaths.insert(url.standardizedFileURL.path).inserted else { continue }
+            do {
+                items.append(FileItem(url: url, resourceValues: try url.resourceValues(forKeys: keys)))
+            } catch {
+                errors.append("Could not read \(url.path): \(error.localizedDescription)")
+            }
+        }
+        // Finder can access Trash folders that need Automation permission instead
+        // of direct disk access, but its list can omit an entire external volume.
+        if !listing.errors.isEmpty {
+            for item in loadTrashViaFinder() where FileManager.default.fileExists(atPath: item.url.path) {
+                if seenPaths.insert(item.url.standardizedFileURL.path).inserted {
+                    items.append(item)
+                }
+            }
+        }
+        return (items, errors)
+    }
 
     /// Off-actor Trash enumeration via Finder AppleScript. Validates each
     /// returned path is a real file URL pointing at a still-existing item
@@ -1269,6 +1306,7 @@ class FileExplorerViewModel: Identifiable {
         let origin = currentURL
         let selectedIDs = selectedFileIDs
         let urls = items.map(\.url)
+        let trashService = self.trashService
 
         // Determine which file should be selected after deletion: prefer the
         // next surviving sibling (after the last trashed item), otherwise the
@@ -1298,10 +1336,9 @@ class FileExplorerViewModel: Identifiable {
                 var failure: String?
                 for url in urls {
                     do {
-                        var resultingURL: NSURL?
-                        try FileManager.default.trashItem(at: url, resultingItemURL: &resultingURL)
+                        let trashURL = try trashService.trash(url)
                         originals.append(url)
-                        if let trashURL = resultingURL as URL? { trashed.append(trashURL) }
+                        trashed.append(trashURL)
                     } catch {
                         failure = "Could not move to Trash: \(error.localizedDescription)"
                         break
@@ -1314,6 +1351,58 @@ class FileExplorerViewModel: Identifiable {
             }
             finishFileMutation(origin: origin, selection: selectedIDs, neighbor: nextNeighborURL, sources: urls)
             if let error = result.2 { showFileError(error) }
+        }
+    }
+
+    func restoreSelectedFromTrash(to fallbackDirectory: URL? = nil) {
+        guard canRestoreFromTrash, beginFileMutation("Restoring from Trash\u{2026}") else { return }
+        let origin = currentURL
+        let selectedIDs = selectedFileIDs
+        let urls = effectiveSelection.map(\.url)
+        let trashService = self.trashService
+        Task {
+            defer { fileMutationStatus = nil }
+            do {
+                let unknown = try await BackgroundWork.run {
+                    try urls.filter { try trashService.originalURL(for: $0) == nil }
+                }
+                var directory = fallbackDirectory
+                if !unknown.isEmpty && directory == nil {
+                    let panel = NSOpenPanel()
+                    panel.title = "Restore from Trash"
+                    panel.message = "The original location of \(unknown.count) item(s) is unknown. Choose a folder for those items. Other selected items will return to their original locations."
+                    panel.prompt = "Restore"
+                    panel.canChooseFiles = false
+                    panel.canChooseDirectories = true
+                    panel.canCreateDirectories = true
+                    panel.allowsMultipleSelection = false
+                    guard panel.runModal() == .OK, let selected = panel.url else { return }
+                    directory = selected
+                }
+                let chosenDirectory = directory
+                let unknownURLs = Set(unknown)
+                let result = await Task.detached(priority: .userInitiated) {
+                    var restored: [URL] = []
+                    var errors: [String] = []
+                    for url in urls {
+                        do {
+                            let destination = unknownURLs.contains(url)
+                                ? chosenDirectory?.appendingPathComponent(url.lastPathComponent) : nil
+                            restored.append(try trashService.restore(url, to: destination))
+                        } catch {
+                            errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                        }
+                    }
+                    return (restored, errors)
+                }.value
+                finishFileMutation(origin: origin, selection: selectedIDs, neighbor: nil,
+                                   sources: urls + result.0)
+                if !result.1.isEmpty {
+                    showFileError("Some items could not be restored:\n" + result.1.joined(separator: "\n"))
+                }
+            } catch {
+                showFileError("Could not restore from Trash: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -1414,6 +1503,7 @@ class FileExplorerViewModel: Identifiable {
         guard fileMutationStatus == nil else { NSSound.beep(); return }
         guard let action = undoStack.popLast() else { return }
         fileMutationStatus = "Undoing\u{2026}"
+        let trashService = self.trashService
         Task {
             defer { fileMutationStatus = nil }
             let result = await Task.detached(priority: .userInitiated) {
@@ -1427,12 +1517,16 @@ class FileExplorerViewModel: Identifiable {
                 }
                 func trash(_ url: URL) {
                     affected.append(url)
-                    do { try fm.trashItem(at: url, resultingItemURL: nil) }
+                    do { _ = try trashService.trash(url) }
                     catch { errors.append(error.localizedDescription) }
                 }
                 switch action {
                 case .trash(let originals, let trashURLs):
-                    for (original, url) in zip(originals, trashURLs) { move(url, to: original) }
+                    for (original, url) in zip(originals, trashURLs) {
+                        affected.append(contentsOf: [url, original])
+                        do { try trashService.restore(url, to: original) }
+                        catch { errors.append(error.localizedDescription) }
+                    }
                 case .create(let url):
                     trash(url)
                 case .rename(let oldURL, let newURL):
@@ -1856,6 +1950,13 @@ final class TrashCache: @unchecked Sendable {
     /// Guards against rare cases where Finder recategorises items without
     /// touching the directory's mtime (e.g. icon position writes).
     private let maxAge: TimeInterval = 30
+
+    func invalidate() {
+        lock.lock(); defer { lock.unlock() }
+        items = []
+        cachedMTime = nil
+        fetchedAt = .distantPast
+    }
 
     func get(mtime: Date?) -> [FileItem]? {
         lock.lock(); defer { lock.unlock() }

@@ -597,7 +597,11 @@ struct FileContentView: View {
                 viewModel.beginRename(file)
             }
         }
-        Button("Move to Trash") { viewModel.trashSelected() }
+        if viewModel.canRestoreFromTrash {
+            Button("Put Back") { viewModel.restoreSelectedFromTrash() }
+        } else {
+            Button("Move to Trash") { viewModel.trashSelected() }
+        }
         Button("Delete Immediately…") { viewModel.deleteSelectedPermanently() }
 
         Divider()
