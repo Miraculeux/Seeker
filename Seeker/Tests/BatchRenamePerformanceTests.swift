@@ -77,12 +77,73 @@ final class BatchRenamePerformanceTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(model.canApply, "Even an edit without requestPreview must invalidate apply")
         let rejected = await model.apply()
         XCTAssertTrue(rejected.renamed.isEmpty)
+        XCTAssertFalse(rejected.errors.isEmpty)
         XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "original")
 
         model.requestPreview()
         let pending = await model.apply()
         XCTAssertTrue(pending.renamed.isEmpty)
+        XCTAssertFalse(pending.errors.isEmpty)
         XCTAssertFalse(model.canApply)
+    }
+
+    @MainActor
+    func testUnchangedFieldCommitDoesNotInvalidateAcceptedPreview() async throws {
+        let root = try makeFixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for mode in BatchRenamer.Mode.allCases {
+            let source = root.appendingPathComponent("original-\(mode.rawValue).txt")
+            try Data(mode.rawValue.utf8).write(to: source)
+            let model = BatchRenamer(urls: [source])
+            defer { model.cancelPendingWork() }
+            model.mode = mode
+            model.find = "original"
+            model.replacement = "renamed"
+            model.prefix = "\(mode.rawValue)-"
+            model.requestPreview()
+            try await waitForPreview(model)
+            let target = root.appendingPathComponent(try XCTUnwrap(model.previewRows.first).newName)
+
+            // Text fields can write their current value again when Apply ends editing.
+            model.requestPreview()
+            XCTAssertFalse(model.isPreviewLoading)
+            XCTAssertTrue(model.canApply)
+            let commitDuringValidation = Task { @MainActor in model.requestPreview() }
+            let result = await model.apply()
+            await commitDuringValidation.value
+            XCTAssertTrue(result.errors.isEmpty)
+            XCTAssertEqual(result.renamed.map(\.from), [source])
+            XCTAssertEqual(result.renamed.map(\.to), [target])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+            XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), mode.rawValue)
+        }
+    }
+
+    @MainActor
+    func testChangedSettingsDuringApplyReportFailureWithoutRenaming() async throws {
+        let root = try makeFixtureDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("original.txt")
+        try Data("original".utf8).write(to: source)
+        let model = BatchRenamer(urls: [source])
+        defer { model.cancelPendingWork() }
+        model.mode = .sequence
+        model.requestPreview()
+        try await waitForPreview(model)
+
+        let editDuringValidation = Task { @MainActor in
+            model.prefix = "changed-"
+            model.requestPreview()
+        }
+        let result = await model.apply()
+        await editDuringValidation.value
+        XCTAssertTrue(result.renamed.isEmpty)
+        XCTAssertFalse(result.errors.isEmpty)
+        XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "original")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("1.txt").path))
+        try await waitForPreview(model)
+        XCTAssertEqual(model.previewRows.map(\.newName), ["changed-1.txt"])
+        XCTAssertTrue(model.canApply)
     }
 
     @MainActor
@@ -172,6 +233,8 @@ final class BatchRenamePerformanceTests: XCTestCase, @unchecked Sendable {
         let result = await model.apply()
         XCTAssertTrue(result.renamed.isEmpty)
         XCTAssertTrue(result.errors.contains { $0.contains("Already exists") })
+        XCTAssertEqual(model.previewRows.first?.error, "Already exists")
+        XCTAssertFalse(model.canApply)
         XCTAssertEqual(try String(contentsOf: first, encoding: .utf8), "A")
         XCTAssertEqual(try String(contentsOf: second, encoding: .utf8), "B")
         XCTAssertEqual(try String(contentsOf: occupied, encoding: .utf8), "existing")
@@ -278,6 +341,7 @@ final class BatchRenamePerformanceTests: XCTestCase, @unchecked Sendable {
         task.cancel()
         let result = await task.value
         XCTAssertTrue(result.renamed.isEmpty)
+        XCTAssertFalse(result.errors.isEmpty)
         XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "original")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("1.txt").path))
     }

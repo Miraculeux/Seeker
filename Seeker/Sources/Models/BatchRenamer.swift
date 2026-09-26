@@ -209,9 +209,12 @@ final class BatchRenamer {
 
     /// Invalidates synchronously, then debounces the expensive off-main pass.
     func requestPreview() {
+        let snapshot = settings
+        // Ending text editing can commit an unchanged value when Apply disables the form.
+        // Keep that accepted preview valid, including during apply-time revalidation.
+        guard snapshot != acceptedSettings else { return }
         previewGeneration += 1
         let generation = previewGeneration
-        let snapshot = settings
         previewTask?.cancel()
         acceptedSettings = nil
         isPreviewLoading = true
@@ -503,7 +506,9 @@ final class BatchRenamer {
     /// in-set collisions are handled safely. Returns the `(old, new)`
     /// pairs that succeeded plus any error messages.
     func apply() async -> (renamed: [(from: URL, to: URL)], errors: [String]) {
-        guard canApply, let snapshot = acceptedSettings else { return ([], []) }
+        guard canApply, let snapshot = acceptedSettings else {
+            return ([], ["The rename preview is not ready. Review the preview and try again."])
+        }
         let generation = previewGeneration
         isApplying = true
         defer { isApplying = false }
@@ -512,15 +517,18 @@ final class BatchRenamer {
             validated = try await Self.previews(for: snapshot, sourceDates: sourceDates)
             try Task.checkCancellation()
         } catch {
-            return ([], [])
+            return ([], ["Could not validate renames: \(error.localizedDescription)"])
         }
-        guard generation == previewGeneration, snapshot == settings else { return ([], []) }
+        guard generation == previewGeneration, snapshot == settings else {
+            return ([], ["The rename settings changed. Review the updated preview and try again."])
+        }
+        previewRows = validated
         let validationErrors = validated.compactMap { row in
             row.error.map { "\(row.oldName): \($0)" }
         }
         guard validationErrors.isEmpty else { return ([], validationErrors) }
         let rows = validated.filter { $0.changed }
-        guard !rows.isEmpty else { return ([], []) }
+        guard !rows.isEmpty else { return ([], ["No files need to be renamed."]) }
         let plan = rows.map { (from: $0.id, toName: $0.newName) }
 
         // Once staging starts, finish both passes even if the caller is cancelled.

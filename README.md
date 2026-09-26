@@ -19,6 +19,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 ### File Operations
 - Copy, move, rename, delete, duplicate, new folder / new file — all with a background progress panel
 - Recursive copy planning, archive preparation, bulk deletion, and undo run off the UI thread; batch-rename previews are debounced and validated again before applying
+- Batch rename keeps accepted previews valid when text editing ends; failed attempts report errors and keep the dialog open when no files were renamed
 - Cross-pane copy / move (⌘⇧C / ⌘⇧M)
 - Cut / Copy / Paste between any locations
 - Drag and drop, with Option to force copy

@@ -447,8 +447,8 @@ struct BatchRenameView: View {
             }
             if !result.renamed.isEmpty {
                 onComplete(result.renamed)
+                dismiss()
             }
-            dismiss()
         }
     }
 }
