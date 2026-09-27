@@ -42,8 +42,6 @@ struct FileSearchView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Divider()
-            footer
         }
         .frame(minWidth: 620, idealWidth: 760, maxWidth: .infinity,
                minHeight: 460, idealHeight: 600, maxHeight: .infinity)
@@ -80,7 +78,7 @@ struct FileSearchView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass.circle.fill")
-                .font(.system(size: 16))
+                .font(.system(size: 15))
                 .foregroundColor(.accentColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Search")
@@ -92,16 +90,11 @@ struct FileSearchView: View {
                     .truncationMode(.middle)
                     .help(searcher.root.path)
             }
-            Spacer()
-            Button { dismiss() } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary.opacity(0.6))
-            }
-            .buttonStyle(.borderless)
+            Spacer(minLength: 12)
+            headerActions
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(Color.primary.opacity(0.04))
     }
 
@@ -231,18 +224,18 @@ struct FileSearchView: View {
         .padding(.vertical, 1)
     }
 
-    // MARK: - Footer
+    // MARK: - Header Actions
 
-    private var footer: some View {
+    private var headerActions: some View {
         HStack(spacing: 8) {
             if case .searching = searcher.status {
                 Button("Stop") { searcher.cancel(); searcher.status = .done(count: searcher.results.count) }
             }
-            Text(footerText)
+            Text(statusText)
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
                 .monospacedDigit()
-            Spacer()
+                .fixedSize()
             Button { if let url = selection { preview(url) } } label: {
                 Label("Quick Look", systemImage: "eye").font(.system(size: 11))
             }
@@ -252,14 +245,10 @@ struct FileSearchView: View {
             }
             .disabled(selection == nil)
             .help("Locate in the main window")
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.defaultAction)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 
-    private var footerText: String {
+    private var statusText: String {
         switch searcher.status {
         case .done(let count): return "\(count) result\(count == 1 ? "" : "s")"
         case .searching: return "Searching\u{2026}"

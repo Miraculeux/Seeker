@@ -2,12 +2,11 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-/// Sheet that scans a chosen folder for duplicate files using
+/// Window that scans a chosen folder for duplicate files using
 /// `DuplicateFinder` (size \u2192 4 KB head xxHash3 \u2192 full-file xxHash3)
 /// and lets the user reveal or trash redundant copies.
 struct DuplicateFinderView: View {
     @Environment(AppState.self) var appState
-    @Environment(\.dismiss) private var dismiss
     @State private var finder = DuplicateFinder()
     /// Per-group: which URLs the user has selected to delete. The first
     /// item in each group is kept by default; the rest are pre-checked.
@@ -64,8 +63,6 @@ struct DuplicateFinderView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .disabled(deletionTask != nil)
 
-            Divider()
-            footer
         }
         .frame(minWidth: 940, idealWidth: 1100, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
@@ -111,7 +108,7 @@ struct DuplicateFinderView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "doc.on.doc.fill")
-                .font(.system(size: 16))
+                .font(.system(size: 15))
                 .foregroundColor(.accentColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Find Duplicates")
@@ -123,18 +120,11 @@ struct DuplicateFinderView: View {
                     .truncationMode(.middle)
                     .help(roots.map(\.path).joined(separator: "\n"))
             }
-            Spacer()
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary.opacity(0.6))
-            }
-            .buttonStyle(.borderless)
+            Spacer(minLength: 12)
+            headerActions
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(Color.primary.opacity(0.04))
     }
 
@@ -350,13 +340,13 @@ struct DuplicateFinderView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
-    // MARK: - Footer
+    // MARK: - Header Actions
 
-    private var footer: some View {
+    private var headerActions: some View {
         HStack(spacing: 8) {
             if deletionTask != nil {
                 ProgressView(value: Double(deletionCompleted), total: Double(max(1, deletionTotal)))
-                    .frame(width: 100)
+                    .frame(width: 70)
                 Text("Trashing \(deletionCompleted) / \(deletionTotal)")
                     .font(.system(size: 10))
                     .monospacedDigit()
@@ -368,24 +358,34 @@ struct DuplicateFinderView: View {
             } else if case .hashingFull = finder.status {
                 Button("Cancel") { finder.cancel() }
             }
-            Spacer()
-            Text(footerSelectionSummary)
+            Text(selectionSummary)
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
                 .monospacedDigit()
+                .fixedSize()
+            Button { rescan() } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .help("Rescan")
+            .disabled(deletionTask != nil || isScanning)
             Button("Move to Trash") {
                 trashSelected()
             }
             .keyboardShortcut(.delete, modifiers: [])
-            .disabled(toDelete.isEmpty || deletionTask != nil)
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.defaultAction)
+            .font(.system(size: 11))
+            .disabled(toDelete.isEmpty || deletionTask != nil || isScanning)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 
-    private var footerSelectionSummary: String {
+    private var isScanning: Bool {
+        switch finder.status {
+        case .scanning, .hashingHeads, .hashingFull: true
+        default: false
+        }
+    }
+
+    private var selectionSummary: String {
         let bytes = finder.groups.reduce(Int64(0)) { acc, group in
             acc + Int64(group.urls.filter { toDelete.contains($0) }.count) * group.fileSize
         }
