@@ -271,8 +271,8 @@ struct DuplicateFinderView: View {
         HSplitView {
             duplicateList
                 .frame(minWidth: 360, idealWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
-            TriageExplorerPanel(
-                targetURL: focusedURL,
+            DuplicateComparisonPanels(
+                targets: DuplicateComparisonTargets(selected: focusedURL, groups: finder.groups),
                 onDeleted: { url in removeFromGroups(url) }
             )
             .frame(minWidth: 380, idealWidth: 520, maxWidth: .infinity, maxHeight: .infinity)

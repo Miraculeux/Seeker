@@ -38,6 +38,9 @@ struct TriageExplorerPanel: View {
     var similarityThreshold: Binding<Double>? = nil
     var similarityTotalCount: Int? = nil
     var footerStatusText: String? = nil
+    /// Secondary comparison panels sync their target without stealing
+    /// keyboard focus from the primary panel.
+    var focusesOnTargetChange: Bool = true
     /// Invoked after a file is successfully moved to the Trash.
     var onDeleted: ((URL) -> Void)? = nil
     /// Invoked after an operation that may have changed the set of files
@@ -204,7 +207,9 @@ struct TriageExplorerPanel: View {
         selection = [url]
         anchorURL = url
         vm.revealAndSelect(url)
-        DispatchQueue.main.async { listFocused = true }
+        if focusesOnTargetChange {
+            DispatchQueue.main.async { listFocused = true }
+        }
     }
 
     /// Rebuilds the cached `FileItem`s for fixed-list mode.
