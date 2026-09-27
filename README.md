@@ -42,7 +42,8 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - **Audio / video metadata editor** — read and write tags for MP3 (ID3v2), FLAC, M4A / MP4, DSF, DFF, AIFF, WAV, and Matroska / WebM containers, including cover art
 - Metadata rewrites stream unchanged media payloads in bounded chunks and atomically replace the file, rather than buffering entire recordings
 - **Duplicate finder** — content-hash based (xxHash3), with bulk move-to-trash
-- Duplicate results use two levels: containing directory, then its duplicate files. Both levels sort by name in natural ascending order; full directory paths distinguish same-named folders. Suggested keeps still follow scan-root priority, independent of display order. Hover a file for the paths of its identical copies.
+- Duplicate results use two levels: containing directory, then its duplicate files. Both levels sort by name in natural ascending order; full directory paths distinguish same-named folders. Suggested keeps still follow scan-root priority, independent of display order.
+- **Duplicate relationships** — matching content shares a numbered **Group** badge, even across different names or folders. Click the badge to see all identical copies, their full paths, and their current deletion/keep status. **Locate** expands the destination folder, scrolls to the file, and shows it in the explorer without changing deletion checkboxes. Other visible copies of the selected file have a link marker and outline. Group numbers remain stable after deletions within a scan; a new scan assigns fresh numbers.
 - **Visual similarity search** — ranks nearby images with Vision, pHash, aspect ratio, and optional semantic embeddings
 - **Semantic image search** — finds images from an open-ended text description using an on-device Core ML model
 - Semantic Search supports recursive folders, persistent embedding/OCR caches, OCR text matching, configurable relevance thresholds, and Top-K result limits

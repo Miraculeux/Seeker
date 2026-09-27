@@ -14,6 +14,8 @@ struct DuplicateFinderView: View {
     @State private var toDelete: Set<URL> = []
     @State private var expanded: Set<URL> = []
     @State private var resultDirectories: [DuplicateResultDirectory] = []
+    @State private var groupNumbers: [UUID: Int] = [:]
+    @State private var locateURL: URL?
     /// Root directories being scanned. Mutable so the user can add (via
     /// the "+" button or drag-and-drop) or remove folders and re-scan.
     /// Order encodes keep-priority — earlier roots win.
@@ -87,7 +89,7 @@ struct DuplicateFinderView: View {
         .onChange(of: finder.status) { _, newValue in
             if case .done = newValue { initializePreselection() }
         }
-        .onChange(of: finder.groups.map(\.id)) { _, _ in
+        .onChange(of: finder.groups.map(\.urls)) { _, _ in
             refreshResultDirectories()
         }
         .onDisappear {
@@ -278,29 +280,53 @@ struct DuplicateFinderView: View {
     }
 
     private var duplicateList: some View {
-        ScrollView {
-            LazyVStack(spacing: 4) {
-                summaryBanner
-                ForEach(resultDirectories) { directory in
-                    DuplicateDirectoryRow(
-                        directory: directory,
-                        isExpanded: expanded.contains(directory.id),
-                        toDelete: $toDelete,
-                        focusedURL: $focusedURL,
-                        onToggleExpand: {
-                            if expanded.contains(directory.id) {
-                                expanded.remove(directory.id)
-                            } else {
-                                expanded.insert(directory.id)
+        let selectedGroupID = finder.groups.first { group in
+            focusedURL.map { group.urls.contains($0) } ?? false
+        }?.id
+        return ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    summaryBanner
+                    ForEach(resultDirectories) { directory in
+                        DuplicateDirectoryRow(
+                            directory: directory,
+                            isExpanded: expanded.contains(directory.id),
+                            toDelete: $toDelete,
+                            focusedURL: $focusedURL,
+                            selectedGroupID: selectedGroupID,
+                            locateURL: locateURL,
+                            onLocate: { url in
+                                expanded.insert(url.deletingLastPathComponent().standardizedFileURL)
+                                focusedURL = url
+                                locateURL = url
+                            },
+                            onLocateReady: { url in
+                                proxy.scrollTo(url, anchor: .center)
+                                locateURL = nil
+                            },
+                            onToggleExpand: {
+                                if expanded.contains(directory.id) {
+                                    expanded.remove(directory.id)
+                                } else {
+                                    expanded.insert(directory.id)
+                                }
+                            },
+                            onSelect: { url in
+                                focusedURL = url
                             }
-                        },
-                        onSelect: { url in
-                            focusedURL = url
-                        }
-                    )
+                        )
+                        .id(directory.id)
+                    }
+                }
+                .padding(8)
+            }
+            .onChange(of: locateURL) { _, url in
+                if let url {
+                    // First materialize the lazy directory, then the target
+                    // file's task scrolls precisely after expansion.
+                    proxy.scrollTo(url.deletingLastPathComponent().standardizedFileURL, anchor: .top)
                 }
             }
-            .padding(8)
         }
     }
 
@@ -454,6 +480,8 @@ struct DuplicateFinderView: View {
         toDelete = []
         expanded = []
         resultDirectories = []
+        groupNumbers = [:]
+        locateURL = nil
         focusedURL = nil
         finder.scan(roots: roots)
     }
@@ -504,11 +532,16 @@ struct DuplicateFinderView: View {
     }
 
     private func refreshResultDirectories() {
-        resultDirectories = DuplicateResultDirectory.grouped(finder.groups)
+        if finder.groups.isEmpty { groupNumbers = [:] }
+        resultDirectories = DuplicateResultDirectory.grouped(finder.groups, previousNumbers: groupNumbers)
+        for directory in resultDirectories {
+            for file in directory.files { groupNumbers[file.groupID] = file.groupNumber }
+        }
         expanded.formIntersection(Set(resultDirectories.map(\.id)))
         let remaining = Set(resultDirectories.flatMap { $0.files.map(\.url) })
         toDelete.formIntersection(remaining)
         if let focusedURL, !remaining.contains(focusedURL) { self.focusedURL = nil }
+        if let locateURL, !remaining.contains(locateURL) { self.locateURL = nil }
     }
 
     private func trashSelected() {
@@ -557,12 +590,8 @@ struct DuplicateFinderView: View {
                 worker.cancel()
             }
             // Even a cancelled batch must reconcile operations already completed.
-            finder.groups = finder.groups.compactMap { group in
-                let remaining = group.urls.filter { !result.trashed.contains($0) }
-                return remaining.count > 1
-                    ? DuplicateFinder.Group(fileSize: group.fileSize, urls: remaining)
-                    : nil
-            }
+            let removed = Set(result.trashed.map(\.standardizedFileURL))
+            finder.groups = finder.groups.compactMap { $0.removing(removed) }
             toDelete.subtract(result.trashed)
             if let focusedURL, result.trashed.contains(focusedURL) { self.focusedURL = nil }
             if result.failed > 0 {
@@ -581,25 +610,22 @@ struct DuplicateFinderView: View {
     /// panel's delete action.
     private func removeFromGroups(_ url: URL) {
         let std = url.standardizedFileURL
-        var newGroups: [DuplicateFinder.Group] = []
-        for group in finder.groups {
-            let remaining = group.urls.filter { $0.standardizedFileURL != std }
-            if remaining.count > 1 {
-                newGroups.append(DuplicateFinder.Group(fileSize: group.fileSize, urls: remaining))
-            }
-        }
-        finder.groups = newGroups
+        finder.groups = finder.groups.compactMap { $0.removing([std]) }
         toDelete.remove(url)
         if focusedURL?.standardizedFileURL == std { focusedURL = nil }
         NotificationCenter.default.post(name: .filesDidChange, object: nil)
     }
 }
 
-private struct DuplicateDirectoryRow: View {
+struct DuplicateDirectoryRow: View {
     let directory: DuplicateResultDirectory
     let isExpanded: Bool
     @Binding var toDelete: Set<URL>
     @Binding var focusedURL: URL?
+    let selectedGroupID: UUID?
+    let locateURL: URL?
+    let onLocate: (URL) -> Void
+    let onLocateReady: (URL) -> Void
     let onToggleExpand: () -> Void
     let onSelect: (URL) -> Void
 
@@ -638,60 +664,149 @@ private struct DuplicateDirectoryRow: View {
             if isExpanded {
                 VStack(spacing: 0) {
                     ForEach(directory.files) { file in
-                        let url = file.url
-                        let isFocused = focusedURL == url
-                        HStack(spacing: 8) {
-                            Toggle(isOn: Binding(
-                                get: { toDelete.contains(url) },
-                                set: { newValue in
-                                    if newValue { toDelete.insert(url) } else { toDelete.remove(url) }
-                                }
-                            )) {
-                                EmptyView()
-                            }
-                            .toggleStyle(.checkbox)
-                            .controlSize(.mini)
-
-                            if file.isSuggestedKeep && !toDelete.contains(url) {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.yellow)
-                                    .help("Suggested keep")
-                            }
-
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(url.lastPathComponent)
-                                    .font(.system(size: 11))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Text("\(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file)) \u{00B7} \(file.copies.count) identical copies")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            .help(([url.path, "Identical copies:"] + file.copies.map(\.path)).joined(separator: "\n"))
-                            Spacer()
-                            if isFocused {
-                                Image(systemName: "arrow.right.circle.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.accentColor)
-                                    .help("Shown in explorer")
-                            }
-                        }
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(isFocused ? Color.accentColor.opacity(0.15) : Color.clear)
+                        DuplicateFileRow(
+                            file: file, toDelete: $toDelete,
+                            isFocused: focusedURL == file.url,
+                            isRelated: selectedGroupID == file.groupID && focusedURL != file.url,
+                            onSelect: { onSelect(file.url) }, onLocate: onLocate
                         )
-                        .contentShape(Rectangle())
-                        .onTapGesture { onSelect(url) }
+                        .id(file.url)
+                        .task(id: locateURL) {
+                            guard locateURL == file.url else { return }
+                            await Task.yield()
+                            guard !Task.isCancelled else { return }
+                            onLocateReady(file.url)
+                        }
                     }
                 }
                 .padding(.top, 2)
             }
         }
+    }
+}
+
+struct DuplicateFileRow: View {
+    let file: DuplicateResultDirectory.File
+    @Binding var toDelete: Set<URL>
+    let isFocused: Bool
+    let isRelated: Bool
+    let onSelect: () -> Void
+    let onLocate: (URL) -> Void
+    @State private var showCopies = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle(isOn: Binding(
+                get: { toDelete.contains(file.url) },
+                set: { checked in
+                    if checked { toDelete.insert(file.url) } else { toDelete.remove(file.url) }
+                }
+            )) { EmptyView() }
+            .toggleStyle(.checkbox)
+            .controlSize(.mini)
+            .accessibilityLabel("Select \(file.url.lastPathComponent) for deletion")
+
+            if file.isSuggestedKeep && !toDelete.contains(file.url) {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(.yellow)
+                    .help("Suggested keep")
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Button(action: onSelect) {
+                    Text(file.url.lastPathComponent)
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(file.url.path)
+                HStack(spacing: 6) {
+                    Text(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                    Button { showCopies = true } label: {
+                        Label("\(file.groupLabel) \u{00B7} \(file.copies.count) copies", systemImage: "link")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .help("Show all files with identical content")
+                    .popover(isPresented: $showCopies) {
+                        DuplicateCopiesView(file: file, toDelete: toDelete) { url in
+                            showCopies = false
+                            onLocate(url)
+                        }
+                    }
+                }
+            }
+            if isFocused || isRelated {
+                Image(systemName: isFocused ? "arrow.right.circle.fill" : "link")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.accentColor)
+                    .help(isFocused ? "Shown in explorer" : "Identical to the selected file")
+                    .accessibilityLabel(isFocused ? "Shown in explorer" : "Identical to the selected file")
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(isFocused ? Color.accentColor.opacity(0.15) : Color.clear)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(isRelated ? Color.accentColor.opacity(0.5) : .clear)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+struct DuplicateCopiesView: View {
+    let file: DuplicateResultDirectory.File
+    let toDelete: Set<URL>
+    let onLocate: (URL) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("\(file.groupLabel) \u{00B7} \(file.copies.count) identical files")
+                .font(.headline)
+            Text("\(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file)) each")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(file.copies, id: \.self) { url in
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                if toDelete.contains(url) {
+                                    Label("Selected for deletion", systemImage: "checkmark.square.fill")
+                                } else if url == file.suggestedKeep {
+                                    Label("Suggested keep", systemImage: "star.fill")
+                                } else {
+                                    Label("Not selected for deletion", systemImage: "square")
+                                }
+                                Text(url.lastPathComponent).fontWeight(.medium)
+                                Text(url.path)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            Button("Locate") { onLocate(url) }
+                                .accessibilityLabel("Locate \(url.path)")
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 480, height: min(440, 100 + CGFloat(file.copies.count) * 100))
     }
 }
 

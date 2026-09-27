@@ -72,4 +72,61 @@ final class DuplicateResultsTests: XCTestCase {
         XCTAssertEqual(updated.flatMap { $0.files.map(\.url) }, [a, c])
         XCTAssertTrue(DuplicateResultDirectory.grouped([]).isEmpty)
     }
+
+    func testBadgesDescribeContentGroupsNotMatchingNamesOrSizes() {
+        let groupA = DuplicateFinder.Group(fileSize: 100, urls: [
+            URL(fileURLWithPath: "/A/cover.jpg"), URL(fileURLWithPath: "/B/renamed.jpg"),
+        ])
+        let groupB = DuplicateFinder.Group(fileSize: 100, urls: [
+            URL(fileURLWithPath: "/C/cover.jpg"), URL(fileURLWithPath: "/D/cover.jpg"),
+        ])
+        let files = DuplicateResultDirectory.grouped([groupB, groupA]).flatMap(\.files)
+        let a = files.filter { $0.groupID == groupA.id }
+        let b = files.filter { $0.groupID == groupB.id }
+        XCTAssertEqual(a.count, 2)
+        XCTAssertEqual(Set(a.map(\.groupNumber)), [1])
+        XCTAssertEqual(Set(b.map(\.groupNumber)), [2])
+        XCTAssertEqual(a.first?.groupLabel, "Group 01")
+        XCTAssertEqual(b.first?.groupLabel, "Group 02")
+        XCTAssertEqual(a.first?.copies, groupA.urls)
+        XCTAssertEqual(b.first?.copies, groupB.urls)
+    }
+
+    func testNumberingIsIndependentOfGroupAndMemberOrder() {
+        let a = URL(fileURLWithPath: "/A/file2")
+        let b = URL(fileURLWithPath: "/B/file10")
+        let c = URL(fileURLWithPath: "/C/file20")
+        let d = URL(fileURLWithPath: "/D/file30")
+        let first = DuplicateFinder.Group(fileSize: 200, urls: [b, a])
+        let second = DuplicateFinder.Group(fileSize: 100, urls: [d, c])
+        let original = DuplicateResultDirectory.grouped([second, first]).flatMap(\.files)
+        let reordered = DuplicateResultDirectory.grouped([
+            DuplicateFinder.Group(id: first.id, fileSize: 200, urls: [a, b]),
+            DuplicateFinder.Group(id: second.id, fileSize: 100, urls: [c, d]),
+        ]).flatMap(\.files)
+        XCTAssertEqual(original.map(\.groupNumber), reordered.map(\.groupNumber))
+        XCTAssertEqual(original.first?.suggestedKeep, b)
+    }
+
+    func testDeletionPreservesGroupIdentityAndNumberAndRefreshesCopies() throws {
+        let a = URL(fileURLWithPath: "/A/a")
+        let b = URL(fileURLWithPath: "/B/b")
+        let c = URL(fileURLWithPath: "/C/c")
+        let d = URL(fileURLWithPath: "/D/d")
+        let e = URL(fileURLWithPath: "/E/e")
+        let first = DuplicateFinder.Group(fileSize: 100, urls: [a, b])
+        let second = DuplicateFinder.Group(fileSize: 200, urls: [c, d, e])
+        let initial = DuplicateResultDirectory.grouped([first, second]).flatMap(\.files)
+        var numbers: [UUID: Int] = [:]
+        for file in initial { numbers[file.groupID] = file.groupNumber }
+        XCTAssertNil(first.removing([a]))
+        let remaining = try XCTUnwrap(second.removing([c]))
+        XCTAssertEqual(remaining.id, second.id)
+        let refreshed = DuplicateResultDirectory.grouped([remaining], previousNumbers: numbers).flatMap(\.files)
+        XCTAssertEqual(refreshed.map(\.groupNumber), [2, 2])
+        XCTAssertEqual(refreshed.first?.copies, [d, e])
+        XCTAssertEqual(refreshed.first?.suggestedKeep, d)
+        XCTAssertEqual(refreshed.first?.fileSize, 200)
+        XCTAssertNil(remaining.removing([d, e]))
+    }
 }

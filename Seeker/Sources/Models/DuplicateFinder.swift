@@ -39,9 +39,20 @@ final class DuplicateFinder {
     /// equivalent under xxHash3-128 confidence (effectively certain
     /// for non-adversarial input).
     struct Group: Identifiable {
-        let id = UUID()
+        let id: UUID
         let fileSize: Int64
         let urls: [URL]
+
+        init(id: UUID = UUID(), fileSize: Int64, urls: [URL]) {
+            self.id = id
+            self.fileSize = fileSize
+            self.urls = urls
+        }
+
+        func removing(_ removed: Set<URL>) -> Group? {
+            let remaining = urls.filter { !removed.contains($0.standardizedFileURL) }
+            return remaining.count > 1 ? Group(id: id, fileSize: fileSize, urls: remaining) : nil
+        }
 
         /// Bytes that could be reclaimed by deleting all but one file
         /// in the group.
