@@ -49,6 +49,7 @@ struct FolderSyncView: View {
         }
         .frame(minWidth: 660, idealWidth: 820, maxWidth: .infinity,
                minHeight: 480, idealHeight: 620, maxHeight: .infinity)
+        .toolWindowURLs([syncer.rootA, syncer.rootB])
         .onAppear { syncer.analyze() }
     }
 

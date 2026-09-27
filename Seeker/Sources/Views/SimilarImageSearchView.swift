@@ -57,6 +57,7 @@ struct SimilarImageSearchView: View {
         }
         .frame(minWidth: 860, idealWidth: 1040, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
+        .toolWindowURLs([targetDirectory, referenceURL])
         .onDisappear { workTask?.cancel() }
     }
 

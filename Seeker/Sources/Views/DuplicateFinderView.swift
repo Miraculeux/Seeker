@@ -12,8 +12,8 @@ struct DuplicateFinderView: View {
     /// Per-group: which URLs the user has selected to delete. The first
     /// item in each group is kept by default; the rest are pre-checked.
     @State private var toDelete: Set<URL> = []
-    /// Group IDs whose detail rows are expanded.
-    @State private var expanded: Set<UUID> = []
+    @State private var expanded: Set<URL> = []
+    @State private var resultDirectories: [DuplicateResultDirectory] = []
     /// Root directories being scanned. Mutable so the user can add (via
     /// the "+" button or drag-and-drop) or remove folders and re-scan.
     /// Order encodes keep-priority — earlier roots win.
@@ -67,6 +67,7 @@ struct DuplicateFinderView: View {
         }
         .frame(minWidth: 940, idealWidth: 1100, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
+        .toolWindowURLs(roots)
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -85,6 +86,9 @@ struct DuplicateFinderView: View {
         }
         .onChange(of: finder.status) { _, newValue in
             if case .done = newValue { initializePreselection() }
+        }
+        .onChange(of: finder.groups.map(\.id)) { _, _ in
+            refreshResultDirectories()
         }
         .onDisappear {
             finder.cancel()
@@ -277,17 +281,17 @@ struct DuplicateFinderView: View {
         ScrollView {
             LazyVStack(spacing: 4) {
                 summaryBanner
-                ForEach(finder.groups) { group in
-                    DuplicateGroupRow(
-                        group: group,
-                        isExpanded: expanded.contains(group.id),
+                ForEach(resultDirectories) { directory in
+                    DuplicateDirectoryRow(
+                        directory: directory,
+                        isExpanded: expanded.contains(directory.id),
                         toDelete: $toDelete,
                         focusedURL: $focusedURL,
                         onToggleExpand: {
-                            if expanded.contains(group.id) {
-                                expanded.remove(group.id)
+                            if expanded.contains(directory.id) {
+                                expanded.remove(directory.id)
                             } else {
-                                expanded.insert(group.id)
+                                expanded.insert(directory.id)
                             }
                         },
                         onSelect: { url in
@@ -449,6 +453,7 @@ struct DuplicateFinderView: View {
         guard deletionTask == nil else { return }
         toDelete = []
         expanded = []
+        resultDirectories = []
         focusedURL = nil
         finder.scan(roots: roots)
     }
@@ -478,8 +483,8 @@ struct DuplicateFinderView: View {
 
     /// Pre-check every URL except the first in each group: a sensible
     /// default that lets the user just hit "Move to Trash" if they
-    /// trust the heuristic. The first item per group is kept by
-    /// alphabetical order (stable across re-scans of the same folder).
+    /// trust the heuristic. Preserve the finder's root-priority/path order,
+    /// independently of the directory/name ordering used for display.
     private func initializePreselection() {
         var pre: Set<URL> = []
         for group in finder.groups {
@@ -489,12 +494,21 @@ struct DuplicateFinderView: View {
             }
         }
         toDelete = pre
-        // Auto-expand the first group and surface its first file in the
+        refreshResultDirectories()
+        // Auto-expand the first directory and surface its first file in the
         // explorer so the right pane isn't blank on first results.
-        if let first = finder.groups.first {
+        if let first = resultDirectories.first {
             expanded.insert(first.id)
-            if focusedURL == nil { focusedURL = first.urls.first }
+            if focusedURL == nil { focusedURL = first.files.first?.url }
         }
+    }
+
+    private func refreshResultDirectories() {
+        resultDirectories = DuplicateResultDirectory.grouped(finder.groups)
+        expanded.formIntersection(Set(resultDirectories.map(\.id)))
+        let remaining = Set(resultDirectories.flatMap { $0.files.map(\.url) })
+        toDelete.formIntersection(remaining)
+        if let focusedURL, !remaining.contains(focusedURL) { self.focusedURL = nil }
     }
 
     private func trashSelected() {
@@ -581,8 +595,8 @@ struct DuplicateFinderView: View {
     }
 }
 
-private struct DuplicateGroupRow: View {
-    let group: DuplicateFinder.Group
+private struct DuplicateDirectoryRow: View {
+    let directory: DuplicateResultDirectory
     let isExpanded: Bool
     @Binding var toDelete: Set<URL>
     @Binding var focusedURL: URL?
@@ -597,10 +611,20 @@ private struct DuplicateGroupRow: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.secondary)
                         .frame(width: 10)
-                    Text("\(group.urls.count) files \u{00B7} \(ByteCountFormatter.string(fromByteCount: group.fileSize, countStyle: .file)) each")
-                        .font(.system(size: 11, weight: .medium))
+                    Image(systemName: "folder")
+                        .foregroundColor(.accentColor)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(directory.name)
+                            .font(.system(size: 11, weight: .medium))
+                        Text(directory.url.path)
+                            .font(.system(size: 9))
+                            .foregroundColor(.secondary)
+                    }
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(directory.url.path)
                     Spacer()
-                    Text("Reclaim \(ByteCountFormatter.string(fromByteCount: group.reclaimableBytes, countStyle: .file))")
+                    Text("\(directory.files.count) files")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
@@ -613,7 +637,8 @@ private struct DuplicateGroupRow: View {
 
             if isExpanded {
                 VStack(spacing: 0) {
-                    ForEach(Array(group.urls.enumerated()), id: \.element) { idx, url in
+                    ForEach(directory.files) { file in
+                        let url = file.url
                         let isFocused = focusedURL == url
                         HStack(spacing: 8) {
                             Toggle(isOn: Binding(
@@ -627,7 +652,7 @@ private struct DuplicateGroupRow: View {
                             .toggleStyle(.checkbox)
                             .controlSize(.mini)
 
-                            if idx == 0 && !toDelete.contains(url) {
+                            if file.isSuggestedKeep && !toDelete.contains(url) {
                                 Image(systemName: "star.fill")
                                     .font(.system(size: 9))
                                     .foregroundColor(.yellow)
@@ -639,12 +664,13 @@ private struct DuplicateGroupRow: View {
                                     .font(.system(size: 11))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                Text(url.deletingLastPathComponent().path)
+                                Text("\(ByteCountFormatter.string(fromByteCount: file.fileSize, countStyle: .file)) \u{00B7} \(file.copies.count) identical copies")
                                     .font(.system(size: 9))
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
+                            .help(([url.path, "Identical copies:"] + file.copies.map(\.path)).joined(separator: "\n"))
                             Spacer()
                             if isFocused {
                                 Image(systemName: "arrow.right.circle.fill")

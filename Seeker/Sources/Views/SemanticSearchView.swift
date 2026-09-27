@@ -268,6 +268,7 @@ struct SemanticSearchView: View {
         }
         .frame(minWidth: 900, idealWidth: 1120, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
+        .toolWindowURLs([targetDirectory])
         .onDisappear { searchTask?.cancel() }
     }
 

@@ -45,6 +45,7 @@ struct ContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ToolWindowBar(sourceWindowID: appState.windowID)
         }
         .frame(minWidth: 900, maxWidth: .infinity, minHeight: 550, maxHeight: .infinity)
         .onAppear {

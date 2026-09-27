@@ -786,13 +786,17 @@ private struct MainWindowRoot: View {
 
 private struct HelperWindowRoot<Content: View>: View {
     @State private var sourceAppState: AppState
+    @State private var toolURLs: [URL] = []
+    private let kind: ToolWindowKind
     private let content: (AppState) -> Content
 
     init(
+        kind: ToolWindowKind,
         sourceWindowID: UUID?,
         fallback: AppState,
         @ViewBuilder content: @escaping (AppState) -> Content
     ) {
+        self.kind = kind
         _sourceAppState = State(initialValue:
             MainWindowRegistry.shared.appState(for: sourceWindowID)
                 ?? MainWindowRegistry.shared.mostRecentAppState
@@ -807,6 +811,10 @@ private struct HelperWindowRoot<Content: View>: View {
             .environment(AppTheme.shared)
             .appThemeRoot()
             .focusedSceneValue(\.seekerAppState, sourceAppState)
+            .onPreferenceChange(ToolWindowURLsKey.self) { toolURLs = $0 ?? [] }
+            .background(ToolWindowRegistrationView(
+                sourceWindowID: sourceAppState.windowID, kind: kind, urls: toolURLs
+            ))
     }
 }
 
@@ -848,7 +856,7 @@ struct SeekerApp: App {
         // click "Open in new tab" on a row, switch to the main window,
         // inspect the file, and come back to keep triaging.
         WindowGroup("Find Duplicates", id: "duplicate-finder", for: DuplicateFinderWindowRequest.self) { $request in
-            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+            HelperWindowRoot(kind: .duplicates, sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
                 DuplicateFinderView(rootURLs: request.flatMap { $0.rootURLs.isEmpty ? nil : $0.rootURLs }
                     ?? [source.activeExplorer.currentURL])
             }
@@ -859,7 +867,7 @@ struct SeekerApp: App {
         // Standalone folder-compare window. Two directories diffed by
         // file name; lives in its own window like the duplicate finder.
         WindowGroup("Compare Folders", id: "directory-compare", for: DirectoryCompareWindowRequest.self) { $request in
-            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+            HelperWindowRoot(kind: .compare, sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
                 let dirs = request?.directories
                 if let dirs, dirs.count == 2 {
                     DirectoryCompareView(dirA: dirs[0], dirB: dirs[1])
@@ -880,7 +888,7 @@ struct SeekerApp: App {
 
         // Standalone recursive search window.
         WindowGroup("Search", id: "file-search", for: FileSearchWindowRequest.self) { $request in
-            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+            HelperWindowRoot(kind: .search, sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
                 FileSearchView(
                     root: request?.root ?? source.activeExplorer.currentURL,
                     sourceWindowID: request?.sourceWindowID
@@ -891,7 +899,7 @@ struct SeekerApp: App {
         .commandsRemoved()
 
         WindowGroup("Similar Images", id: "similar-images", for: SimilarImageSearchRequest.self) { $request in
-            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+            HelperWindowRoot(kind: .similarImages, sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
                 if let request {
                     SimilarImageSearchView(request: request)
                 } else if source.activeExplorer.canOpenSimilarImageSearch,
@@ -914,7 +922,7 @@ struct SeekerApp: App {
         .commandsRemoved()
 
         WindowGroup("Semantic Search", id: "semantic-search", for: SemanticSearchRequest.self) { $request in
-            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+            HelperWindowRoot(kind: .semanticSearch, sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
                 SemanticSearchView(request: request ?? SemanticSearchRequest(
                     targetDirectory: source.activeExplorer.currentURL
                 ))
@@ -925,7 +933,7 @@ struct SeekerApp: App {
 
         // Standalone folder-sync window.
         WindowGroup("Sync Folders", id: "folder-sync", for: FolderSyncWindowRequest.self) { $request in
-            HelperWindowRoot(sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
+            HelperWindowRoot(kind: .sync, sourceWindowID: request?.sourceWindowID, fallback: appState) { source in
                 let dirs = request?.directories
                 if let dirs, dirs.count == 2 {
                     FolderSyncView(rootA: dirs[0], rootB: dirs[1])

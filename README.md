@@ -7,6 +7,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 ### Navigation & Layout
 - **Dual-pane layout** with independent navigation; copy / move between panes in one shortcut
 - **Tabbed browsing** — multiple tabs per pane, each with its own history
+- **Tool window bar** — the bottom of each main window lists its open Find Duplicates, Compare Folders, Search, Similar Images, Semantic Search, and Sync Folders windows. Click a label to bring the existing window forward (including minimized windows) without restarting its task. Labels track the current folders, with full paths in tooltips; the bar scrolls horizontally for many windows and disappears when they are all closed.
 - **Three view modes** — List (with tree expansion), Icons, and Column browser
 - **Tree view in List mode** — expand folders inline with the disclosure chevron, or use ← / → on the keyboard (similar to Finder's List view)
 - **Sidebar** — favorites and volumes, with modern Finder-style outline icons (including the system Applications glyph when available), accent-colored favorites in active native macOS windows and neutral location icons, auto-detection of mount / unmount, and eject support
@@ -41,6 +42,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - **Audio / video metadata editor** — read and write tags for MP3 (ID3v2), FLAC, M4A / MP4, DSF, DFF, AIFF, WAV, and Matroska / WebM containers, including cover art
 - Metadata rewrites stream unchanged media payloads in bounded chunks and atomically replace the file, rather than buffering entire recordings
 - **Duplicate finder** — content-hash based (xxHash3), with bulk move-to-trash
+- Duplicate results use two levels: containing directory, then its duplicate files. Both levels sort by name in natural ascending order; full directory paths distinguish same-named folders. Suggested keeps still follow scan-root priority, independent of display order. Hover a file for the paths of its identical copies.
 - **Visual similarity search** — ranks nearby images with Vision, pHash, aspect ratio, and optional semantic embeddings
 - **Semantic image search** — finds images from an open-ended text description using an on-device Core ML model
 - Semantic Search supports recursive folders, persistent embedding/OCR caches, OCR text matching, configurable relevance thresholds, and Top-K result limits
@@ -114,6 +116,8 @@ streaming media metadata updates.
 Application-attribute tests use disposable synthetic bundles without requesting
 administrator privileges, and check recursive clearing, quoted paths, cancellation,
 and preservation of unselected apps and symbolic-link targets.
+Tool-window tests use disposable AppKit windows to check front-to-back ordering,
+minimize/restore, registration cleanup, multi-window ownership, and compact bar layout.
 They do not require network downloads or access to a personal media library.
 
 ### Build a Signed Release

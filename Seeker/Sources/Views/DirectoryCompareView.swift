@@ -37,6 +37,7 @@ struct DirectoryCompareView: View {
         }
         .frame(minWidth: 940, idealWidth: 1100, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
+        .toolWindowURLs([comparer.dirA, comparer.dirB])
         .onAppear { comparer.compare() }
         .onDisappear { comparer.cancel() }
         // Re-compare when files change elsewhere (e.g. after a Sync from
