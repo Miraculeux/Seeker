@@ -1460,6 +1460,45 @@ class FileExplorerViewModel: Identifiable {
         }
     }
 
+    func clearApplicationAttributes(_ items: [FileItem]) {
+        guard ApplicationAttributes.canClear(items) else {
+            showFileError(ApplicationAttributes.Failure.invalidSelection.localizedDescription)
+            return
+        }
+        guard fileMutationStatus == nil else { NSSound.beep(); return }
+        let urls = items.map(\.url).sorted { $0.path < $1.path }
+        let alert = NSAlert()
+        alert.messageText = "Clear all extended attributes from \(urls.count == 1 ? "this application" : "these applications")?"
+        alert.informativeText = """
+        This runs the equivalent of sudo xattr -cr -s on only the applications below. It recursively removes ALL extended attributes, including quarantine metadata, Finder tags, and custom metadata. Symbolic-link targets are not followed.
+
+        Removing quarantine can bypass macOS downloaded-app checks. Continue only if you trust these applications. This cannot be undone. macOS will ask for administrator authorization.
+
+        \(urls.map(\.path).joined(separator: "\n"))
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Clear Attributes")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard beginFileMutation("Clearing application attributes\u{2026}") else { return }
+        Task {
+            defer { fileMutationStatus = nil }
+            do {
+                let outcome = try await Task.detached(priority: .userInitiated) {
+                    try ApplicationAttributes.clear(urls)
+                }.value
+                if outcome == .cleared {
+                    loadFiles()
+                    notifyDirectoriesChanged(sourceURLs: urls)
+                }
+            } catch {
+                loadFiles()
+                notifyDirectoriesChanged(sourceURLs: urls)
+                showFileError(error.localizedDescription)
+            }
+        }
+    }
+
     private func beginFileMutation(_ status: String) -> Bool {
         guard fileMutationStatus == nil else {
             NSSound.beep()

@@ -604,6 +604,8 @@ struct FileContentView: View {
         }
         Button("Delete Immediately…") { viewModel.deleteSelectedPermanently() }
 
+        ApplicationAttributesMenu(items: viewModel.effectiveSelection, viewModel: viewModel)
+
         Divider()
 
         Button("Compress") { viewModel.compressSelected() }
@@ -1517,6 +1519,21 @@ private final class FileDragNSView: NSView, NSDraggingSource {
 
 // MARK: - Column Browser View
 
+private struct ApplicationAttributesMenu: View {
+    let items: [FileItem]
+    let viewModel: FileExplorerViewModel
+
+    var body: some View {
+        if ApplicationAttributes.canClear(items) {
+            Divider()
+            Button("Clear Extended Attributes\u{2026}") {
+                viewModel.clearApplicationAttributes(items)
+            }
+            .disabled(viewModel.fileMutationStatus != nil)
+        }
+    }
+}
+
 struct ColumnBrowserView: View {
     @Bindable var viewModel: FileExplorerViewModel
     let side: AppState.PaneSide
@@ -1533,6 +1550,7 @@ struct ColumnBrowserView: View {
                 ForEach(Array(effectiveColumns.enumerated()), id: \.offset) { index, url in
                     VStack(spacing: 0) {
                         ColumnFileList(
+                            viewModel: viewModel,
                             directoryURL: url,
                             columnIndex: index,
                             showHiddenFiles: viewModel.showHiddenFiles,
@@ -1623,6 +1641,7 @@ struct ColumnBrowserView: View {
 /// + per-file `lstat` per redraw on the cold-cache path, which stalled
 /// the UI on directories with many entries.
 private struct ColumnFileList: View {
+    let viewModel: FileExplorerViewModel
     let directoryURL: URL
     let columnIndex: Int
     let showHiddenFiles: Bool
@@ -1654,6 +1673,10 @@ private struct ColumnFileList: View {
                     }
                 }
                 .tag(file)
+                .overlay(RightClickCatcher { onSelect(file) })
+                .contextMenu {
+                    ApplicationAttributesMenu(items: [file], viewModel: viewModel)
+                }
                 .overlay {
                     FileDragCatcher(
                         urls: { [file.url] },

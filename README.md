@@ -28,6 +28,7 @@ A fast, native dual-pane file manager for macOS, built with SwiftUI.
 - Compress to `.zip`, decompress archives
 - Move to Trash via ⌘⌫
 - Share menu (NSSharingService) — AirDrop, Mail, Messages, etc.
+- **Clear application extended attributes** — in Applications (or any folder containing `.app` bundles), right-click selected apps → **Clear Extended Attributes…**. Available in List, Icon, and Column views (single app in Column view). After confirmation, macOS requests administrator authorization and Seeker runs the equivalent of `sudo xattr -cr -s` on only those apps. This irreversibly removes all extended attributes, including quarantine, Finder tags, and custom metadata; use only for apps you trust. The `-s` flag prevents following symbolic-link targets. Errors, including partial failures, are reported; cancelling authorization makes no changes.
 
 ### Preview & Inspection
 - **Quick Look** — Space to preview any file
@@ -110,6 +111,9 @@ swift test
 The tests use isolated synthetic files to check cancellation, sorting, batch
 rename safety, preview limits, hashing, DSF duration and audio properties, and
 streaming media metadata updates.
+Application-attribute tests use disposable synthetic bundles without requesting
+administrator privileges, and check recursive clearing, quoted paths, cancellation,
+and preservation of unselected apps and symbolic-link targets.
 They do not require network downloads or access to a personal media library.
 
 ### Build a Signed Release
