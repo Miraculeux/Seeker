@@ -28,4 +28,24 @@ final class SidebarIconTests: XCTestCase {
         XCTAssertGreaterThan(image.size.width, 0)
         XCTAssertGreaterThan(image.size.height, 0)
     }
+
+    func testBuiltInFavoritesNavigateToTheirOwnBreadcrumbEndpoint() throws {
+        let favorites = SidebarDefaults.defaultItems().filter {
+            $0.section == .favorites && !$0.isUserFavorite
+        }
+        let model = FileExplorerViewModel()
+        defer { model.cancelLoading() }
+
+        for favorite in favorites {
+            model.navigateTo(favorite.url)
+            XCTAssertEqual(
+                model.currentURL.standardizedFileURL,
+                favorite.url.standardizedFileURL,
+                "\(favorite.name) must navigate to its own directory"
+            )
+            let endpoint = try XCTUnwrap(model.pathComponents.last)
+            XCTAssertEqual(endpoint.0, favorite.name)
+            XCTAssertEqual(endpoint.1.standardizedFileURL, favorite.url.standardizedFileURL)
+        }
+    }
 }

@@ -2,6 +2,8 @@ import SwiftUI
 import AppKit
 
 struct PaneView: View {
+    private static let currentBreadcrumbID = "current-breadcrumb"
+
     var pane: PaneState
     @Environment(AppState.self) var appState
     @Environment(AppTheme.self) private var theme
@@ -320,23 +322,32 @@ struct PaneView: View {
 
     private var pathBreadcrumb: some View {
         HStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 1) {
-                    let components = pane.activeTab.pathComponents
-                    ForEach(0..<components.count, id: \.self) { index in
-                        if index > 0 {
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 7, weight: .semibold))
-                                .foregroundColor(.secondary.opacity(0.35))
-                                .padding(.horizontal, 1)
-                        }
-                        BreadcrumbButton(
-                            label: components[index].0,
-                            isLast: index == components.count - 1
-                        ) {
-                            pane.activeTab.navigateTo(components[index].1)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 1) {
+                        let components = pane.activeTab.pathComponents
+                        ForEach(0..<components.count, id: \.self) { index in
+                            if index > 0 {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 7, weight: .semibold))
+                                    .foregroundColor(.secondary.opacity(0.35))
+                                    .padding(.horizontal, 1)
+                            }
+                            BreadcrumbButton(
+                                label: components[index].0,
+                                isLast: index == components.count - 1
+                            ) {
+                                pane.activeTab.navigateTo(components[index].1)
+                            }
+                            .id(index == components.count - 1
+                                ? Self.currentBreadcrumbID
+                                : "breadcrumb-\(index)")
                         }
                     }
+                }
+                .onAppear { scrollToCurrentBreadcrumb(proxy) }
+                .onChange(of: pane.activeTab.currentURL) { _, _ in
+                    scrollToCurrentBreadcrumb(proxy)
                 }
             }
             // Empty-space click target lives OUTSIDE the ScrollView. Putting
@@ -379,6 +390,12 @@ struct PaneView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
             }
+        }
+    }
+
+    private func scrollToCurrentBreadcrumb(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            proxy.scrollTo(Self.currentBreadcrumbID, anchor: .trailing)
         }
     }
 

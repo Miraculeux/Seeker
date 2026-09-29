@@ -843,8 +843,9 @@ struct FileInfoView: View {
         }
 
         // DPI
-        if let dpiX = props[kCGImagePropertyDPIWidth] as? Double {
-            meta.dpi = "\(Int(dpiX))"
+        if let dpiX = props[kCGImagePropertyDPIWidth] as? Double,
+           let dpi = ImageMetadataFormatting.truncatedWholeNumber(dpiX) {
+            meta.dpi = dpi
         }
 
         // Bit depth
@@ -863,8 +864,9 @@ struct FileInfoView: View {
                 meta.lens = lens
             }
 
-            if let fl = exif[kCGImagePropertyExifFocalLength] as? Double {
-                meta.focalLength = "\(Int(fl)) mm"
+            if let fl = exif[kCGImagePropertyExifFocalLength] as? Double,
+               let focalLength = ImageMetadataFormatting.truncatedWholeNumber(fl) {
+                meta.focalLength = "\(focalLength) mm"
             }
 
             if let ap = exif[kCGImagePropertyExifFNumber] as? Double {
@@ -872,11 +874,7 @@ struct FileInfoView: View {
             }
 
             if let ss = exif[kCGImagePropertyExifExposureTime] as? Double {
-                if ss >= 1 {
-                    meta.shutterSpeed = String(format: "%.1f s", ss)
-                } else {
-                    meta.shutterSpeed = "1/\(Int(1.0 / ss)) s"
-                }
+                meta.shutterSpeed = ImageMetadataFormatting.exposureTime(ss)
             }
 
             if let isoArr = exif[kCGImagePropertyExifISOSpeedRatings] as? [Int], let iso = isoArr.first {

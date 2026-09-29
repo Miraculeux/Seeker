@@ -145,9 +145,7 @@ enum ExifEditor {
         info.bodySerialNumber = exif[kCGImagePropertyExifBodySerialNumber] as? String
 
         if let t = exif[kCGImagePropertyExifExposureTime] as? Double {
-            info.exposureTime = t >= 1
-                ? String(format: "%.1f s", t)
-                : "1/\(Int((1.0 / t).rounded())) s"
+            info.exposureTime = ImageMetadataFormatting.exposureTime(t)
         }
         if let f = exif[kCGImagePropertyExifFNumber] as? Double {
             info.fNumber = String(format: "f/%.1f", f)
@@ -156,8 +154,9 @@ enum ExifEditor {
            let iso = isoArr.first {
             info.iso = "ISO \(iso)"
         }
-        if let fl = exif[kCGImagePropertyExifFocalLength] as? Double {
-            info.focalLength = "\(Int(fl.rounded())) mm"
+        if let fl = exif[kCGImagePropertyExifFocalLength] as? Double,
+           let focalLength = ImageMetadataFormatting.roundedWholeNumber(fl) {
+            info.focalLength = "\(focalLength) mm"
         }
         if let w = props[kCGImagePropertyPixelWidth] as? Int,
            let h = props[kCGImagePropertyPixelHeight] as? Int {
