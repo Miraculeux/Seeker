@@ -111,6 +111,32 @@ final class PerformanceRegressionTests: XCTestCase, @unchecked Sendable {
     }
 
     @MainActor
+    func testExplorerFilterSupportsCaseInsensitiveWildcards() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["abc-one-def-two.xyz", "ABCdef.XYZ", "abc-def.txt", "prefix-abc-def.xyz-suffix"] {
+            try Data().write(to: root.appendingPathComponent(name))
+        }
+        let model = FileExplorerViewModel(url: root)
+        defer { model.cancelLoading() }
+        let deadline = ContinuousClock.now + .seconds(10)
+        while model.files.count != 4, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        model.searchText = "abc*def*.xyz"
+        model.refilter()
+        XCTAssertEqual(Set(model.files.map(\.name)), ["abc-one-def-two.xyz", "ABCdef.XYZ"])
+
+        model.searchText = "def"
+        model.refilter()
+        XCTAssertEqual(
+            Set(model.files.map(\.name)),
+            ["abc-one-def-two.xyz", "ABCdef.XYZ", "abc-def.txt", "prefix-abc-def.xyz-suffix"]
+        )
+    }
+
+    @MainActor
     func testBackgroundCompressionPreservesMultipleFiles() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

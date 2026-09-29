@@ -47,6 +47,7 @@ final class FileSearcher {
     let root: URL
     var query = ""
     var mode: Mode = .name
+    var includeSubdirectories = true
     var includeHidden = false
 
     var status: Status = .idle
@@ -78,6 +79,7 @@ final class FileSearcher {
 
         let root = self.root
         let mode = self.mode
+        let includeSubdirectories = self.includeSubdirectories
         let includeHidden = self.includeHidden
         let limit = self.resultLimit
         let task = Task { [weak self] in
@@ -86,11 +88,22 @@ final class FileSearcher {
                 switch mode {
                 case .name:
                     found = try await BackgroundWork.run {
-                        Self.searchByName(root: root, query: trimmed, includeHidden: includeHidden, limit: limit)
+                        Self.searchByName(
+                            root: root,
+                            query: trimmed,
+                            includeSubdirectories: includeSubdirectories,
+                            includeHidden: includeHidden,
+                            limit: limit
+                        )
                     }
                 case .contents:
                     let worker = Task.detached(priority: .userInitiated) {
-                        try await Self.searchByContents(root: root, query: trimmed, limit: limit)
+                        try await Self.searchByContents(
+                            root: root,
+                            query: trimmed,
+                            includeSubdirectories: includeSubdirectories,
+                            limit: limit
+                        )
                     }
                     found = try await withTaskCancellationHandler {
                         try await worker.value
@@ -114,13 +127,15 @@ final class FileSearcher {
     private nonisolated static func searchByName(
         root: URL,
         query: String,
+        includeSubdirectories: Bool,
         includeHidden: Bool,
         limit: Int
     ) -> [Result] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .isRegularFileKey]
-        let opts: FileManager.DirectoryEnumerationOptions =
-            includeHidden ? [] : [.skipsHiddenFiles]
+        var opts: FileManager.DirectoryEnumerationOptions = []
+        if !includeHidden { opts.insert(.skipsHiddenFiles) }
+        if !includeSubdirectories { opts.insert(.skipsSubdirectoryDescendants) }
         guard let enumerator = fm.enumerator(
             at: root,
             includingPropertiesForKeys: keys,
@@ -132,7 +147,8 @@ final class FileSearcher {
         var out: [Result] = []
         while let url = enumerator.nextObject() as? URL {
             if Task.isCancelled { return [] }
-            guard url.lastPathComponent.localizedCaseInsensitiveContains(query) else { continue }
+            let name = url.lastPathComponent
+            guard FileNameMatcher.matches(name, query: query) else { continue }
             let rv = try? url.resourceValues(forKeys: Set(keys))
             let isDir = rv?.isDirectory ?? false
             out.append(Result(
@@ -154,6 +170,7 @@ final class FileSearcher {
     private nonisolated static func searchByContents(
         root: URL,
         query: String,
+        includeSubdirectories: Bool,
         limit: Int
     ) async throws -> [Result] {
         let process = Process()
@@ -189,16 +206,20 @@ final class FileSearcher {
         }
 
         let rootPath = root.standardizedFileURL.path
+        let standardizedRoot = root.standardizedFileURL
         let fm = FileManager.default
         let lines = (String(data: data, encoding: .utf8) ?? "")
             .split(separator: "\n")
-            .prefix(limit)
         var out: [Result] = []
         for line in lines {
             try Task.checkCancellation()
             let path = String(line)
             guard !path.isEmpty else { continue }
-            let url = URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            if !includeSubdirectories,
+               url.deletingLastPathComponent() != standardizedRoot {
+                continue
+            }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: path, isDirectory: &isDir) else { continue }
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
@@ -210,6 +231,7 @@ final class FileSearcher {
                 fileSize: Int64(size),
                 relativePath: Self.relativePath(of: url, rootPath: rootPath)
             ))
+            if out.count >= limit { break }
         }
         return out.sorted { $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending }
     }

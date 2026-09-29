@@ -10,7 +10,7 @@ struct SemanticSearchRequest: Codable, Hashable {
 }
 
 @MainActor @Observable
-private final class SemanticDirectoryTreeModel {
+final class SearchDirectoryTreeModel {
     struct Row: Identifiable {
         let item: FileItem
         let depth: Int
@@ -121,10 +121,10 @@ private final class SemanticDirectoryTreeModel {
     }
 }
 
-private struct SemanticDirectoryTree: View {
+struct SearchDirectoryTree: View {
     @Binding var selection: URL
     let onSelect: (URL) -> Void
-    @State private var model = SemanticDirectoryTreeModel()
+    @State private var model = SearchDirectoryTreeModel()
     @State private var selectedPath: String?
 
     var body: some View {
@@ -250,7 +250,7 @@ struct SemanticSearchView: View {
 
     var body: some View {
         HSplitView {
-            SemanticDirectoryTree(selection: $targetDirectory) { directory in
+            SearchDirectoryTree(selection: $targetDirectory) { directory in
                 selectDirectory(directory)
             }
             .frame(minWidth: 190, idealWidth: 240, maxWidth: 360)

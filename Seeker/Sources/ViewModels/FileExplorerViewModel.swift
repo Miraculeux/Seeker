@@ -600,7 +600,7 @@ class FileExplorerViewModel: Identifiable {
     /// compare) and does not touch the disk — safe to call on every keystroke.
     private func applyFilter(to items: [FileItem]) -> [FileItem] {
         guard !searchText.isEmpty else { return items }
-        return items.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        return items.filter { FileNameMatcher.matches($0.name, query: searchText) }
     }
 
     /// Re-apply the search filter to the current listing without re-reading

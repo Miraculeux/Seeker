@@ -10,42 +10,54 @@ struct FileSearchView: View {
     @Environment(\.openWindow) private var openWindow
     private let sourceWindowID: UUID?
     @Environment(\.dismiss) private var dismiss
+    @State private var targetDirectory: URL
     @State private var searcher: FileSearcher
     @State private var selection: URL?
     @State private var previewURL: URL?
     @State private var showPreview = false
+    @State private var pendingSearch: Task<Void, Never>?
     @FocusState private var queryFocused: Bool
 
     init(root: URL, sourceWindowID: UUID? = nil) {
         self.sourceWindowID = sourceWindowID
-        _searcher = State(initialValue: FileSearcher(root: root))
+        let directory = root.standardizedFileURL
+        _targetDirectory = State(initialValue: directory)
+        _searcher = State(initialValue: FileSearcher(root: directory))
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            searchBar
-            Divider()
-            Group {
-                switch searcher.status {
-                case .idle:
-                    idleState
-                case .searching:
-                    if searcher.results.isEmpty { searchingState } else { resultsList }
-                case .done(let count):
-                    if count == 0 { emptyState } else { resultsList }
-                case .failed(let msg):
-                    Text("Search failed: \(msg)")
-                        .foregroundColor(.red)
-                        .padding()
-                }
+        HSplitView {
+            SearchDirectoryTree(selection: $targetDirectory) { directory in
+                selectDirectory(directory)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 190, idealWidth: 240, maxWidth: 360)
+
+            VStack(spacing: 0) {
+                header
+                Divider()
+                searchBar
+                Divider()
+                Group {
+                    switch searcher.status {
+                    case .idle:
+                        idleState
+                    case .searching:
+                        if searcher.results.isEmpty { searchingState } else { resultsList }
+                    case .done(let count):
+                        if count == 0 { emptyState } else { resultsList }
+                    case .failed(let msg):
+                        Text("Search failed: \(msg)")
+                            .foregroundColor(.red)
+                            .padding()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 620, idealWidth: 760, maxWidth: .infinity,
-               minHeight: 460, idealHeight: 600, maxHeight: .infinity)
-        .toolWindowURLs([searcher.root])
+        .frame(minWidth: 900, idealWidth: 1120, maxWidth: .infinity,
+               minHeight: 560, idealHeight: 680, maxHeight: .infinity)
+        .toolWindowURLs([targetDirectory])
         .background(
             // Esc closes the window regardless of which control is focused.
             Button("") { dismiss() }
@@ -53,7 +65,10 @@ struct FileSearchView: View {
                 .hidden()
         )
         .onAppear { DispatchQueue.main.async { queryFocused = true } }
-        .onDisappear { searcher.cancel() }
+        .onDisappear {
+            pendingSearch?.cancel()
+            searcher.cancel()
+        }
         .sheet(isPresented: $showPreview) {
             if let url = previewURL {
                 VStack(spacing: 0) {
@@ -104,29 +119,19 @@ struct FileSearchView: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
-                TextField("Search\u{2026}", text: $searcher.query)
-                    .textFieldStyle(.plain)
+                TextField(
+                    searcher.mode == .name ? "File name (* and ? supported)" : "Search contents\u{2026}",
+                    text: $searcher.query
+                )
+                    .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
                     .focused($queryFocused)
-                    .onSubmit { searcher.search() }
-                if !searcher.query.isEmpty {
-                    Button {
-                        searcher.cancel()
-                        searcher.query = ""
-                        searcher.results = []
-                        searcher.status = .idle
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary.opacity(0.5))
+                    .onSubmit {
+                        pendingSearch?.cancel()
+                        searcher.search()
                     }
-                    .buttonStyle(.borderless)
-                }
+                    .onChange(of: searcher.query) { _, _ in scheduleSearch() }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(Color.primary.opacity(0.05))
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
             Picker("", selection: $searcher.mode) {
                 ForEach(FileSearcher.Mode.allCases) { m in Text(m.title).tag(m) }
@@ -136,16 +141,60 @@ struct FileSearchView: View {
             .fixedSize()
             .onChange(of: searcher.mode) { _, _ in if !searcher.query.isEmpty { searcher.search() } }
 
+            Toggle("Subfolders", isOn: $searcher.includeSubdirectories)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 11))
+                .onChange(of: searcher.includeSubdirectories) { _, _ in
+                    if !searcher.query.isEmpty { searcher.search() }
+                }
+
             Toggle("Hidden", isOn: $searcher.includeHidden)
                 .toggleStyle(.checkbox)
                 .font(.system(size: 11))
                 .onChange(of: searcher.includeHidden) { _, _ in if !searcher.query.isEmpty { searcher.search() } }
-
-            Button("Search") { searcher.search() }
-                .disabled(searcher.query.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private func scheduleSearch() {
+        pendingSearch?.cancel()
+        guard !searcher.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            searcher.search()
+            return
+        }
+        pendingSearch = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch is CancellationError {
+                return
+            } catch {
+                assertionFailure("Unexpected search delay failure: \(error)")
+                return
+            }
+            guard !Task.isCancelled else { return }
+            searcher.search()
+        }
+    }
+
+    private func selectDirectory(_ url: URL) {
+        let directory = url.standardizedFileURL
+        guard directory != targetDirectory else { return }
+        pendingSearch?.cancel()
+        searcher.cancel()
+
+        let replacement = FileSearcher(root: directory)
+        replacement.query = searcher.query
+        replacement.mode = searcher.mode
+        replacement.includeSubdirectories = searcher.includeSubdirectories
+        replacement.includeHidden = searcher.includeHidden
+        targetDirectory = directory
+        searcher = replacement
+        selection = nil
+
+        if !replacement.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            replacement.search()
+        }
     }
 
     // MARK: - States

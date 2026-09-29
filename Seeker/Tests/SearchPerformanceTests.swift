@@ -88,6 +88,60 @@ final class SearchPerformanceTests: XCTestCase {
         XCTAssertTrue(searcher.results.isEmpty)
     }
 
+    func testNameSearchSupportsCaseInsensitiveWildcards() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.write("abc-one-def-two.xyz", data: Data())
+        _ = try fixture.write("ABCdef.XYZ", data: Data())
+        _ = try fixture.write("prefix-abc-one-def-two.xyz-suffix", data: Data())
+        _ = try fixture.write("abc-def.txt", data: Data())
+        _ = try fixture.write("report-a.txt", data: Data())
+        _ = try fixture.write("report-ab.txt", data: Data())
+
+        let searcher = FileSearcher(root: fixture.root)
+        defer { searcher.cancel() }
+        searcher.query = "abc*def*.xyz"
+        searcher.search()
+        try await waitUntil { if case .done = searcher.status { return true }; return false }
+        XCTAssertEqual(
+            Set(searcher.results.map(\.name)),
+            ["abc-one-def-two.xyz", "ABCdef.XYZ"]
+        )
+
+        searcher.query = "report-?.txt"
+        searcher.search()
+        try await waitUntil { if case .done = searcher.status { return true }; return false }
+        XCTAssertEqual(searcher.results.map(\.name), ["report-a.txt"])
+
+        searcher.query = "def"
+        searcher.search()
+        try await waitUntil { if case .done = searcher.status { return true }; return false }
+        XCTAssertEqual(
+            Set(searcher.results.map(\.name)),
+            ["abc-one-def-two.xyz", "ABCdef.XYZ", "prefix-abc-one-def-two.xyz-suffix", "abc-def.txt"]
+        )
+    }
+
+    func testNameSearchCanExcludeSubfolders() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.write("direct.txt", data: Data())
+        let nested = try fixture.directory("nested")
+        try Data().write(to: nested.appendingPathComponent("nested.txt"))
+
+        let searcher = FileSearcher(root: fixture.root)
+        defer { searcher.cancel() }
+        searcher.query = "*.txt"
+        searcher.search()
+        try await waitUntil { if case .done = searcher.status { return true }; return false }
+        XCTAssertEqual(Set(searcher.results.map(\.name)), ["direct.txt", "nested.txt"])
+
+        searcher.includeSubdirectories = false
+        searcher.search()
+        try await waitUntil { if case .done = searcher.status { return true }; return false }
+        XCTAssertEqual(searcher.results.map(\.name), ["direct.txt"])
+    }
+
     func testRecursiveComparisonRejectsCancelledGeneration() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

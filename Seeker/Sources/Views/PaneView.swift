@@ -275,7 +275,7 @@ struct PaneView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundColor(.secondary.opacity(0.6))
-                    TextField("Filter", text: searchTextBinding)
+                    TextField("Filter (* and ?)", text: searchTextBinding)
                         .textFieldStyle(.plain)
                         .font(.system(size: 11))
                         .focused($isFilterFocused)
