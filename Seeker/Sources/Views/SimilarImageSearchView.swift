@@ -48,14 +48,22 @@ struct SimilarImageSearchView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            comparisonBar
-            Divider()
-            resultContent
+        HSplitView {
+            SearchDirectoryTree(selection: $targetDirectory) { directory in
+                selectDirectory(directory)
+            }
+            .frame(minWidth: 190, idealWidth: 240, maxWidth: 360)
+
+            VStack(spacing: 0) {
+                header
+                Divider()
+                comparisonBar
+                Divider()
+                resultContent
+            }
+            .frame(minWidth: 670, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 860, idealWidth: 1040, maxWidth: .infinity,
+        .frame(minWidth: 900, idealWidth: 1120, maxWidth: .infinity,
                minHeight: 560, idealHeight: 680, maxHeight: .infinity)
         .toolWindowURLs([targetDirectory, referenceURL])
         .onDisappear { workTask?.cancel() }
@@ -86,20 +94,6 @@ struct SimilarImageSearchView: View {
 
     private var comparisonBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "folder.fill")
-                .foregroundColor(.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Target Folder")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.secondary)
-                Text(targetDirectory.path)
-                    .font(.system(size: 11))
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .help(targetDirectory.path)
-            }
-            Spacer(minLength: 12)
-            Button("Choose Folder...") { chooseTargetDirectory() }
             Toggle("AI", isOn: $useSemanticModel)
                 .toggleStyle(.checkbox)
                 .onChange(of: useSemanticModel) { _, value in
@@ -155,6 +149,7 @@ struct SimilarImageSearchView: View {
                     }
                 }
             }
+            Spacer()
             Button {
                 compare()
             } label: {
@@ -275,17 +270,11 @@ struct SimilarImageSearchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func chooseTargetDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = targetDirectory
-        panel.prompt = "Choose"
-        panel.message = "Choose the folder whose images you want to compare"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+    private func selectDirectory(_ url: URL) {
+        let directory = url.standardizedFileURL
+        guard directory != targetDirectory.standardizedFileURL else { return }
         cancelComparison()
-        targetDirectory = url
+        targetDirectory = directory
         scoredResults = []
         excludedURLs = []
         status = .ready
