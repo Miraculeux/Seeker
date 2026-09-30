@@ -10,7 +10,6 @@ enum AESHelper {
               data.count > 0,
               data.count % blockSize == 0 else { return [] }
 
-        // PKCS#7 output is at most data.count bytes.
         let outputSize = data.count
         var output = [UInt8](repeating: 0, count: outputSize)
         var dataOutMoved: Int = 0
@@ -21,10 +20,7 @@ enum AESHelper {
                     CCCrypt(
                         CCOperation(kCCDecrypt),
                         CCAlgorithm(kCCAlgorithmAES),
-                        // Let CommonCrypto validate and strip PKCS#7 padding;
-                        // do NOT roll our own (avoids truncating unpadded plaintext
-                        // and avoids a hand-built padding oracle).
-                        CCOptions(kCCOptionECBMode | kCCOptionPKCS7Padding),
+                        CCOptions(kCCOptionECBMode),
                         keyPtr.baseAddress, kCCKeySizeAES128,
                         nil,
                         dataPtr.baseAddress, data.count,
@@ -35,7 +31,17 @@ enum AESHelper {
             }
         }
 
-        guard status == kCCSuccess, dataOutMoved <= outputSize else { return [] }
-        return Array(output[..<dataOutMoved])
+        guard status == kCCSuccess, dataOutMoved == outputSize else { return [] }
+        // CommonCrypto's ECB padding mode can accept invalid padding. Check
+        // the complete final block without stopping at the first mismatch.
+        let paddingByte = output[dataOutMoved - 1]
+        let padding = Int(paddingByte)
+        var mismatch: UInt8 = 0
+        for offset in 1...blockSize {
+            let mask: UInt8 = offset <= padding ? 0xFF : 0
+            mismatch |= (output[dataOutMoved - offset] ^ paddingByte) & mask
+        }
+        guard (1...blockSize).contains(padding), mismatch == 0 else { return [] }
+        return Array(output[..<(dataOutMoved - padding)])
     }
 }

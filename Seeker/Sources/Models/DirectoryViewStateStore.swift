@@ -41,7 +41,7 @@ final class DirectoryViewStateStore {
     private let ioQueue = DispatchQueue(label: "com.seeker.dirviewstate.io", qos: .utility)
     private var flushWorkItem: DispatchWorkItem?
 
-    private init() {
+    private convenience init() {
         let fm = FileManager.default
         let appSupport = (try? fm.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
@@ -51,7 +51,11 @@ final class DirectoryViewStateStore {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.seeker.app"
         let dir = appSupport.appendingPathComponent(bundleID, isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appendingPathComponent("DirectoryViewState.plist")
+        self.init(fileURL: dir.appendingPathComponent("DirectoryViewState.plist"))
+    }
+
+    init(fileURL: URL) {
+        self.fileURL = fileURL
         states = Self.load(from: fileURL)
     }
 

@@ -205,10 +205,21 @@ enum ExifEditor {
             exif[kCGImagePropertyExifDateTimeOriginal] = s
             exif[kCGImagePropertyExifDateTimeDigitized] = s
             tiff[kCGImagePropertyTIFFDateTime] = s
+            let iptcDate = String(s.prefix(10)).replacingOccurrences(of: ":", with: "")
+            let iptcTime = String(s.suffix(8)).replacingOccurrences(of: ":", with: "")
+            iptc[kCGImagePropertyIPTCDateCreated] = iptcDate
+            iptc[kCGImagePropertyIPTCTimeCreated] = iptcTime
+            iptc[kCGImagePropertyIPTCDigitalCreationDate] = iptcDate
+            iptc[kCGImagePropertyIPTCDigitalCreationTime] = iptcTime
         } else {
             exif.removeValue(forKey: kCGImagePropertyExifDateTimeOriginal)
             exif.removeValue(forKey: kCGImagePropertyExifDateTimeDigitized)
             tiff.removeValue(forKey: kCGImagePropertyTIFFDateTime)
+            // ImageIO can recreate EXIF dates from these IPTC mirrors.
+            iptc.removeValue(forKey: kCGImagePropertyIPTCDateCreated)
+            iptc.removeValue(forKey: kCGImagePropertyIPTCTimeCreated)
+            iptc.removeValue(forKey: kCGImagePropertyIPTCDigitalCreationDate)
+            iptc.removeValue(forKey: kCGImagePropertyIPTCDigitalCreationTime)
         }
 
         // IPTC keywords / rating
@@ -274,7 +285,10 @@ enum ExifEditor {
         guard let dest = CGImageDestinationCreateWithURL(tmpURL as CFURL, uti, 1, nil) else {
             throw ExifEditorError.writeFailed
         }
-        CGImageDestinationAddImageFromSource(dest, src, 0, properties as CFDictionary)
+        let sourceProperties = (CGImageSourceCopyPropertiesAtIndex(src, 0, nil)
+            as? [CFString: Any]) ?? [:]
+        let overrides = replacementProperties(properties, inheritedFrom: sourceProperties)
+        CGImageDestinationAddImageFromSource(dest, src, 0, overrides as CFDictionary)
         guard CGImageDestinationFinalize(dest) else {
             try? FileManager.default.removeItem(at: tmpURL)
             throw ExifEditorError.writeFailed
@@ -290,6 +304,25 @@ enum ExifEditor {
             try? FileManager.default.removeItem(at: tmpURL)
             throw ExifEditorError.writeFailed
         }
+    }
+
+    private static func replacementProperties(
+        _ properties: [CFString: Any],
+        inheritedFrom sourceProperties: [CFString: Any]
+    ) -> [CFString: Any] {
+        var overrides = properties
+        for (key, sourceValue) in sourceProperties {
+            guard let value = properties[key] else {
+                // ImageIO inherits omitted keys; CFNull explicitly removes them.
+                overrides[key] = NSNull()
+                continue
+            }
+            if let sourceDictionary = sourceValue as? [CFString: Any],
+               let dictionary = value as? [CFString: Any] {
+                overrides[key] = replacementProperties(dictionary, inheritedFrom: sourceDictionary)
+            }
+        }
+        return overrides
     }
 
     private static func setOrRemove(

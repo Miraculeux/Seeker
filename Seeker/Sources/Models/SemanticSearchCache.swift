@@ -29,14 +29,18 @@ actor SemanticSearchCache {
         let bundleID = Bundle.main.bundleIdentifier ?? "com.marvel.Seeker"
         let directory = caches.appendingPathComponent(bundleID, isDirectory: true)
         try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent("semantic-search.sqlite3")
-        databaseURL = url
+        self.init(databaseURL: directory.appendingPathComponent("semantic-search.sqlite3"))
+    }
+
+    init(databaseURL: URL) {
+        self.databaseURL = databaseURL
         guard sqlite3_open_v2(
-            url.path,
+            databaseURL.path,
             &database,
             SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
             nil
         ) == SQLITE_OK else {
+            if let database { sqlite3_close(database) }
             database = nil
             return
         }
@@ -61,6 +65,15 @@ actor SemanticSearchCache {
                 text TEXT NOT NULL
             )
             """)
+    }
+
+    isolated deinit {
+        if let database { sqlite3_close(database) }
+    }
+
+    func close() {
+        if let database { sqlite3_close(database) }
+        database = nil
     }
 
     func embedding(for url: URL, modelID: String) -> [Float]? {

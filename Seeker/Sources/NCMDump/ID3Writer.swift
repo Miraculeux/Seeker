@@ -51,10 +51,7 @@ enum ID3Writer {
     }
 
     private static func textFrame(id: String, text: String) -> Data {
-        // Encoding byte (0x03 = UTF-8) + text bytes
-        var payload = Data()
-        payload.append(0x03) // UTF-8
-        payload.append(contentsOf: Array(text.utf8))
+        let payload = ID3Frame.encodeText(text)
 
         var frame = Data()
         frame.append(contentsOf: Array(id.utf8))

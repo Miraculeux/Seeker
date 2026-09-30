@@ -391,57 +391,59 @@ class FileOperationManager {
 
             let sourceURL = item.source
             let destURL = item.destination
+            let transferURL = item.replace
+                ? destURL.deletingLastPathComponent().appendingPathComponent(".seeker-transfer-\(UUID().uuidString)")
+                : destURL
+            var stagedMove = false
+            var committed = false
             op.currentFile = sourceURL.lastPathComponent
-
-            // For an explicit "Replace", remove the existing destination
-            // first, when present, so move/copy land on a clean path. Planned
-            // sync copies also use this flag for new files, whose destination
-            // does not exist yet.
-            if item.replace {
-                do {
-                    try await Task.detached(priority: .userInitiated) {
-                        let fm = FileManager.default
-                        if fm.fileExists(atPath: destURL.path) {
-                            try fm.removeItem(at: destURL)
-                        }
-                    }.value
-                } catch let error as CocoaError where error.code == .fileNoSuchFile {
-                    // The destination can disappear between the existence
-                    // check and removal; it is already safe to copy.
-                } catch {
-                    // Continuing would copy onto the surviving item and, for
-                    // a shorter source, leave the old file's tail behind.
-                    op.error = "Couldn\u{2019}t replace \u{201C}\(destURL.lastPathComponent)\u{201D}: \(error.localizedDescription)"
-                    break
-                }
-            }
 
             do {
                 if op.kind == .move {
                     let size = sizeMap[sourceURL] ?? 0
                     try await Task.detached(priority: .userInitiated) {
-                        try FileManager.default.moveItem(at: sourceURL, to: destURL)
+                        try FileManager.default.moveItem(at: sourceURL, to: transferURL)
                     }.value
+                    stagedMove = item.replace
                     op.copiedBytes += size
                 } else {
-                    try await copyWithProgress(from: sourceURL, to: destURL, operation: op)
+                    try await copyWithProgress(from: sourceURL, to: transferURL, operation: op,
+                                               requireComplete: item.replace)
+                }
+                if item.replace {
+                    guard !op.isCancelled else { throw CancellationError() }
+                    // Keep the original intact until the entire replacement is ready.
+                    try await Task.detached(priority: .userInitiated) {
+                        try Self.commitReplacement(from: transferURL, to: destURL)
+                    }.value
+                    committed = true
                 }
                 op.completedDestinations.append(destURL)
                 op.filesCompleted += 1
-            } catch is CancellationError {
-                do {
+                if item.replace {
                     try await Task.detached(priority: .utility) {
-                        if FileManager.default.fileExists(atPath: destURL.path) {
-                            try FileManager.default.removeItem(at: destURL)
-                        }
+                        try Self.removeTransferItem(at: transferURL)
                     }.value
-                } catch {
-                    op.error = "Couldn\u{2019}t remove the partial copy: \(error.localizedDescription)"
                 }
-                break
             } catch {
-                if !op.isCancelled {
+                let cancelled = error is CancellationError || op.isCancelled
+                if !cancelled {
                     op.error = "\(op.kind.rawValue) failed: \(error.localizedDescription)"
+                }
+                if item.replace || cancelled {
+                    let restoreSource = stagedMove && !committed
+                    do {
+                        try await Task.detached(priority: .utility) {
+                            if restoreSource {
+                                try FileManager.default.moveItem(at: transferURL, to: sourceURL)
+                            } else {
+                                try Self.removeTransferItem(at: transferURL)
+                            }
+                        }.value
+                    } catch {
+                        let failure = "Couldn\u{2019}t clean up the transfer at \(transferURL.path): \(error.localizedDescription)"
+                        op.error = op.error.map { $0 + "\n" + failure } ?? failure
+                    }
                 }
                 break
             }
@@ -457,46 +459,88 @@ class FileOperationManager {
         op.isFinished = true
     }
 
-    /// Build a flat list of (source, destination, size) for all files under a tree,
-    /// plus any entries the walk could not read.
-    private nonisolated func buildCopyManifest(source: URL, destination: URL) throws
-        -> (pairs: [(src: URL, dst: URL, size: Int64)], skipped: [URL]) {
-        try Task.checkCancellation()
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: source.path, isDirectory: &isDir) else { return ([], [source]) }
-
-        if isDir.boolValue {
-            var pairs: [(URL, URL, Int64)] = []
-            let skipped = URLBox()
-            if let enumerator = fm.enumerator(at: source, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey],
-                                               options: [], errorHandler: { url, _ in
-                                                   skipped.append(url)
-                                                   return true   // keep walking the rest of the tree
-                                               }) {
-                for case let fileURL as URL in enumerator {
-                    try Task.checkCancellation()
-                    let rv = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
-                    if rv?.isDirectory == true { continue }
-                    let relativePath = fileURL.path.dropFirst(source.path.count)
-                    let destFile = destination.appendingPathComponent(String(relativePath))
-                    let size = Int64(rv?.fileSize ?? 0)
-                    pairs.append((fileURL, destFile, size))
+    /// Exchange complete items atomically, including non-empty directories and
+    /// symlinks. The staging path then holds the old item for cleanup.
+    private nonisolated static func commitReplacement(from staged: URL, to destination: URL) throws {
+        let result = staged.withUnsafeFileSystemRepresentation { sourcePath in
+            destination.withUnsafeFileSystemRepresentation { destinationPath -> Int32 in
+                guard let sourcePath, let destinationPath else { errno = EINVAL; return -1 }
+                if renameatx_np(AT_FDCWD, sourcePath, AT_FDCWD, destinationPath, UInt32(RENAME_SWAP)) == 0 {
+                    return 0
                 }
+                guard errno == ENOENT else { return -1 }
+                // A new (or concurrently removed) destination must not clobber
+                // another item that appears before this rename.
+                return renameatx_np(AT_FDCWD, sourcePath, AT_FDCWD, destinationPath, UInt32(RENAME_EXCL))
             }
-            return (pairs, skipped.values)
-        } else {
-            let size = Int64((try? source.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
-            return ([(source, destination, size)], [])
+        }
+        guard result == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno),
+                          userInfo: [NSFilePathErrorKey: destination.path])
         }
     }
 
-    private func copyWithProgress(from source: URL, to destination: URL, operation: FileOperation) async throws {
+    private nonisolated static func removeTransferItem(at url: URL) throws {
+        do { try FileManager.default.removeItem(at: url) }
+        catch let error as CocoaError where error.code == .fileNoSuchFile { }
+    }
+
+    /// Build a flat list of (source, destination, size) for all files under a tree,
+    /// its directories (including empty ones), and unreadable entries.
+    private nonisolated func buildCopyManifest(source: URL, destination: URL) throws
+        -> (pairs: [(src: URL, dst: URL, size: Int64)],
+            directories: [(src: URL, dst: URL)], skipped: [URL]) {
+        try Task.checkCancellation()
+        let fm = FileManager.default
+        let attributes = try fm.attributesOfItem(atPath: source.path)
+
+        if attributes[.type] as? FileAttributeType == .typeDirectory {
+            var pairs: [(URL, URL, Int64)] = []
+            var directories: [(URL, URL)] = [(source, destination)]
+            let skipped = URLBox()
+            guard let enumerator = fm.enumerator(at: source, includingPropertiesForKeys: nil,
+                                                options: [], errorHandler: { url, _ in
+                                                    skipped.append(url)
+                                                    return true
+                                                }) else {
+                throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: source.path])
+            }
+            for case let fileURL as URL in enumerator {
+                try Task.checkCancellation()
+                let fileAttributes = try fm.attributesOfItem(atPath: fileURL.path)
+                let relativePath = fileURL.path.dropFirst(source.path.count)
+                let destFile = destination.appendingPathComponent(String(relativePath))
+                if fileAttributes[.type] as? FileAttributeType == .typeDirectory {
+                    directories.append((fileURL, destFile))
+                } else {
+                    let size = (fileAttributes[.size] as? NSNumber)?.int64Value ?? 0
+                    pairs.append((fileURL, destFile, size))
+                }
+            }
+            return (pairs, directories, skipped.values)
+        } else {
+            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            return ([(source, destination, size)], [], [])
+        }
+    }
+
+    private func copyWithProgress(from source: URL, to destination: URL, operation: FileOperation,
+                                  requireComplete: Bool = false) async throws {
         let result = try await BackgroundWork.run {
             try self.buildCopyManifest(source: source, destination: destination)
         }
         try Task.checkCancellation()
         operation.skippedItems.append(contentsOf: result.skipped)
+        if requireComplete, let skipped = result.skipped.first {
+            throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: skipped.path])
+        }
+        let directories = result.directories
+        try await Task.detached(priority: .userInitiated) {
+            for (_, destination) in directories {
+                guard !(await operation.isCancelled) else { throw CancellationError() }
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            }
+        }.value
 
         for (src, dst, size) in result.pairs {
             guard !operation.isCancelled else { throw CancellationError() }
@@ -508,6 +552,11 @@ class FileOperationManager {
                 let fm = FileManager.default
                 let parent = dst.deletingLastPathComponent()
                 try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+                if try fm.attributesOfItem(atPath: src.path)[.type] as? FileAttributeType == .typeSymbolicLink {
+                    try fm.copyItem(at: src, to: dst)
+                    await MainActor.run { operation.copiedBytes += size }
+                    return
+                }
 
                 // APFS fast-path: try a clone first. On the same APFS
                 // volume this is effectively instant (copy-on-write) and
@@ -524,15 +573,13 @@ class FileOperationManager {
                 // Use chunked copy for incremental progress; modern
                 // throwing APIs surface I/O errors instead of silently
                 // returning empty data / discarding writes.
-                guard let readHandle = try? FileHandle(forReadingFrom: src) else {
-                    throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: src.path])
-                }
+                let readHandle = try FileHandle(forReadingFrom: src)
                 defer { try? readHandle.close() }
 
-                fm.createFile(atPath: dst.path, contents: nil)
-                guard let writeHandle = try? FileHandle(forWritingTo: dst) else {
-                    throw CocoaError(.fileNoSuchFile, userInfo: [NSFilePathErrorKey: dst.path])
+                guard fm.createFile(atPath: dst.path, contents: nil) else {
+                    throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: dst.path])
                 }
+                let writeHandle = try FileHandle(forWritingTo: dst)
                 defer { try? writeHandle.close() }
 
                 // Stream the contents with incremental progress. This call
@@ -551,15 +598,27 @@ class FileOperationManager {
                 }
 
                 // Copy file attributes (permissions, dates, etc.)
-                if let attrs = try? fm.attributesOfItem(atPath: src.path) {
-                    var modAttrs: [FileAttributeKey: Any] = [:]
-                    if let perms = attrs[.posixPermissions] { modAttrs[.posixPermissions] = perms }
-                    if let modDate = attrs[.modificationDate] { modAttrs[.modificationDate] = modDate }
-                    if let creationDate = attrs[.creationDate] { modAttrs[.creationDate] = creationDate }
-                    try? fm.setAttributes(modAttrs, ofItemAtPath: dst.path)
-                }
+                let attrs = try fm.attributesOfItem(atPath: src.path)
+                var modAttrs: [FileAttributeKey: Any] = [:]
+                if let perms = attrs[.posixPermissions] { modAttrs[.posixPermissions] = perms }
+                if let modDate = attrs[.modificationDate] { modAttrs[.modificationDate] = modDate }
+                if let creationDate = attrs[.creationDate] { modAttrs[.creationDate] = creationDate }
+                try fm.setAttributes(modAttrs, ofItemAtPath: dst.path)
             }.value
         }
+        try await Task.detached(priority: .userInitiated) {
+            // Apply directory attributes last so read-only permissions and
+            // child creation cannot interfere with copying or alter its dates.
+            for (source, destination) in directories.reversed() {
+                guard !(await operation.isCancelled) else { throw CancellationError() }
+                let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+                var copied: [FileAttributeKey: Any] = [:]
+                for key in [FileAttributeKey.posixPermissions, .modificationDate, .creationDate] {
+                    if let value = attributes[key] { copied[key] = value }
+                }
+                try FileManager.default.setAttributes(copied, ofItemAtPath: destination.path)
+            }
+        }.value
     }
 
     /// Transfer buffer size scaled to the file's logical length. Keeps small
@@ -735,6 +794,11 @@ class FileOperationManager {
         let fm = FileManager.default
         for url in urls {
             try Task.checkCancellation()
+            if let attributes = try? fm.attributesOfItem(atPath: url.path),
+               attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+                map[url] = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+                continue
+            }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else {
                 map[url] = 0
