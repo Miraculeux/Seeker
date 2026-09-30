@@ -22,6 +22,7 @@ final class SearchDirectoryTreeModel {
     private(set) var expandedPaths: Set<String> = []
     private(set) var loadingPaths: Set<String> = []
     private var childrenByPath: [String: [FileItem]] = [:]
+    private var revealedPaths: Set<String> = []
 
     init() {
         rows = [Row(item: FileItem(url: rootURL), depth: 0)]
@@ -48,7 +49,9 @@ final class SearchDirectoryTreeModel {
 
     func reveal(_ url: URL) async {
         let target = url.standardizedFileURL
-        for ancestor in ancestors(to: target).dropLast() {
+        let lineage = ancestors(to: target)
+        revealedPaths.formUnion(lineage.map { path(for: $0) })
+        for ancestor in lineage.dropLast() {
             expandedPaths.insert(path(for: ancestor))
             await loadChildrenIfNeeded(of: ancestor)
         }
@@ -77,7 +80,9 @@ final class SearchDirectoryTreeModel {
             let itemPath = path(for: item.url)
             guard expandedPaths.contains(itemPath),
                   let children = childrenByPath[itemPath] else { return }
-            for child in children { append(child, depth: depth + 1) }
+            for child in children where !child.isHidden || revealedPaths.contains(path(for: child.url)) {
+                append(child, depth: depth + 1)
+            }
         }
 
         append(root, depth: 0)
@@ -106,14 +111,13 @@ final class SearchDirectoryTreeModel {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
+            options: []
         ) else { return [] }
 
         return urls.compactMap { url in
             guard let values = try? url.resourceValues(forKeys: keys),
                   values.isDirectory == true,
-                  values.isPackage != true,
-                  values.isHidden != true else { return nil }
+                  values.isPackage != true else { return nil }
             return FileItem(url: url, resourceValues: values)
         }.sorted {
             $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending

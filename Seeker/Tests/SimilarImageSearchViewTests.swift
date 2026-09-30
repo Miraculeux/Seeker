@@ -48,6 +48,51 @@ final class SimilarImageSearchViewTests: XCTestCase {
         })
     }
 
+    @MainActor
+    func testRevealIncludesHiddenAncestorsWithoutShowingHiddenSiblings() async throws {
+        let parent = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("directory-tree-\(UUID().uuidString)", isDirectory: true)
+        let hiddenAncestor = parent.appendingPathComponent(".ancestor", isDirectory: true)
+        let target = hiddenAncestor.appendingPathComponent("target", isDirectory: true)
+        let hiddenSibling = parent.appendingPathComponent(".sibling", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try FileManager.default.createDirectory(at: hiddenSibling, withIntermediateDirectories: true)
+
+        let model = SearchDirectoryTreeModel()
+        await model.reveal(target)
+
+        XCTAssertTrue(model.isExpanded(hiddenAncestor))
+        XCTAssertTrue(model.rows.contains { $0.id == hiddenAncestor.standardizedFileURL.path })
+        XCTAssertTrue(model.rows.contains { $0.id == target.standardizedFileURL.path })
+        XCTAssertFalse(model.rows.contains { $0.id == hiddenSibling.standardizedFileURL.path })
+    }
+
+    @MainActor
+    func testRevealIncludesHiddenTargetAfterParentWasCached() async throws {
+        let parent = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("directory-tree-\(UUID().uuidString)", isDirectory: true)
+        let visibleTarget = parent.appendingPathComponent("visible", isDirectory: true)
+        let hiddenTarget = parent.appendingPathComponent(".target", isDirectory: true)
+        let hiddenSibling = parent.appendingPathComponent(".sibling", isDirectory: true)
+        try FileManager.default.createDirectory(at: visibleTarget, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try FileManager.default.createDirectory(at: hiddenTarget, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: hiddenSibling, withIntermediateDirectories: true)
+
+        let model = SearchDirectoryTreeModel()
+        await model.reveal(visibleTarget)
+        XCTAssertTrue(model.rows.contains { $0.id == visibleTarget.standardizedFileURL.path })
+        XCTAssertFalse(model.rows.contains { $0.id == hiddenTarget.standardizedFileURL.path })
+
+        await model.reveal(hiddenTarget)
+        XCTAssertTrue(model.rows.contains { $0.id == hiddenTarget.standardizedFileURL.path })
+        XCTAssertFalse(model.isExpanded(hiddenTarget))
+        XCTAssertFalse(model.rows.contains { $0.id == hiddenSibling.standardizedFileURL.path })
+    }
+
     private func splitViews(in view: NSView) -> [NSSplitView] {
         (view as? NSSplitView).map { [$0] } ?? view.subviews.flatMap { splitViews(in: $0) }
     }
