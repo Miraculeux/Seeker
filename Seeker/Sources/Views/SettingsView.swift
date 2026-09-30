@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import Carbon.HIToolbox
 
 struct SettingsView: View {
@@ -87,6 +88,58 @@ struct AppearanceSettingsTab: View {
 
 // MARK: - General Settings
 
+@MainActor @Observable
+final class VideoSummaryCacheSettingsModel {
+    private let cache: VideoSummaryCache
+    private(set) var bytes: Int64?
+    private(set) var isClearing = false
+    private(set) var sizeUnavailable = false
+    var errorMessage: String?
+
+    init(cache: VideoSummaryCache = .shared) {
+        self.cache = cache
+    }
+
+    var directory: URL { cache.directory }
+
+    var sizeLabel: String {
+        if let bytes {
+            return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        }
+        return sizeUnavailable ? "Unavailable" : "Calculating\u{2026}"
+    }
+
+    func refresh() async {
+        do {
+            let size = try await cache.currentSizeBytes()
+            try Task.checkCancellation()
+            bytes = size
+            sizeUnavailable = false
+        } catch is CancellationError {
+            return
+        } catch {
+            bytes = nil
+            sizeUnavailable = true
+            errorMessage = "Could not read the video summary cache size: \(error.localizedDescription)"
+        }
+    }
+
+    func clear() async {
+        guard !isClearing else { return }
+        isClearing = true
+        errorMessage = nil
+        defer { isClearing = false }
+        do {
+            try await cache.clear()
+            await refresh()
+        } catch {
+            let message = "Could not clear the video summary cache: \(error.localizedDescription)"
+            await refresh()
+            errorMessage = message
+        }
+    }
+}
+
 struct GeneralSettingsTab: View {
     @Environment(AppState.self) private var appState
     @State private var rememberLastLocation: Bool = SettingsManager.shared.rememberLastLocation
@@ -104,6 +157,7 @@ struct GeneralSettingsTab: View {
     @State private var thumbnailCacheBytes: Int64?
     @State private var isClearingCache: Bool = false
     @State private var cacheSizeRefreshTask: Task<Void, Never>?
+    @State private var videoSummaryCache = VideoSummaryCacheSettingsModel()
 
     var body: some View {
         Form {
@@ -276,11 +330,45 @@ struct GeneralSettingsTab: View {
                 Text("Image, PDF and video previews shown in icon view are cached on disk so they don't have to be regenerated on every launch. Clearing this is safe; previews will be re-rendered on demand.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Video Summary Cache")
+                        Text(videoSummaryCache.sizeLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Reveal in Seeker") {
+                        appState.activeExplorer.revealAndSelect(videoSummaryCache.directory)
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    .controlSize(.small)
+                    Button(videoSummaryCache.isClearing ? "Clearing\u{2026}" : "Clear Cache") {
+                        Task { await videoSummaryCache.clear() }
+                    }
+                    .controlSize(.small)
+                    .disabled(videoSummaryCache.isClearing || videoSummaryCache.bytes == 0)
+                    .accessibilityLabel("Clear Video Summary Cache")
+                }
+                Text("Deletes cached video summary frames only, not source videos, exported PNGs or icon-view thumbnails. Open summaries remain visible; new generations can cache frames again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .task {
             await refreshThumbnailCacheSize()
+        }
+        .task {
+            await videoSummaryCache.refresh()
+        }
+        .alert("Video Summary Cache Error", isPresented: Binding(
+            get: { videoSummaryCache.errorMessage != nil },
+            set: { if !$0 { videoSummaryCache.errorMessage = nil } }
+        )) {
+            Button("OK") { videoSummaryCache.errorMessage = nil }
+        } message: {
+            Text(videoSummaryCache.errorMessage ?? "")
         }
         .onDisappear {
             cacheSizeRefreshTask?.cancel()

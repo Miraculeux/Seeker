@@ -165,7 +165,10 @@ enum SimilarImageFinder {
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
             return nil
         }
+        return perceptualHash(image: image)
+    }
 
+    static func perceptualHash(image: CGImage) -> UInt64? {
         let size = 32
         var pixels = [UInt8](repeating: 0, count: size * size)
         let rendered = pixels.withUnsafeMutableBytes { buffer -> Bool in

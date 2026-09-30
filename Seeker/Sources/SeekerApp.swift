@@ -188,12 +188,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let id = window.identifier?.rawValue ?? ""
         if id.contains("duplicate-finder") || id.contains("directory-compare")
             || id.contains("file-search") || id.contains("similar-images")
-            || id.contains("semantic-search") || id.contains("folder-sync") {
+            || id.contains("semantic-search") || id.contains("folder-sync")
+            || id.contains("video-summary") {
             return true
         }
         return window.title == "Find Duplicates" || window.title == "Compare Folders"
             || window.title == "Search" || window.title == "Similar Images"
             || window.title == "Semantic Search" || window.title == "Sync Folders"
+            || window.title == "Video Summary"
     }
 
     static func isTriageWindow(_ window: NSWindow?) -> Bool {
@@ -915,6 +917,22 @@ struct SeekerApp: App {
                         description: Text("Select an image in the main window, then create this window again.")
                     )
                     .frame(minWidth: 640, minHeight: 420)
+                }
+            }
+        }
+        .windowResizability(.contentMinSize)
+        .commandsRemoved()
+
+        WindowGroup("Video Summary", id: "video-summary", for: VideoSummaryRequest.self) { $request in
+            HelperWindowRoot(kind: .videoSummary, sourceWindowID: request?.sourceWindowID, fallback: appState) { _ in
+                if let request {
+                    VideoSummaryView(url: request.url)
+                } else {
+                    ContentUnavailableView(
+                        "Select a Video", systemImage: "film.stack",
+                        description: Text("Select a video in the main window, then generate its summary. Additional formats require FFmpeg.")
+                    )
+                    .frame(minWidth: 720, minHeight: 480)
                 }
             }
         }

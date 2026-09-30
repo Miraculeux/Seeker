@@ -2,7 +2,7 @@ import AppKit
 import Observation
 
 enum ToolWindowKind: CaseIterable {
-    case duplicates, compare, search, similarImages, semanticSearch, sync
+    case duplicates, compare, search, similarImages, semanticSearch, sync, videoSummary
 
     var title: String {
         switch self {
@@ -12,6 +12,7 @@ enum ToolWindowKind: CaseIterable {
         case .similarImages: "Similar Images"
         case .semanticSearch: "Semantic Search"
         case .sync: "Sync Folders"
+        case .videoSummary: "Video Summary"
         }
     }
 
@@ -23,6 +24,7 @@ enum ToolWindowKind: CaseIterable {
         case .similarImages: "photo.on.rectangle"
         case .semanticSearch: "sparkle.magnifyingglass"
         case .sync: "arrow.triangle.2.circlepath"
+        case .videoSummary: "film.stack"
         }
     }
 }

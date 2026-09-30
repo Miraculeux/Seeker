@@ -21,6 +21,14 @@ A native dual-pane file manager for macOS, built with SwiftUI.
 - Trash browsing and Put Back: Seeker remembers original locations for items it trashes; other items require a restore folder.
 - ZIP compression and extraction of ZIP, CPGZ and CPIO archives.
 - Quick Look, Auto Preview, file information, sharing and Open Terminal Here.
+- **Video Summary:** select a supported video and click the film-stack
+  toolbar icon, or right-click it and choose **Generate Video Summary**. A
+  standalone window automatically generates up to 16 timestamped representative
+  frames, with cancellation, regeneration and PNG contact-sheet export.
+  MP4, MOV and M4V prefer macOS decoding; unsupported native codecs fall back
+  to FFmpeg. MKV, WebM, AVI, MPG/MPEG, TS/MTS/M2TS, WMV, FLV, VOB, OGV,
+  3GP/3G2, MXF, ASF, DIVX and F4V use FFmpeg. Actual codec support depends on
+  the installed FFmpeg build. The source video is never modified.
 - Configurable columns, appearance, shortcuts and per-folder view settings.
 
 **Clear Extended Attributes** is available for application bundles. It requires
@@ -37,6 +45,27 @@ including quarantine, Finder tags and custom metadata. Use only on trusted apps.
 - **Semantic Search:** text-to-image search with local Core ML models, OCR matching and cached image analysis.
 
 The tool-window bar brings existing search, comparison and sync windows forward without restarting their tasks.
+
+Video summaries use local AVFoundation or FFmpeg decoding, sparse sampling approximately
+every 30 seconds (at least 16 candidates for videos long enough, capped at 240),
+black/white-frame and sharpness filtering, perceptual deduplication and temporal
+coverage. Short scenes can be missed; repetitive videos may yield fewer than 16
+frames. This is a visual overview, not an AI or audio-based semantic summary.
+Summaries are cached under `~/Library/Caches/<bundleID>/video-summaries/`, bounded
+to 128 MB and invalidated by source path, size and modification time.
+**Generate Again** bypasses cached results.
+**Settings → General → Caches → Video Summary Cache → Clear Cache** deletes
+video summary cache files independently of icon-view thumbnails and exported PNGs.
+This section also displays the cache size and can reveal its folder in Seeker.
+Open summaries remain visible; subsequent generation can populate the cache again.
+
+FFmpeg is optional and is not bundled or installed automatically. When needed,
+Seeker checks for **both `ffmpeg` and `ffprobe`** in PATH, `/opt/homebrew/bin`,
+`/usr/local/bin`, `/opt/local/bin`, `~/.local/bin` and `~/bin`. If either is missing,
+the summary window explains how to install them, offers a copyable
+`brew install ffmpeg` command and links to installation guidance. After installing,
+click **Generate Again**; no restart is needed for installations in these common
+locations. Native decoding and existing cached summaries do not require FFmpeg.
 
 ### Metadata & Conversion
 

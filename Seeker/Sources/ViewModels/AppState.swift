@@ -77,6 +77,21 @@ class AppState {
 
     var similarImageRequest: SimilarImageSearchRequest?
     var semanticSearchRequest: SemanticSearchRequest?
+    var videoSummaryRequest: VideoSummaryRequest?
+
+    var canOpenVideoSummary: Bool {
+        let selected = activeExplorer.effectiveSelection
+        return selected.count == 1 && selected.allSatisfy(VideoSummaryService.supports)
+    }
+
+    func openVideoSummary(for url: URL? = nil) {
+        let target = url ?? (canOpenVideoSummary ? activeExplorer.effectiveSelection.first?.url : nil)
+        guard let target, VideoSummaryService.supports(FileItem(url: target)) else {
+            NSSound.beep()
+            return
+        }
+        videoSummaryRequest = VideoSummaryRequest(url: target, sourceWindowID: windowID)
+    }
 
     func openSimilarImageSearch() {
         let active = activeExplorer

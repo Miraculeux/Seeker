@@ -138,6 +138,12 @@ struct ContentView: View {
                 appState.semanticSearchRequest = nil
             }
         }
+        .onChange(of: appState.videoSummaryRequest) { _, newValue in
+            if let request = newValue {
+                openWindow(id: "video-summary", value: request)
+                appState.videoSummaryRequest = nil
+            }
+        }
         .onChange(of: appState.folderSyncRoots) { _, newValue in
             if let dirs = newValue, dirs.count == 2 {
                 openWindow(id: "folder-sync", value: FolderSyncWindowRequest(
@@ -193,6 +199,10 @@ struct ContentView: View {
             }
 
             ToolbarSep()
+
+            ExplorerCommandButton(icon: "film.stack", title: "Summary", disabled: !appState.canOpenVideoSummary) {
+                appState.openVideoSummary()
+            }
 
             Menu {
                 Picker("Sort by", selection: Binding(
@@ -394,6 +404,11 @@ struct ContentView: View {
                         appState.openSimilarImageSearch()
                     }
                     .disabled(!appState.activeExplorer.canOpenSimilarImageSearch)
+
+                    ToolbarBtn(icon: "film.stack", tip: "Generate Video Summary") {
+                        appState.openVideoSummary()
+                    }
+                    .disabled(!appState.canOpenVideoSummary)
 
                     ToolbarBtn(
                         icon: "brain",

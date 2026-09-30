@@ -550,6 +550,13 @@ struct FileContentView: View {
                 AppDelegate.shared?.showTextPreview(for: file.url, appState: appState)
             }
         }
+        if VideoSummaryService.supports(file) {
+            Button {
+                appState.openVideoSummary(for: file.url)
+            } label: {
+                Label("Generate Video Summary", systemImage: "film.stack")
+            }
+        }
 
         // Cheap visibility check (no disk IO, early-exit on 2 matches).
         // Actual URL list — which may require a disk enumeration for
