@@ -8,6 +8,8 @@ import CommonCrypto
 /// the app set is determined by UTI / extension, not by the specific
 /// file. Files without an extension fall back to per-URL lookup
 /// (uncached — rare).
+/// Duplicate registrations are collapsed by bundle identifier, preferring
+/// the copy installed in `/Applications`.
 ///
 /// Cache invalidation: an `NSWorkspace.didActivateApplicationNotification`
 /// observer clears the cache when the user installs / removes apps via
@@ -22,15 +24,45 @@ enum OpenWithAppsCache {
     static func apps(for url: URL) -> [URL] {
         let ext = url.pathExtension.lowercased()
         guard !ext.isEmpty else {
-            return NSWorkspace.shared.urlsForApplications(toOpen: url)
+            return preferredUniqueApps(from: NSWorkspace.shared.urlsForApplications(toOpen: url))
         }
         let key = ext as NSString
         if let cached = cache.object(forKey: key) as? [URL] {
             return cached
         }
-        let apps = NSWorkspace.shared.urlsForApplications(toOpen: url)
+        let apps = preferredUniqueApps(from: NSWorkspace.shared.urlsForApplications(toOpen: url))
         cache.setObject(apps as NSArray, forKey: key)
         return apps
+    }
+
+    static func preferredUniqueApps(
+        from appURLs: [URL],
+        applicationsDirectory: URL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    ) -> [URL] {
+        var apps: [URL] = []
+        var indexByIdentity: [String: Int] = [:]
+
+        for appURL in appURLs {
+            let standardizedURL = appURL.standardizedFileURL
+            let identity = Bundle(url: standardizedURL)?.bundleIdentifier
+                ?? "path:\(standardizedURL.path)"
+            if let index = indexByIdentity[identity] {
+                if isInside(standardizedURL, directory: applicationsDirectory),
+                   !isInside(apps[index], directory: applicationsDirectory) {
+                    apps[index] = standardizedURL
+                }
+            } else {
+                indexByIdentity[identity] = apps.count
+                apps.append(standardizedURL)
+            }
+        }
+        return apps
+    }
+
+    private static func isInside(_ url: URL, directory: URL) -> Bool {
+        let directoryPath = directory.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == directoryPath || path.hasPrefix(directoryPath + "/")
     }
 }
 
