@@ -123,6 +123,26 @@ The script creates a DMG in `dist/`. It uses an available code-signing identity,
 or ad-hoc signing if none is available; override with `SIGN_IDENTITY`.
 Builds are not notarized.
 
+To build, install and launch the local release without creating a DMG:
+
+```bash
+./scripts/build-release.sh --install
+```
+
+Install mode gracefully quits the installed app, backs it up, replaces the whole
+bundle in `/Applications`, verifies its signature and contents, and checks that
+the new app stays running for three seconds. If replacement, verification or
+launch fails, it restores the previous version (and relaunches it if it was
+running). If the old app refuses to quit within 30 seconds, installation stops
+without replacing it. Finish active file transfers before installing.
+The destination must be writable; `INSTALL_DIR` can override it with an existing
+absolute directory. Concurrent installations to the same directory are rejected.
+If automatic recovery fails, the script reports where it retained the backup.
+Temporary build directories are unique and cleaned up on exit.
+
+The optional version argument labels the DMG; it does not change the version in
+`Info.plist`. Tests and Git commits remain separate steps.
+
 Open the DMG and drag **Seeker** to **Applications**. Follow macOS security
 prompts only for a build you trust. Open Terminal Here may request permission
 to control Terminal under **System Settings → Privacy & Security → Automation**.
@@ -133,6 +153,13 @@ to control Terminal under **System Settings → Privacy & Security → Automatio
 swift test
 swift test --enable-code-coverage
 swift test --show-codecov-path
+```
+
+Release packaging and installation control-flow tests use mocked macOS commands
+and do not touch `/Applications`:
+
+```bash
+bash scripts/test-build-release.sh
 ```
 
 Tests cover core file workflows, metadata, search, caches, tokenizers and NCM
