@@ -134,6 +134,212 @@ final class FileOperationWorkflowTests: XCTestCase {
         XCTAssertEqual(try fixture.contents("report 3.txt"), "original")
     }
 
+    func testCopyMergesNestedDirectoriesAndPreservesDestinationOnlyItems() async throws {
+        let fixture = try WorkflowFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.directory("source/tree")
+        let destination = try fixture.directory("output")
+        try fixture.write("source/tree/deep/new.txt", "new")
+        try fixture.write("source/tree/.hidden", "hidden")
+        try fixture.directory("source/tree/deep/empty")
+        try fixture.write("output/tree/deep/old.txt", "old")
+        try fixture.write("output/tree/keep.txt", "keep")
+        try FileManager.default.setAttributes([.posixPermissions: 0o750],
+                                             ofItemAtPath: fixture.url("output/tree").path)
+        let manager = FileOperationManager()
+        manager.startCopy(sources: [source], to: destination) { _ in }
+        let operation = try XCTUnwrap(manager.operations.first)
+
+        try await completeWorkflowOperation(operation)
+        XCTAssertNil(operation.error)
+        XCTAssertEqual(operation.totalBytes, 9)
+        XCTAssertEqual(operation.copiedBytes, 9)
+        XCTAssertEqual(operation.filesCompleted, operation.filesTotal)
+        XCTAssertEqual(try fixture.contents("output/tree/deep/new.txt"), "new")
+        XCTAssertEqual(try fixture.contents("output/tree/.hidden"), "hidden")
+        XCTAssertEqual(try fixture.contents("output/tree/deep/old.txt"), "old")
+        XCTAssertEqual(try fixture.contents("output/tree/keep.txt"), "keep")
+        XCTAssertTrue(fixture.exists("output/tree/deep/empty"))
+        XCTAssertEqual(try fixture.contents("source/tree/deep/new.txt"), "new")
+        XCTAssertFalse(operation.completedDestinations.contains(fixture.url("output/tree")))
+        XCTAssertFalse(operation.completedDestinations.contains(fixture.url("output/tree/deep")))
+        let attributes = try FileManager.default.attributesOfItem(atPath: fixture.url("output/tree").path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o750)
+    }
+
+    func testMergedFileConflictsSupportReplaceKeepBothAndSkip() async throws {
+        for choice in [FileOperationManager.ConflictChoice.replace, .keepBoth, .skip] {
+            let fixture = try WorkflowFixture()
+            defer { fixture.cleanup() }
+            let source = try fixture.directory("source/tree")
+            let destination = try fixture.directory("output")
+            try fixture.write("source/tree/deep/file.txt", "new")
+            try fixture.write("source/tree/new.txt", "added")
+            try fixture.write("output/tree/deep/file.txt", "old payload")
+            try fixture.write("output/tree/deep/file 2.txt", "reserved")
+            try fixture.write("output/tree/keep.txt", "keep")
+            let manager = FileOperationManager()
+            var prompts = 0
+            let plan = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .copy) { name, hasMore in
+                prompts += 1
+                XCTAssertEqual(name, "file.txt")
+                XCTAssertTrue(hasMore)
+                return (choice, false)
+            })
+            let operation = try XCTUnwrap(manager.startPlannedCopy(plan) { _ in })
+
+            try await completeWorkflowOperation(operation)
+            XCTAssertNil(operation.error)
+            XCTAssertEqual(prompts, 1)
+            XCTAssertEqual(try fixture.contents("output/tree/deep/file.txt"), choice == .replace ? "new" : "old payload")
+            XCTAssertEqual(try fixture.contents("output/tree/deep/file 2.txt"), "reserved")
+            XCTAssertEqual(try fixture.contents("output/tree/keep.txt"), "keep")
+            XCTAssertEqual(try fixture.contents("output/tree/new.txt"), "added")
+            XCTAssertEqual(try fixture.contents("source/tree/deep/file.txt"), "new")
+            if choice == .keepBoth {
+                XCTAssertEqual(try fixture.contents("output/tree/deep/file 3.txt"), "new")
+            } else {
+                XCTAssertFalse(fixture.exists("output/tree/deep/file 3.txt"))
+            }
+        }
+    }
+
+    func testMergeApplyToAllSpansNestedDirectoriesAndResetsBetweenBatches() throws {
+        let fixture = try WorkflowFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.directory("source/tree")
+        let destination = try fixture.directory("output")
+        for name in ["a/file", "b/file"] {
+            try fixture.write("source/tree/\(name)", "new")
+            try fixture.write("output/tree/\(name)", "old")
+        }
+        let manager = FileOperationManager()
+        var prompts = 0
+        let skipped = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .copy) { _, hasMore in
+            prompts += 1
+            XCTAssertTrue(hasMore)
+            return (.skip, true)
+        })
+        XCTAssertTrue(skipped.isEmpty)
+        XCTAssertEqual(prompts, 1)
+        let replaced = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .copy) { _, _ in
+            prompts += 1
+            return (.replace, false)
+        })
+        XCTAssertEqual(prompts, 3)
+        XCTAssertEqual(replaced.count, 2)
+        XCTAssertTrue(replaced.allSatisfy(\.replace))
+        XCTAssertEqual(try fixture.contents("output/tree/a/file"), "old")
+    }
+
+    func testMergeKeepBothDoesNotClobberAnotherIncomingFile() async throws {
+        let fixture = try WorkflowFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.directory("source/tree")
+        let destination = try fixture.directory("output")
+        try fixture.write("source/tree/file.txt", "new")
+        try fixture.write("source/tree/file 2.txt", "incoming sibling")
+        try fixture.write("output/tree/file.txt", "old")
+        let manager = FileOperationManager()
+        let plan = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .copy) { _, _ in
+            (.keepBoth, false)
+        })
+        let operation = try XCTUnwrap(manager.startPlannedCopy(plan) { _ in })
+
+        try await completeWorkflowOperation(operation)
+        XCTAssertNil(operation.error)
+        XCTAssertEqual(try fixture.contents("output/tree/file.txt"), "old")
+        XCTAssertEqual(try fixture.contents("output/tree/file 2.txt"), "incoming sibling")
+        XCTAssertEqual(try fixture.contents("output/tree/file 3.txt"), "new")
+    }
+
+    func testCancellingNestedConflictDiscardsEntirePlanBeforeCopying() throws {
+        let fixture = try WorkflowFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.directory("source/tree")
+        let destination = try fixture.directory("output")
+        try fixture.write("source/tree/a-new", "new")
+        try fixture.write("source/tree/deep/file", "replacement")
+        try fixture.write("output/tree/deep/file", "old")
+        let manager = FileOperationManager()
+        let plan = try manager.planTransfer(sources: [source], destination: destination, kind: .copy) { _, hasMore in
+            XCTAssertFalse(hasMore)
+            return (.cancel, false)
+        }
+
+        XCTAssertNil(plan)
+        XCTAssertTrue(manager.operations.isEmpty)
+        XCTAssertFalse(fixture.exists("output/tree/a-new"))
+        XCTAssertEqual(try fixture.contents("output/tree/deep/file"), "old")
+    }
+
+    func testDirectorySymlinksAndFileDirectoryMismatchesDoNotMerge() throws {
+        let fixture = try WorkflowFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.directory("source/tree")
+        try fixture.write("source/tree/child", "source")
+        let linked = try fixture.directory("linked")
+        try fixture.write("linked/keep", "untouched")
+        let destination = try fixture.directory("output")
+        try FileManager.default.createSymbolicLink(at: fixture.url("output/tree"), withDestinationURL: linked)
+        let manager = FileOperationManager()
+        var prompts = 0
+        let plan = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .copy) { _, _ in
+            prompts += 1
+            return (.skip, false)
+        })
+        XCTAssertTrue(plan.isEmpty)
+        XCTAssertEqual(prompts, 1)
+        XCTAssertFalse(fixture.exists("linked/child"))
+        XCTAssertEqual(try fixture.contents("linked/keep"), "untouched")
+
+        try FileManager.default.removeItem(at: fixture.url("output/tree"))
+        try fixture.write("output/tree", "file, not folder")
+        let mismatch = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .copy) { _, _ in
+            prompts += 1
+            return (.replace, false)
+        })
+        XCTAssertEqual(prompts, 2)
+        XCTAssertEqual(mismatch.count, 1)
+        XCTAssertTrue(try XCTUnwrap(mismatch.first).replace)
+
+        try FileManager.default.removeItem(at: source)
+        try FileManager.default.createSymbolicLink(at: source, withDestinationURL: linked)
+        try FileManager.default.removeItem(at: fixture.url("output/tree"))
+        try fixture.directory("output/tree")
+        let sourceLink = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .copy) { _, _ in
+            prompts += 1
+            return (.skip, false)
+        })
+        XCTAssertTrue(sourceLink.isEmpty)
+        XCTAssertEqual(prompts, 3)
+    }
+
+    func testCopyFolderInPlaceStillDuplicatesAndMoveFolderStillPrompts() async throws {
+        let fixture = try WorkflowFixture()
+        defer { fixture.cleanup() }
+        let source = try fixture.directory("source/tree")
+        try fixture.write("source/tree/child", "payload")
+        let destination = try fixture.directory("output")
+        try fixture.write("output/tree/keep", "keep")
+        let manager = FileOperationManager()
+        manager.startCopy(sources: [source], to: fixture.url("source")) { _ in }
+        let operation = try XCTUnwrap(manager.operations.first)
+        try await completeWorkflowOperation(operation)
+        XCTAssertNil(operation.error)
+        XCTAssertEqual(try fixture.contents("source/tree 2/child"), "payload")
+
+        var prompts = 0
+        let plan = try XCTUnwrap(manager.planTransfer(sources: [source], destination: destination, kind: .move) { _, _ in
+            prompts += 1
+            return (.replace, false)
+        })
+        XCTAssertEqual(prompts, 1)
+        XCTAssertEqual(plan.count, 1)
+        XCTAssertEqual(plan.first?.source, source)
+        XCTAssertTrue(try XCTUnwrap(plan.first).replace)
+    }
+
     func testMoveInPlaceIsNoOpAndDoesNotCallCompletion() throws {
         let fixture = try WorkflowFixture()
         defer { fixture.cleanup() }

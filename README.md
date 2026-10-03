@@ -17,6 +17,7 @@ A native dual-pane file manager for macOS, built with SwiftUI.
 - Filename filtering with case-insensitive `*` and `?` wildcards.
 - Copy, move, cut/paste, duplicate, rename, batch rename, new files/folders and deletion.
 - Copies preserve empty directories; overwrites require filesystem support for atomic swaps.
+- Copying into a same-named folder merges its contents recursively and keeps destination-only items. Same-named files offer Replace, Keep Both, Skip and Cancel, with Apply to all for the remaining batch. Copying within the original folder still creates a numbered duplicate; moves and folder sync retain their separate conflict policies.
 - Cross-pane transfers, drag and drop, and browser image imports.
 - Trash browsing and Put Back: Seeker remembers original locations for items it trashes; other items require a restore folder.
 - ZIP compression and extraction of ZIP, CPGZ and CPIO archives.

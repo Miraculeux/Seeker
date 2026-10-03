@@ -257,7 +257,7 @@ class FileOperationManager {
 
     // MARK: - Conflict resolution
 
-    private enum ConflictChoice { case replace, keepBoth, skip, cancel }
+    enum ConflictChoice { case replace, keepBoth, skip, cancel }
 
     /// Builds the per-source execution plan, prompting the user for any
     /// destination name collisions. Returns `nil` if the user cancels the
@@ -265,63 +265,100 @@ class FileOperationManager {
     /// its own parent directory auto-keeps-both without a prompt; moving an
     /// item into the folder it already lives in is silently skipped.
     private func resolveConflicts(sources: [URL], destination: URL, kind: FileOperation.Kind) -> [FileOperation.PlannedItem]? {
+        do {
+            return try planTransfer(sources: sources, destination: destination, kind: kind) { name, hasMore in
+                let choice = self.promptConflict(name: name, kind: kind, hasMore: hasMore)
+                return (choice, self.lastPromptApplyToAll)
+            }
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn\u{2019}t prepare \(kind.rawValue.lowercased())."
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return nil
+        }
+    }
+
+    func planTransfer(sources: [URL], destination: URL, kind: FileOperation.Kind,
+                      resolveConflict: (String, Bool) -> (choice: ConflictChoice, applyToAll: Bool)) throws
+        -> [FileOperation.PlannedItem]? {
         let fm = FileManager.default
-        let destStd = destination.standardizedFileURL.path
         var plan: [FileOperation.PlannedItem] = []
         var applyToAll: ConflictChoice?
 
-        for source in sources {
-            let target = destination.appendingPathComponent(source.lastPathComponent)
-            let sameDir = source.deletingLastPathComponent().standardizedFileURL.path == destStd
-
-            // Copying/moving a folder inside itself would recurse into the
-            // copy being written; `moveItem` also fails with an opaque error.
-            if Self.isSelfOrDescendant(destination, of: source) {
-                let alert = NSAlert()
-                alert.messageText = "You can\u{2019}t \(kind == .move ? "move" : "copy") \u{201C}\(source.lastPathComponent)\u{201D} into itself."
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-                return nil
+        func appendSources(_ sources: [URL], to directory: URL, hasFollowing: Bool) throws -> Bool {
+            let incomingPaths = Set(sources.map {
+                directory.appendingPathComponent($0.lastPathComponent).standardizedFileURL.path
+            })
+            func appendDuplicate(_ source: URL) {
+                let reserved = incomingPaths.union(plan.map { $0.destination.standardizedFileURL.path })
+                plan.append(FileOperation.PlannedItem(
+                    source: source,
+                    destination: uniqueDestination(for: source, in: directory, excluding: reserved),
+                    replace: false
+                ))
             }
+            for (index, source) in sources.enumerated() {
+                let target = directory.appendingPathComponent(source.lastPathComponent)
+                let sameDir = source.deletingLastPathComponent().standardizedFileURL.path
+                    == directory.standardizedFileURL.path
+                let hasMore = hasFollowing || index < sources.count - 1
 
-            guard fm.fileExists(atPath: target.path) else {
-                plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: false))
-                continue
-            }
-
-            // Item already in the destination folder.
-            if sameDir {
-                if kind == .move {
-                    continue // already where it'd go — nothing to do
+                if Self.isSelfOrDescendant(directory, of: source) {
+                    throw CocoaError(.fileWriteInvalidFileName, userInfo: [
+                        NSLocalizedDescriptionKey: "You can\u{2019}t \(kind == .move ? "move" : "copy") \u{201C}\(source.lastPathComponent)\u{201D} into itself."
+                    ])
                 }
-                // Copy in place → duplicate with a unique name (Finder).
-                plan.append(FileOperation.PlannedItem(source: source, destination: uniqueDestination(for: source, in: destination), replace: false))
-                continue
-            }
 
-            let choice: ConflictChoice
-            if let all = applyToAll {
-                choice = all
-            } else {
-                choice = promptConflict(name: source.lastPathComponent, kind: kind, hasMore: source != sources.last)
-                // Remember the choice for the rest of the batch *before* the
-                // switch below — otherwise the `.skip`/`.cancel` early exits
-                // would jump over this and keep re-prompting.
-                if lastPromptApplyToAll { applyToAll = choice }
+                let targetAttributes: [FileAttributeKey: Any]
+                do {
+                    targetAttributes = try fm.attributesOfItem(atPath: target.path)
+                } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+                    plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: false))
+                    continue
+                }
+
+                if sameDir {
+                    if kind == .move { continue }
+                    appendDuplicate(source)
+                    continue
+                }
+
+                // Merge real directories only, never follow directory symlinks.
+                // Existing parents stay out of the plan so undo cannot delete them.
+                if kind == .copy,
+                   targetAttributes[.type] as? FileAttributeType == .typeDirectory,
+                   try fm.attributesOfItem(atPath: source.path)[.type] as? FileAttributeType == .typeDirectory {
+                    let children = try fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
+                        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                    if try !appendSources(children, to: target, hasFollowing: hasMore) { return false }
+                    continue
+                }
+
+                let choice: ConflictChoice
+                if let all = applyToAll {
+                    choice = all
+                } else {
+                    let resolution = resolveConflict(source.lastPathComponent, hasMore)
+                    choice = resolution.choice
+                    if resolution.applyToAll { applyToAll = choice }
+                }
+                switch choice {
+                case .cancel:
+                    return false
+                case .skip:
+                    continue
+                case .replace:
+                    plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: true))
+                case .keepBoth:
+                    appendDuplicate(source)
+                }
             }
-            switch choice {
-            case .cancel:
-                return nil
-            case .skip:
-                continue
-            case .replace:
-                plan.append(FileOperation.PlannedItem(source: source, destination: target, replace: true))
-            case .keepBoth:
-                plan.append(FileOperation.PlannedItem(source: source, destination: uniqueDestination(for: source, in: destination), replace: false))
-            }
+            return true
         }
-        return plan
+        return try appendSources(sources, to: destination, hasFollowing: false) ? plan : nil
     }
 
     /// Set by `promptConflict` to communicate the "Apply to all" checkbox.
@@ -822,13 +859,13 @@ class FileOperationManager {
         return map
     }
 
-    private func uniqueDestination(for source: URL, in directory: URL) -> URL {
+    private func uniqueDestination(for source: URL, in directory: URL, excluding reservedPaths: Set<String> = []) -> URL {
         let fm = FileManager.default
         let name = source.deletingPathExtension().lastPathComponent
         let ext = source.pathExtension
         var destURL = directory.appendingPathComponent(source.lastPathComponent)
         var counter = 2
-        while fm.fileExists(atPath: destURL.path) {
+        while fm.fileExists(atPath: destURL.path) || reservedPaths.contains(destURL.standardizedFileURL.path) {
             let newName = ext.isEmpty ? "\(name) \(counter)" : "\(name) \(counter).\(ext)"
             destURL = directory.appendingPathComponent(newName)
             counter += 1
