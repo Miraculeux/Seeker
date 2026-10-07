@@ -588,6 +588,8 @@ struct FileContentView: View {
         Button("Copy") { viewModel.copySelected() }
         Button("Cut") { viewModel.cutSelected() }
         Button("Paste") { viewModel.paste() }
+        Button("Paste as Symbolic Link") { viewModel.pasteSymbolicLink() }
+            .disabled(!viewModel.canPasteSymbolicLink)
 
         Divider()
 
@@ -696,6 +698,8 @@ struct FileContentView: View {
         Button("New File") { viewModel.createNewFile() }
         Divider()
         Button("Paste") { viewModel.paste() }
+        Button("Paste as Symbolic Link") { viewModel.pasteSymbolicLink() }
+            .disabled(!viewModel.canPasteSymbolicLink)
         Divider()
         Button("Refresh") { viewModel.loadFiles() }
         Button("Open in Finder") {

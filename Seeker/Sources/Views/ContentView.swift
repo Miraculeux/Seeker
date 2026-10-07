@@ -185,6 +185,9 @@ struct ContentView: View {
             ExplorerCommandButton(icon: "doc.on.clipboard", title: "Paste", disabled: !explorer.canPaste) {
                 explorer.paste()
             }
+            ExplorerCommandButton(icon: "link", title: "Link", disabled: !explorer.canPasteSymbolicLink) {
+                explorer.pasteSymbolicLink()
+            }
             ExplorerCommandButton(icon: "character.cursor.ibeam", title: "Rename", disabled: explorer.selectedFile == nil) {
                 if let file = explorer.selectedFile { explorer.beginRename(file) }
             }

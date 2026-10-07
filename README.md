@@ -16,6 +16,7 @@ A native dual-pane file manager for macOS, built with SwiftUI.
 - Favorites, mounted volumes, a Computer overview, editable paths and navigation history.
 - Filename filtering with case-insensitive `*` and `?` wildcards.
 - Copy, move, cut/paste, duplicate, rename, batch rename, new files/folders and deletion.
+- Copy a single file or folder, browse to the destination, then choose **Paste as Symbolic Link** in the Edit or context menu (or **Link** in the Explorer-style toolbar). Like Paste, a selected folder is the destination; otherwise the selected file's parent or current folder is used. Links use absolute source paths, keep the clipboard intact and support Undo. Existing names are preserved with numbered alternatives; cut and multi-item clipboards are not supported. Moving or deleting the source can break the link.
 - Copies preserve empty directories; overwrites require filesystem support for atomic swaps.
 - Copying into a same-named folder merges its contents recursively and keeps destination-only items. Same-named files offer Replace, Keep Both, Skip and Cancel, with Apply to all for the remaining batch. Copying within the original folder still creates a numbered duplicate; moves and folder sync retain their separate conflict policies.
 - Cross-pane transfers, drag and drop, and browser image imports.

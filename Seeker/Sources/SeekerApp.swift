@@ -1084,6 +1084,10 @@ struct SeekerApp: App {
             // MARK: - File Operations (Edit menu)
             CommandGroup(after: .pasteboard) {
                 let appState = activeAppState
+                Button("Paste as Symbolic Link") {
+                    appState.activeExplorer.pasteSymbolicLink()
+                }
+                .disabled(!mainWindowCommandsEnabled || !appState.activeExplorer.canPasteSymbolicLink)
                 Divider()
 
                 Button("Open") {

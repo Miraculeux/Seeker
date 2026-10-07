@@ -1232,6 +1232,40 @@ class FileExplorerViewModel: Identifiable {
         pasteFiles(forceMove: true)
     }
 
+    private var clipboardURLs: [URL] {
+        if !Self.clipboard.isEmpty { return Self.clipboard }
+        return NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL] ?? []
+    }
+
+    var canPasteSymbolicLink: Bool {
+        let urls = clipboardURLs
+        return fileMutationStatus == nil && !Self.clipboardIsCut
+            && urls.count == 1 && urls[0].isFileURL && currentURL.isFileURL
+    }
+
+    func pasteSymbolicLink() {
+        guard canPasteSymbolicLink, let source = clipboardURLs.first else {
+            showFileError("Copy a single file or folder before creating a symbolic link.")
+            return
+        }
+        let destination = pasteDestination()
+        let link = Self.uniqueDestination(for: source, in: destination)
+        do {
+            // Verify the copied entry still exists without following an existing symlink.
+            _ = try FileManager.default.attributesOfItem(atPath: source.path)
+            try FileManager.default.createSymbolicLink(atPath: link.path,
+                                                       withDestinationPath: source.path)
+            undoStack.append(.create(url: link))
+            if destination.standardizedFileURL == currentURL.standardizedFileURL {
+                pendingSelectionURL = link
+            }
+            loadFiles()
+            notifyDirectoriesChanged(sourceURLs: [link])
+        } catch {
+            showFileError("Could not create symbolic link: \(error.localizedDescription)")
+        }
+    }
+
     /// Directory that a paste should drop into. When a single item is
     /// selected the target follows the selection so pasting feels natural
     /// in the expandable list/tree view:
@@ -1251,15 +1285,8 @@ class FileExplorerViewModel: Identifiable {
     }
 
     private func pasteFiles(forceMove: Bool) {
-        let urls: [URL]
-        if !Self.clipboard.isEmpty {
-            urls = Self.clipboard
-        } else {
-            // Try system pasteboard
-            guard let pbURLs = NSPasteboard.general.readObjects(forClasses: [NSURL.self]) as? [URL],
-                  !pbURLs.isEmpty else { return }
-            urls = pbURLs
-        }
+        let urls = clipboardURLs
+        guard !urls.isEmpty else { return }
 
         let shouldMove = forceMove || Self.clipboardIsCut
         var dest = pasteDestination()
@@ -1697,7 +1724,8 @@ class FileExplorerViewModel: Identifiable {
         }
 
         var counter = 1
-        while fm.fileExists(atPath: candidate.path) {
+        var info = stat()
+        while fm.fileExists(atPath: candidate.path) || lstat(candidate.path, &info) == 0 {
             counter += 1
             let numberedName = ext.isEmpty
                 ? "\(name)\(suffix) \(counter)"
