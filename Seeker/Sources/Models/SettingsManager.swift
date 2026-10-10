@@ -1,6 +1,8 @@
 import Foundation
 import CoreGraphics
 import Carbon.HIToolbox
+import AppKit
+import UniformTypeIdentifiers
 
 enum InterfaceStyle: String, CaseIterable, Identifiable {
     case macOS
@@ -183,7 +185,24 @@ struct KeyShortcut: Codable, Hashable {
 final class SettingsManager {
     static let shared = SettingsManager()
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    private let applicationForType: (UTType) -> URL?
+    private let setApplicationForType: (URL, UTType) async throws -> Void
+    private var changingDefaultApplication = false
+
+    init(
+        defaults: UserDefaults = .standard,
+        applicationForType: @escaping (UTType) -> URL? = {
+            NSWorkspace.shared.urlForApplication(toOpen: $0)
+        },
+        setApplicationForType: @escaping (URL, UTType) async throws -> Void = {
+            try await NSWorkspace.shared.setDefaultApplication(at: $0, toOpen: $1)
+        }
+    ) {
+        self.defaults = defaults
+        self.applicationForType = applicationForType
+        self.setApplicationForType = setApplicationForType
+    }
 
     private enum Keys {
         static let rememberLastLocation = "rememberLastLocation"
@@ -204,6 +223,7 @@ final class SettingsManager {
         static let autoPreviewInterval = "autoPreviewInterval"
         static let textPreviewByteLimit = "textPreviewByteLimit"
         static let defaultAppsByExtension = "defaultAppsByExtension"
+        static let systemDefaultApps = "systemDefaultApps"
         static let rememberViewPerFolder = "rememberViewPerFolder"
         static let defaultSortOrder = "defaultSortOrder"
         static let defaultSortAscending = "defaultSortAscending"
@@ -364,10 +384,8 @@ final class SettingsManager {
 
     // MARK: - Default "Always Open With" Apps
 
-    /// Maps a lowercase file extension (e.g. `"mov"`) to the file-system
-    /// path of the application that should always open files of that type
-    /// **from within Seeker**. This does not change the system-wide default
-    /// handler; it only affects how Seeker launches files.
+    /// History of choices made in Seeker. The current handler is read from
+    /// macOS so changes made in Finder are respected too.
     var defaultAppPathsByExtension: [String: String] {
         get { defaults.dictionary(forKey: Keys.defaultAppsByExtension) as? [String: String] ?? [:] }
         set {
@@ -379,31 +397,95 @@ final class SettingsManager {
         }
     }
 
-    /// Returns the app URL configured to always open files with the given
-    /// extension, or `nil` when no mapping exists or the app no longer
-    /// exists on disk (stale mappings are pruned lazily on read).
+    /// Returns the current system handler, not a potentially stale local choice.
     func defaultApp(forExtension ext: String) -> URL? {
-        let key = ext.lowercased()
-        guard !key.isEmpty, let path = defaultAppPathsByExtension[key] else { return nil }
-        let url = URL(fileURLWithPath: path)
-        guard FileManager.default.fileExists(atPath: path) else {
-            var map = defaultAppPathsByExtension
-            map.removeValue(forKey: key)
-            defaultAppPathsByExtension = map
-            return nil
-        }
-        return url
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext.lowercased()) else { return nil }
+        return applicationForType(type)
     }
 
-    /// Sets (or clears, when `appURL` is `nil`) the always-open-with app for
-    /// the given file extension.
-    func setDefaultApp(_ appURL: URL?, forExtension ext: String) {
+    private struct SystemDefaultApp: Codable {
+        let originalAppPath: String?
+        var appPath: String
+        var extensions: [String]
+    }
+
+    enum DefaultAppError: LocalizedError {
+        case invalidExtension
+        case changeInProgress
+        case noOriginalApplication
+        case verificationFailed
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidExtension:
+                return "Could not determine the file type for this extension."
+            case .changeInProgress:
+                return "Another default application change is still in progress. Please try again after it finishes."
+            case .noOriginalApplication:
+                return "This file type had no default application to restore. Choose a replacement in Finder’s Get Info window."
+            case .verificationFailed:
+                return "macOS did not apply the requested default application. The saved settings have not been changed."
+            }
+        }
+    }
+
+    /// macOS associates handlers with content types, which can cover several
+    /// extensions. Keep one original handler per type across repeated changes.
+    func setDefaultApp(_ appURL: URL?, forExtension ext: String, contentType: UTType? = nil) async throws {
         let key = ext.lowercased()
-        guard !key.isEmpty else { return }
+        guard !key.isEmpty else { throw DefaultAppError.invalidExtension }
+        guard !changingDefaultApplication else { throw DefaultAppError.changeInProgress }
+        changingDefaultApplication = true
+        defer { changingDefaultApplication = false }
+
+        var records: [String: SystemDefaultApp] = [:]
+        if let data = defaults.data(forKey: Keys.systemDefaultApps) {
+            records = try PropertyListDecoder().decode([String: SystemDefaultApp].self, from: data)
+        }
+        let recordedType = records.first { $0.value.extensions.contains(key) }?.key
+        guard let type = recordedType.flatMap({ UTType($0) })
+            ?? contentType ?? UTType(filenameExtension: key) else {
+            throw DefaultAppError.invalidExtension
+        }
         var map = defaultAppPathsByExtension
         if let appURL {
-            map[key] = appURL.path
+            var record = records[type.identifier] ?? SystemDefaultApp(
+                originalAppPath: applicationForType(type)?.path,
+                appPath: appURL.path,
+                extensions: []
+            )
+            record.appPath = appURL.path
+            if !record.extensions.contains(key) { record.extensions.append(key) }
+            records[type.identifier] = record
+            // Encode before changing the system handler so encoding errors
+            // cannot leave an untracked system-wide change.
+            let data = try PropertyListEncoder().encode(records)
+            try await setApplicationForType(appURL, type)
+            guard applicationForType(type)?.standardizedFileURL == appURL.standardizedFileURL else {
+                throw DefaultAppError.verificationFailed
+            }
+            for alias in record.extensions { map[alias] = appURL.path }
+            defaults.set(data, forKey: Keys.systemDefaultApps)
+        } else if let record = records[type.identifier] {
+            records.removeValue(forKey: type.identifier)
+            let data = try PropertyListEncoder().encode(records)
+            // Do not overwrite a newer choice made outside Seeker.
+            let currentApp = applicationForType(type)?.standardizedFileURL
+            if currentApp == nil || currentApp == URL(fileURLWithPath: record.appPath).standardizedFileURL {
+                guard let originalPath = record.originalAppPath else {
+                    throw DefaultAppError.noOriginalApplication
+                }
+                let originalURL = URL(fileURLWithPath: originalPath)
+                try await setApplicationForType(originalURL, type)
+                guard applicationForType(type)?.standardizedFileURL == originalURL.standardizedFileURL else {
+                    throw DefaultAppError.verificationFailed
+                }
+            }
+            defaults.set(data, forKey: Keys.systemDefaultApps)
+            for alias in record.extensions { map.removeValue(forKey: alias) }
+            map.removeValue(forKey: key)
         } else {
+            // Legacy entries never changed macOS, so have nothing to restore.
             map.removeValue(forKey: key)
         }
         defaultAppPathsByExtension = map

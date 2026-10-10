@@ -32,6 +32,14 @@ A native dual-pane file manager for macOS, built with SwiftUI.
   3GP/3G2, MXF, ASF, DIVX and F4V use FFmpeg. Actual codec support depends on
   the installed FFmpeg build. The source video is never modified.
 - Configurable columns, appearance, shortcuts and per-folder view settings.
+- **Always Open With:** sets the macOS default application for the file's content
+  type, so Finder and Seeker both use it. macOS may request confirmation; failed
+  changes are reported without saving a new preference. Extensions sharing a
+  content type change together. Remove the choice in the context menu or
+  **Settings → File Types** to restore the previous system default (unless it
+  has since been changed outside Seeker). If there was no previous handler,
+  choose a replacement in Finder's Get Info window. Older Seeker-only choices
+  must be selected again to apply to Finder.
 
 **Clear Extended Attributes** is available for application bundles. It requires
 administrator authorization and permanently removes all extended attributes,

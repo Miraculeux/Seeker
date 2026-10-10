@@ -469,8 +469,18 @@ struct FileContentView: View {
     /// Persists `appURL` as the always-open-with app for `ext` and opens
     /// `fileURL` with it immediately so the choice takes effect at once.
     private func setDefaultApp(_ appURL: URL, forExtension ext: String, openNow fileURL: URL) {
-        SettingsManager.shared.setDefaultApp(appURL, forExtension: ext)
-        NSWorkspace.shared.open([fileURL], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
+        Task { @MainActor in
+            do {
+                let type = try fileURL.resourceValues(forKeys: [.contentTypeKey]).contentType
+                try await SettingsManager.shared.setDefaultApp(appURL, forExtension: ext, contentType: type)
+                try await NSWorkspace.shared.open(
+                    [fileURL], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration()
+                )
+            } catch {
+                viewModel.errorMessage = "Could not set the default application or open the file: \(error.localizedDescription)"
+                viewModel.showError = true
+            }
+        }
     }
 
     @ViewBuilder
@@ -497,12 +507,10 @@ struct FileContentView: View {
                     }
                 }
 
-                // "Always Open With": persist a per-extension default app so
-                // future opens (double-click / Enter / Open) use it. Only
-                // meaningful for files that have an extension.
+                // System associations apply in Finder as well as Seeker.
                 let ext = file.url.pathExtension
                 if !ext.isEmpty {
-                    let currentDefault = SettingsManager.shared.defaultApp(forExtension: ext)
+                    let currentDefault = NSWorkspace.shared.urlForApplication(toOpen: file.url)
                     Menu("Always Open With") {
                         ForEach(appURLs, id: \.self) { appURL in
                             let isCurrent = currentDefault?.standardizedFileURL == appURL.standardizedFileURL
@@ -526,10 +534,17 @@ struct FileContentView: View {
                                 setDefaultApp(appURL, forExtension: ext, openNow: file.url)
                             }
                         }
-                        if currentDefault != nil {
+                        if SettingsManager.shared.defaultAppPathsByExtension[ext.lowercased()] != nil {
                             Divider()
                             Button("Remove Default for .\(ext.lowercased())") {
-                                SettingsManager.shared.setDefaultApp(nil, forExtension: ext)
+                                Task { @MainActor in
+                                    do {
+                                        try await SettingsManager.shared.setDefaultApp(nil, forExtension: ext)
+                                    } catch {
+                                        viewModel.errorMessage = "Could not restore the default application: \(error.localizedDescription)"
+                                        viewModel.showError = true
+                                    }
+                                }
                             }
                         }
                     }

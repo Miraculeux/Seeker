@@ -482,6 +482,7 @@ struct ColumnsSettingsTab: View {
 /// mappings configured from the file context menu, and add new ones.
 struct FileTypesSettingsTab: View {
     @State private var mappings: [Mapping] = FileTypesSettingsTab.loadMappings()
+    @State private var defaultAppError: String?
 
     private struct Mapping: Identifiable {
         var id: String { ext }
@@ -518,23 +519,31 @@ struct FileTypesSettingsTab: View {
                             .buttonStyle(.borderless)
                             .help("Change app")
                             Button {
-                                SettingsManager.shared.setDefaultApp(nil, forExtension: mapping.ext)
-                                reload()
+                                updateDefaultApp(nil, for: mapping.ext)
                             } label: {
                                 Image(systemName: "trash")
                             }
                             .buttonStyle(.borderless)
-                            .help("Remove")
+                            .help("Restore previous system default")
                         }
                     }
                 }
 
-                Text("These defaults control how Seeker opens files. They do not change your system-wide default applications.")
+                Text("New choices change the macOS default application, including Finder. Extensions sharing a file type change together. Remove restores the previous default unless it has since been changed outside Seeker. Old Seeker-only choices must be selected again to apply system-wide.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .onAppear { reload() }
+        .alert("Default Application Error", isPresented: Binding(
+            get: { defaultAppError != nil },
+            set: { if !$0 { defaultAppError = nil } }
+        )) {
+            Button("OK") { defaultAppError = nil }
+        } message: {
+            Text(defaultAppError ?? "")
+        }
     }
 
     private func changeApp(for ext: String) {
@@ -543,8 +552,18 @@ struct FileTypesSettingsTab: View {
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let appURL = panel.url {
-            SettingsManager.shared.setDefaultApp(appURL, forExtension: ext)
-            reload()
+            updateDefaultApp(appURL, for: ext)
+        }
+    }
+
+    private func updateDefaultApp(_ appURL: URL?, for ext: String) {
+        Task { @MainActor in
+            do {
+                try await SettingsManager.shared.setDefaultApp(appURL, forExtension: ext)
+                reload()
+            } catch {
+                defaultAppError = error.localizedDescription
+            }
         }
     }
 
