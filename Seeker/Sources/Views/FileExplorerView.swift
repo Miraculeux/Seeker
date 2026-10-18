@@ -1446,12 +1446,17 @@ private final class FilePasteboardWriter: NSObject, NSPasteboardWriting {
     }
 }
 
-private final class FileDragNSView: NSView, NSDraggingSource {
+final class FileDragNSView: NSView, NSDraggingSource {
     var isDragEnabled = true
     var chevronRange: ClosedRange<CGFloat>?
     var urlsProvider: (() -> [URL])?
     var clickHandler: ((Bool, Bool, Int) -> Void)?
     var toggleExpandHandler: (() -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        // Keep the activating click in the selection / double-click sequence.
+        isDragEnabled
+    }
 
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {

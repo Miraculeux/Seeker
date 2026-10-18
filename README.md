@@ -13,6 +13,7 @@ A native dual-pane file manager for macOS, built with SwiftUI.
 ### File Browsing & Operations
 
 - Independent panes and tabs, with List, Icon and Column views; expandable folders in List view.
+- File rows accept the activating click, so double-clicking a file after switching back from another app opens it without an extra double-click.
 - Favorites, mounted volumes, a Computer overview, editable paths and navigation history.
 - Filename filtering with case-insensitive `*` and `?` wildcards.
 - Copy, move, cut/paste, duplicate, rename, batch rename, new files/folders and deletion.
