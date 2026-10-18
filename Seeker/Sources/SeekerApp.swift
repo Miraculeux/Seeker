@@ -564,8 +564,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 if state.leftPaneFrame.contains(globalPoint) && state.activePane != .left {
                     DispatchQueue.main.async { state.activePane = .left }
-                } else if state.rightPaneFrame.contains(globalPoint) && state.activePane != .right {
-                    DispatchQueue.main.async { state.activePane = .right }
+                } else if state.showDualPane && state.rightPaneFrame.contains(globalPoint) && state.activePane != .right {
+                    DispatchQueue.main.async {
+                        guard state.showDualPane else { return }
+                        state.activePane = .right
+                    }
                 }
                 return event
             }

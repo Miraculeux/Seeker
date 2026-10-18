@@ -49,7 +49,7 @@ including quarantine, Finder tags and custom metadata. Use only on trusted apps.
 ### Search & Folder Tools
 
 - **Search:** filename wildcards or indexed text through Spotlight, with optional recursive searching.
-- **Find Duplicates:** content-hash detection, linked duplicate groups, comparison explorers and bulk Move to Trash.
+- **Find Duplicates:** content-hash detection, linked duplicate groups, comparison explorers and bulk Move to Trash. Scans selected folders in the active visible pane, or its current directory when no folders are selected; a hidden right pane is never the active scan source.
 - **Compare Folders:** find entries unique to each side by name or relative path, not by file contents.
 - **Sync Folders:** preview and apply Update, Mirror or Two-way plans based on file size and modification time. Mirror moves destination-only files to Trash; Update and Two-way do not delete.
 - **Similar Images:** visual matching with Vision, perceptual hashing and optional semantic scoring.

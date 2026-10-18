@@ -271,7 +271,14 @@ class AppState {
     var rightPane = PaneState()
 
     // Which pane is active
-    var activePane: PaneSide = .left
+    var activePane: PaneSide = .left {
+        didSet {
+            // Deferred click callbacks must not reactivate a hidden pane.
+            if !showDualPane && activePane == .right {
+                activePane = .left
+            }
+        }
+    }
 
     // Pane screen frames for click detection.
     // Read only from the global mouse-down monitor in AppDelegate; never
