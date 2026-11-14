@@ -1315,23 +1315,26 @@ class FileExplorerViewModel: Identifiable {
 
     func transferFiles(sources: [URL], to destination: URL, isMove: Bool) {
         let completion: @MainActor (FileOperation) -> Void = { [weak self] op in
-            guard let self else { return }
-            if !op.completedDestinations.isEmpty {
-                if isMove {
-                    let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
-                    undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
-                } else {
-                    undoStack.append(.copy(destinationURLs: op.completedDestinations))
-                }
-            }
-            loadFiles()
-            notifyDirectoriesChanged(sourceURLs: sources + op.completedDestinations, directories: [destination])
+            self?.finishFileTransfer(op, sources: sources, destination: destination, isMove: isMove)
         }
         if isMove {
             FileOperationManager.shared.startMove(sources: sources, to: destination, onComplete: completion)
         } else {
             FileOperationManager.shared.startCopy(sources: sources, to: destination, onComplete: completion)
         }
+    }
+
+    private func finishFileTransfer(_ operation: FileOperation, sources: [URL], destination: URL, isMove: Bool) {
+        if !operation.completedDestinations.isEmpty {
+            if isMove {
+                let originals = Array(operation.sourceURLs.prefix(operation.completedDestinations.count))
+                undoStack.append(.move(originalURLs: originals, destinationURLs: operation.completedDestinations))
+            } else {
+                undoStack.append(.copy(destinationURLs: operation.completedDestinations))
+            }
+        }
+        loadFiles()
+        notifyDirectoriesChanged(sourceURLs: sources + operation.completedDestinations, directories: [destination])
     }
 
     static func sourcesForDrop(_ sources: [URL], to destination: URL, copyInPlace: Bool) -> [URL] {
@@ -1369,6 +1372,7 @@ class FileExplorerViewModel: Identifiable {
                                 continuation.resume(throwing: CocoaError(.fileReadCorruptFile))
                             }
                         }
+
                     }
                     guard let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else {
                         throw CocoaError(.fileReadUnsupportedScheme)
@@ -1378,6 +1382,51 @@ class FileExplorerViewModel: Identifiable {
                 dropFiles(sources: sources, to: destination, isMove: isMove, copyInPlace: copyInPlace)
             } catch {
                 showFileError("Could not read dropped files: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func receivePromisedFileDrop(_ receivers: [NSFilePromiseReceiver], to destination: URL) {
+        guard beginFileMutation("Receiving promised files\u{2026}") else { return }
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Seeker-FileDrop-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            FilePromiseImport.receive(receivers, into: directory) { [self] outcome in
+                defer { fileMutationStatus = nil }
+                if !outcome.errors.isEmpty {
+                    showFileError("Could not receive some dropped files:\n" + outcome.errors.joined(separator: "\n"))
+                }
+                // File promises always import copies. Reuse conflict handling and
+                // Undo, keeping staging alive until the queued transfer finishes.
+                if !outcome.urls.isEmpty {
+                    let completion: @MainActor (FileOperation) -> Void = { [self] op in
+                        finishFileTransfer(op, sources: outcome.urls, destination: destination, isMove: false)
+                    }
+                    if FileOperationManager.shared.startCopy(
+                        sources: outcome.urls, to: destination,
+                        onFinish: { [self] in removePromisedFileStaging(directory) },
+                        onComplete: completion
+                    ) != nil {
+                        return
+                    }
+                }
+                removePromisedFileStaging(directory)
+            }
+        } catch {
+            fileMutationStatus = nil
+            showFileError("Could not receive dropped files: \(error.localizedDescription)")
+        }
+    }
+
+    private func removePromisedFileStaging(_ directory: URL) {
+        Task {
+            do {
+                try await Task.detached(priority: .utility) {
+                    try FileManager.default.removeItem(at: directory)
+                }.value
+            } catch {
+                showFileError("Could not remove received-file staging: \(error.localizedDescription)")
             }
         }
     }

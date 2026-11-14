@@ -39,20 +39,7 @@ struct FileContentView: View {
     @State private var pinchBaseSize: CGFloat?
 
     var body: some View {
-        Group {
-            switch viewModel.viewMode {
-            case .list:
-                // Scope columnRefresh to the views that actually depend on
-                // column settings; avoids nuking the entire view tree's
-                // identity (List recycling, scroll position) on a settings
-                // change that does not affect the column browser.
-                listView.id(columnRefresh)
-            case .icons:
-                iconGridView
-            case .columns:
-                columnView
-            }
-        }
+        FileDropTarget(content: browserContent, allowsDrop: allowsFileDrop, onDrop: handlePasteboardDrop)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottomTrailing) {
             if let status = viewModel.fileMutationStatus {
@@ -86,6 +73,24 @@ struct FileContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .columnSettingsChanged)) { _ in
             columnRefresh += 1
         }
+    }
+
+    private var browserContent: some View {
+        Group {
+            switch viewModel.viewMode {
+            case .list:
+                // Scope columnRefresh to the views that actually depend on
+                // column settings; avoids nuking the entire view tree's
+                // identity (List recycling, scroll position) on a settings
+                // change that does not affect the column browser.
+                listView.id(columnRefresh)
+            case .icons:
+                iconGridView
+            case .columns:
+                columnView
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - List View
@@ -143,7 +148,6 @@ struct FileContentView: View {
                         proxy.scrollTo(file.id)
                     }
                 }
-                .onDrop(of: [.fileURL, .image, .url], delegate: fileDropDelegate)
             }
         }
         .background {
@@ -327,7 +331,6 @@ struct FileContentView: View {
             )
         }
         .contextMenu { directoryContextMenu }
-        .onDrop(of: [.fileURL, .image, .url], delegate: fileDropDelegate)
         // Pinch-to-zoom on the icon grid. The gesture state's `magnification`
         // is multiplicative; we apply it to the icon size we had when the
         // gesture began so the size tracks the fingers smoothly. We use
@@ -752,8 +755,23 @@ struct FileContentView: View {
 
     // MARK: - Drag and Drop
 
-    private var fileDropDelegate: FileContentDropDelegate {
-        FileContentDropDelegate(destination: viewModel.currentURL, onDrop: handleDrop)
+    private func allowsFileDrop() -> Bool {
+        guard let sources = FileDragNSView.draggedURLs else { return true }
+        let flags = NSEvent.modifierFlags
+        return !FileExplorerViewModel.sourcesForDrop(
+            sources, to: viewModel.currentURL,
+            copyInPlace: flags.contains(.option) && !flags.contains(.shift)
+        ).isEmpty
+    }
+
+    private func handlePasteboardDrop(_ pasteboard: NSPasteboard) {
+        if FileDragNSView.draggedURLs == nil, FileDropTargetView.hasFilePromises(pasteboard) {
+            let receivers = pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver] ?? []
+            appState.activePane = side
+            viewModel.receivePromisedFileDrop(receivers, to: viewModel.currentURL)
+        } else {
+            handleDrop(providers: FileDropTargetView.itemProviders(from: pasteboard))
+        }
     }
 
     private func handleDrop(providers: [NSItemProvider]) {
@@ -792,30 +810,6 @@ struct FileContentView: View {
 
     private func openTerminal(at url: URL) {
         SystemTerminal.open(at: url)
-    }
-}
-
-private struct FileContentDropDelegate: DropDelegate {
-    let destination: URL
-    let onDrop: ([NSItemProvider]) -> Void
-
-    private var cancelsDrop: Bool {
-        guard let sources = FileDragNSView.draggedURLs else { return false }
-        let flags = NSEvent.modifierFlags
-        return FileExplorerViewModel.sourcesForDrop(
-            sources, to: destination,
-            copyInPlace: flags.contains(.option) && !flags.contains(.shift)
-        ).isEmpty
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: cancelsDrop ? .cancel : (NSEvent.modifierFlags.contains(.shift) ? .move : .copy))
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        guard !cancelsDrop else { return false }
-        onDrop(info.itemProviders(for: [.fileURL, .image, .url]))
-        return true
     }
 }
 
@@ -1384,7 +1378,7 @@ private final class RightClickNSView: NSView {
 /// promise, so the drop is silently rejected. Starting a real
 /// `beginDraggingSession` with explicit file pasteboard writers eagerly
 /// publishes those legacy types (pointing at the ORIGINAL path — no cache
-/// copy), so every drop target works.
+/// copy). File promises additionally support asynchronous file delivery.
 struct FileDragCatcher: NSViewRepresentable {
     var isEnabled: Bool = true
     var chevronRange: ClosedRange<CGFloat>? = nil
@@ -1412,26 +1406,60 @@ struct FileDragCatcher: NSViewRepresentable {
     }
 }
 
-private final class FilePasteboardWriter: NSObject, NSPasteboardWriting {
+final class FilePasteboardWriter: NSFilePromiseProvider, NSFilePromiseProviderDelegate {
     private static let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
     private let url: URL
+    private let promiseQueue = OperationQueue()
 
     init(url: URL) {
         self.url = url
+        let type = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            ? UTType.directory : (UTType(filenameExtension: url.pathExtension) ?? .data)
+        super.init()
+        fileType = type.identifier
+        delegate = self
+        promiseQueue.name = "Seeker.FilePromise"
     }
 
-    func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
-        [.fileURL, .URL, Self.filenamesType]
+    override func writableTypes(for pasteboard: NSPasteboard) -> [NSPasteboard.PasteboardType] {
+        super.writableTypes(for: pasteboard) + [.fileURL, .URL, Self.filenamesType]
     }
 
-    func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
+    override func pasteboardPropertyList(forType type: NSPasteboard.PasteboardType) -> Any? {
         switch type {
         case .fileURL, .URL:
             return url.absoluteString
         case Self.filenamesType:
             return [url.path]
         default:
-            return nil
+            return super.pasteboardPropertyList(forType: type)
+        }
+    }
+
+    override func writingOptions(
+        forType type: NSPasteboard.PasteboardType, pasteboard: NSPasteboard
+    ) -> NSPasteboard.WritingOptions {
+        if [.fileURL, .URL, Self.filenamesType].contains(type) { return [] }
+        return super.writingOptions(forType: type, pasteboard: pasteboard)
+    }
+
+    func filePromiseProvider(_ filePromiseProvider: NSFilePromiseProvider, fileNameForType fileType: String) -> String {
+        url.lastPathComponent
+    }
+
+    func operationQueue(for filePromiseProvider: NSFilePromiseProvider) -> OperationQueue {
+        promiseQueue
+    }
+
+    func filePromiseProvider(
+        _ filePromiseProvider: NSFilePromiseProvider, writePromiseTo destination: URL,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        do {
+            try FileManager.default.copyItem(at: url, to: destination)
+            completionHandler(nil)
+        } catch {
+            completionHandler(error)
         }
     }
 }

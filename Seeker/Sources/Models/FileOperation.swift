@@ -52,6 +52,8 @@ class FileOperation: Identifiable {
     /// Completion handler invoked on the main actor when the operation
     /// finishes. Stored so the queue pump can call it.
     @ObservationIgnored var onComplete: (@MainActor (FileOperation) -> Void)?
+    /// Releases staged inputs even when cancellation discards a queued operation.
+    @ObservationIgnored var onFinish: (@MainActor () -> Void)?
     @ObservationIgnored var task: Task<Void, Never>?
 
     struct PlannedItem {
@@ -159,14 +161,21 @@ class FileOperationManager {
         operations.filter { $0.isQueued && !$0.isCancelled && !$0.isFinished }.count
     }
 
-    func startCopy(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
+    @discardableResult
+    func startCopy(
+        sources: [URL], to destination: URL,
+        onFinish: (@MainActor () -> Void)? = nil,
+        onComplete: @escaping @MainActor (FileOperation) -> Void
+    ) -> FileOperation? {
         guard let plan = resolveConflicts(sources: sources, destination: destination, kind: .copy),
-              !plan.isEmpty else { return }
+              !plan.isEmpty else { return nil }
         let op = FileOperation(kind: .copy, sourceURLs: plan.map(\.source), destinationDir: destination)
         op.plan = plan
         op.onComplete = onComplete
+        op.onFinish = onFinish
         operations.append(op)
         pump()
+        return op
     }
 
     func startMove(sources: [URL], to destination: URL, onComplete: @escaping @MainActor (FileOperation) -> Void) {
@@ -204,7 +213,14 @@ class FileOperationManager {
     /// contention); operations on different volumes run concurrently.
     private func pump() {
         // Drop operations cancelled while still waiting in the queue.
+        let cancelled = operations.filter { $0.isCancelled && $0.isQueued }
         operations.removeAll { $0.isCancelled && $0.isQueued }
+        for op in cancelled {
+            op.isFinished = true
+            op.onFinish?()
+            op.onFinish = nil
+            op.onComplete = nil
+        }
         for op in operations where op.isQueued && !op.isCancelled && !op.isFinished {
             let vol = Self.volumeKey(for: op.destinationDir)
             if busyVolumes.contains(vol) { continue }
@@ -214,6 +230,9 @@ class FileOperationManager {
                 await performOperation(op)
                 op.task = nil
                 op.onComplete?(op)
+                op.onComplete = nil
+                op.onFinish?()
+                op.onFinish = nil
                 cleanupFinished()
                 busyVolumes.remove(vol)
                 updatePowerAssertion()
