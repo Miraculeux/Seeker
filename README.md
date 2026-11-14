@@ -20,7 +20,8 @@ A native dual-pane file manager for macOS, built with SwiftUI.
 - Copy a single file or folder, browse to the destination, then choose **Paste as Symbolic Link** in the Edit or context menu (or **Link** in the Explorer-style toolbar). Like Paste, a selected folder is the destination; otherwise the selected file's parent or current folder is used. Links use absolute source paths, keep the clipboard intact and support Undo. Existing names are preserved with numbered alternatives; cut and multi-item clipboards are not supported. Moving or deleting the source can break the link.
 - Copies preserve empty directories; overwrites require filesystem support for atomic swaps.
 - Copying into a same-named folder merges its contents recursively and keeps destination-only items. Same-named files offer Replace, Keep Both, Skip and Cancel, with Apply to all for the remaining batch. Copying within the original folder still creates a numbered duplicate; moves and folder sync retain their separate conflict policies.
-- Cross-pane transfers, drag and drop, and browser image imports.
+- Cross-pane transfers, drag and drop, and browser image imports. Local-file drops support Undo in the receiving pane after the transfer finishes; Undo is unavailable during queued/running transfers so it cannot undo an older action mid-transfer.
+- Dropping files back into their original folder does nothing unless Option is held to explicitly create a copy. Shift-drag still moves files to another folder; press Escape during a drag to cancel. Copy/Paste within the same folder still creates numbered duplicates.
 - Trash browsing and Put Back: Seeker remembers original locations for items it trashes; other items require a restore folder.
 - ZIP compression and extraction of ZIP, CPGZ and CPIO archives.
 - Quick Look, Auto Preview, file information, sharing and Open Terminal Here.

@@ -329,14 +329,7 @@ class AppState {
         guard !items.isEmpty else { return }
         let dest = inactiveExplorer.currentURL
         let sources = items.map(\.url)
-        let inactive = inactiveExplorer
-        let active = activeExplorer
-        FileOperationManager.shared.startCopy(sources: sources, to: dest) { op in
-            inactive.loadFiles()
-            if !op.completedDestinations.isEmpty {
-                active.undoStack.append(.copy(destinationURLs: op.completedDestinations))
-            }
-        }
+        activeExplorer.transferFiles(sources: sources, to: dest, isMove: false)
     }
 
     func moveToOtherPane() {
@@ -344,16 +337,7 @@ class AppState {
         guard !items.isEmpty else { return }
         let dest = inactiveExplorer.currentURL
         let sources = items.map(\.url)
-        let active = activeExplorer
-        let inactive = inactiveExplorer
-        FileOperationManager.shared.startMove(sources: sources, to: dest) { op in
-            active.loadFiles()
-            inactive.loadFiles()
-            if !op.completedDestinations.isEmpty {
-                let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
-                active.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
-            }
-        }
+        activeExplorer.transferFiles(sources: sources, to: dest, isMove: true)
     }
 
     private func uniqueDestination(for source: URL, in directory: URL) -> URL {

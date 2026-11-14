@@ -196,7 +196,12 @@ class FileExplorerViewModel: Identifiable {
         case move(originalURLs: [URL], destinationURLs: [URL])
     }
 
-    var canUndo: Bool { !undoStack.isEmpty && fileMutationStatus == nil }
+    private var canPerformUndo: Bool {
+        fileMutationStatus == nil
+            && !FileOperationManager.shared.operations.contains { !$0.isFinished && (!$0.isCancelled || !$0.isQueued) }
+    }
+
+    var canUndo: Bool { !undoStack.isEmpty && canPerformUndo }
 
     var canRestoreFromTrash: Bool {
         let items = effectiveSelection
@@ -1304,21 +1309,75 @@ class FileExplorerViewModel: Identifiable {
         if shouldMove {
             Self.clipboard = []
             Self.clipboardIsCut = false
-            FileOperationManager.shared.startMove(sources: urls, to: dest) { [weak self] op in
-                self?.loadFiles()
-                self?.notifyDirectoriesChanged(sourceURLs: urls)
-                if !op.completedDestinations.isEmpty {
+        }
+        transferFiles(sources: urls, to: dest, isMove: shouldMove)
+    }
+
+    func transferFiles(sources: [URL], to destination: URL, isMove: Bool) {
+        let completion: @MainActor (FileOperation) -> Void = { [weak self] op in
+            guard let self else { return }
+            if !op.completedDestinations.isEmpty {
+                if isMove {
                     let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
-                    self?.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
+                    undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
+                } else {
+                    undoStack.append(.copy(destinationURLs: op.completedDestinations))
                 }
             }
+            loadFiles()
+            notifyDirectoriesChanged(sourceURLs: sources + op.completedDestinations, directories: [destination])
+        }
+        if isMove {
+            FileOperationManager.shared.startMove(sources: sources, to: destination, onComplete: completion)
         } else {
-            FileOperationManager.shared.startCopy(sources: urls, to: dest) { [weak self] op in
-                self?.loadFiles()
-                self?.notifyFilesChanged()
-                if !op.completedDestinations.isEmpty {
-                    self?.undoStack.append(.copy(destinationURLs: op.completedDestinations))
+            FileOperationManager.shared.startCopy(sources: sources, to: destination, onComplete: completion)
+        }
+    }
+
+    static func sourcesForDrop(_ sources: [URL], to destination: URL, copyInPlace: Bool) -> [URL] {
+        guard !copyInPlace else { return sources }
+        let directory = destination.standardizedFileURL.resolvingSymlinksInPath().path
+        return sources.filter {
+            $0.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath().path != directory
+        }
+    }
+
+    @discardableResult
+    func dropFiles(sources: [URL], to destination: URL, isMove: Bool, copyInPlace: Bool) -> Bool {
+        let sources = Self.sourcesForDrop(sources, to: destination, copyInPlace: copyInPlace && !isMove)
+        guard !sources.isEmpty else { return false }
+        transferFiles(sources: sources, to: destination, isMove: isMove)
+        return true
+    }
+
+    func receiveFileDrop(
+        providers: [NSItemProvider], to destination: URL, isMove: Bool, copyInPlace: Bool
+    ) {
+        guard !providers.isEmpty, beginFileMutation("Reading dropped files\u{2026}") else { return }
+        Task {
+            defer { fileMutationStatus = nil }
+            var sources: [URL] = []
+            do {
+                for provider in providers {
+                    let data: Data = try await withCheckedThrowingContinuation { continuation in
+                        provider.loadDataRepresentation(forTypeIdentifier: "public.file-url") { data, error in
+                            if let error {
+                                continuation.resume(throwing: error)
+                            } else if let data {
+                                continuation.resume(returning: data)
+                            } else {
+                                continuation.resume(throwing: CocoaError(.fileReadCorruptFile))
+                            }
+                        }
+                    }
+                    guard let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else {
+                        throw CocoaError(.fileReadUnsupportedScheme)
+                    }
+                    sources.append(url)
                 }
+                dropFiles(sources: sources, to: destination, isMove: isMove, copyInPlace: copyInPlace)
+            } catch {
+                showFileError("Could not read dropped files: \(error.localizedDescription)")
             }
         }
     }
@@ -1550,20 +1609,13 @@ class FileExplorerViewModel: Identifiable {
         let items = effectiveSelection
         guard !items.isEmpty else { return }
         let sources = items.map(\.url)
-        FileOperationManager.shared.startMove(sources: sources, to: destination) { [weak self] op in
-            self?.loadFiles()
-            self?.notifyDirectoriesChanged(sourceURLs: sources)
-            if !op.completedDestinations.isEmpty {
-                let originals = Array(op.sourceURLs.prefix(op.completedDestinations.count))
-                self?.undoStack.append(.move(originalURLs: originals, destinationURLs: op.completedDestinations))
-            }
-        }
+        transferFiles(sources: sources, to: destination, isMove: true)
     }
 
     // MARK: - Undo
 
     func undo() {
-        guard fileMutationStatus == nil else { NSSound.beep(); return }
+        guard canPerformUndo else { NSSound.beep(); return }
         guard let action = undoStack.popLast() else { return }
         fileMutationStatus = "Undoing\u{2026}"
         let trashService = self.trashService
@@ -1975,8 +2027,8 @@ class FileExplorerViewModel: Identifiable {
     /// so the *source* pane refreshes too — `.filesDidChange` listeners
     /// are scoped per affected dir and would otherwise ignore a
     /// notification posted only against the destination.
-    private func notifyDirectoriesChanged(sourceURLs: [URL]) {
-        var dirs: Set<URL> = [currentURL.standardizedFileURL]
+    private func notifyDirectoriesChanged(sourceURLs: [URL], directories: [URL] = []) {
+        var dirs = Set(([currentURL] + directories).map(\.standardizedFileURL))
         for url in sourceURLs {
             dirs.insert(url.deletingLastPathComponent().standardizedFileURL)
         }

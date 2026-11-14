@@ -143,10 +143,7 @@ struct FileContentView: View {
                         proxy.scrollTo(file.id)
                     }
                 }
-                .onDrop(of: [.fileURL, .image, .url], isTargeted: nil) { providers in
-                    handleDrop(providers: providers)
-                    return true
-                }
+                .onDrop(of: [.fileURL, .image, .url], delegate: fileDropDelegate)
             }
         }
         .background {
@@ -330,10 +327,7 @@ struct FileContentView: View {
             )
         }
         .contextMenu { directoryContextMenu }
-        .onDrop(of: [.fileURL, .image, .url], isTargeted: nil) { providers in
-            handleDrop(providers: providers)
-            return true
-        }
+        .onDrop(of: [.fileURL, .image, .url], delegate: fileDropDelegate)
         // Pinch-to-zoom on the icon grid. The gesture state's `magnification`
         // is multiplicative; we apply it to the icon size we had when the
         // gesture began so the size tracks the fingers smoothly. We use
@@ -758,11 +752,16 @@ struct FileContentView: View {
 
     // MARK: - Drag and Drop
 
+    private var fileDropDelegate: FileContentDropDelegate {
+        FileContentDropDelegate(destination: viewModel.currentURL, onDrop: handleDrop)
+    }
+
     private func handleDrop(providers: [NSItemProvider]) {
         let destDir = viewModel.currentURL
         let vm = viewModel
         let otherVM = (side == .left ? appState.rightPane : appState.leftPane).activeTab
         let isMove = NSEvent.modifierFlags.contains(.shift)
+        let copyInPlace = NSEvent.modifierFlags.contains(.option)
 
         // Split: local-file providers go through the move/copy pipeline,
         // everything else (browser image data, web URLs) goes through the
@@ -778,42 +777,9 @@ struct FileContentView: View {
         }
 
         if !fileProviders.isEmpty {
-            // Collect all URLs first, then perform as a single operation
-            final class URLCollector: @unchecked Sendable {
-                private let lock = NSLock()
-                private var urls = [URL]()
-                func append(_ url: URL) { lock.lock(); urls.append(url); lock.unlock() }
-                var result: [URL] { lock.lock(); defer { lock.unlock() }; return urls }
-            }
-            let collector = URLCollector()
-            let group = DispatchGroup()
-
-            for provider in fileProviders {
-                group.enter()
-                provider.loadDataRepresentation(forTypeIdentifier: "public.file-url") { data, _ in
-                    defer { group.leave() }
-                    guard let data,
-                          let sourceURL = URL(dataRepresentation: data, relativeTo: nil),
-                          sourceURL.isFileURL else { return }
-                    collector.append(sourceURL)
-                }
-            }
-
-            group.notify(queue: .main) {
-                let sourceURLs = collector.result
-                guard !sourceURLs.isEmpty else { return }
-                if isMove {
-                    FileOperationManager.shared.startMove(sources: sourceURLs, to: destDir) { _ in
-                        vm.loadFiles()
-                        otherVM.loadFiles()
-                    }
-                } else {
-                    FileOperationManager.shared.startCopy(sources: sourceURLs, to: destDir) { _ in
-                        vm.loadFiles()
-                        otherVM.loadFiles()
-                    }
-                }
-            }
+            appState.activePane = side
+            vm.receiveFileDrop(providers: fileProviders, to: destDir,
+                               isMove: isMove, copyInPlace: copyInPlace)
         }
 
         if !remoteProviders.isEmpty {
@@ -826,6 +792,30 @@ struct FileContentView: View {
 
     private func openTerminal(at url: URL) {
         SystemTerminal.open(at: url)
+    }
+}
+
+private struct FileContentDropDelegate: DropDelegate {
+    let destination: URL
+    let onDrop: ([NSItemProvider]) -> Void
+
+    private var cancelsDrop: Bool {
+        guard let sources = FileDragNSView.draggedURLs else { return false }
+        let flags = NSEvent.modifierFlags
+        return FileExplorerViewModel.sourcesForDrop(
+            sources, to: destination,
+            copyInPlace: flags.contains(.option) && !flags.contains(.shift)
+        ).isEmpty
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: cancelsDrop ? .cancel : (NSEvent.modifierFlags.contains(.shift) ? .move : .copy))
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard !cancelsDrop else { return false }
+        onDrop(info.itemProviders(for: [.fileURL, .image, .url]))
+        return true
     }
 }
 
@@ -1447,6 +1437,7 @@ private final class FilePasteboardWriter: NSObject, NSPasteboardWriting {
 }
 
 final class FileDragNSView: NSView, NSDraggingSource {
+    private(set) static var draggedURLs: [URL]?
     var isDragEnabled = true
     var chevronRange: ClosedRange<CGFloat>?
     var urlsProvider: (() -> [URL])?
@@ -1460,8 +1451,11 @@ final class FileDragNSView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        // `.copy` outside the app (Finder/IINA/etc.), generic within.
-        context == .withinApplication ? .generic : [.copy, .link, .generic]
+        context == .withinApplication ? [.copy, .move, .generic] : [.copy, .link, .generic]
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        Self.draggedURLs = nil
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -1544,7 +1538,9 @@ final class FileDragNSView: NSView, NSDraggingSource {
             )
             return item
         }
-        beginDraggingSession(with: items, event: event, source: self)
+        Self.draggedURLs = urls
+        let session = beginDraggingSession(with: items, event: event, source: self)
+        session.animatesToStartingPositionsOnCancelOrFail = true
     }
 }
 

@@ -275,6 +275,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if spaceMonitor == nil {
             // Space key → Quick Look, Return key → Open item
             spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Let AppKit handle Escape during a drag, even with a preview open.
+                if FileDragNSView.draggedURLs != nil {
+                    return event
+                }
                 // A modal alert is up (e.g. the "Move to Trash?" confirm).
                 // Let every key go to it — otherwise this monitor would,
                 // for example, treat Return as the Rename shortcut and
